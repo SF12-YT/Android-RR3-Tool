@@ -32,6 +32,11 @@ internal object GameDataBrowser {
     private const val MAX_FILES = 100_000
     private const val MAX_FOLDERS_TO_FIND_DEPOT = 500
     private const val MAX_DEPOT_DEPTH = 6
+    private val preferredRr3Packages = listOf(
+        "com.ea.games.r3_row",
+        "com.ea.games.r3_na",
+        "com.ea.games.r3_cn"
+    )
 
     private val excludedExtensions = setOf(
         "sba", "pvr", "dds", "astc", "ktx", "m3g", "sb3d",
@@ -138,8 +143,17 @@ internal object GameDataBrowser {
             if (!visited.add(folder.documentId)) continue
             inspected++
 
-            for (child in children(resolver, treeUri, folder.documentId)) {
-                if (!child.isDirectory) continue
+            val childFolders = children(resolver, treeUri, folder.documentId)
+                .filter { it.isDirectory }
+            val orderedFolders = if (folder.depth == 0) {
+                childFolders.sortedBy { child ->
+                    val index = preferredRr3Packages.indexOf(child.name.lowercase())
+                    if (index < 0) Int.MAX_VALUE else index
+                }
+            } else {
+                childFolders
+            }
+            for (child in orderedFolders) {
                 val path = if (folder.path.isEmpty()) child.name else folder.path + "/" + child.name
                 if (child.name.equals(".depot", ignoreCase = true)) {
                     return Folder(child.documentId, "", 0)
