@@ -1,6 +1,7 @@
 package com.sf12.rr3tool
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.database.Cursor
 import android.graphics.Color
@@ -164,19 +165,19 @@ class MainActivity : Activity() {
         addSection(page, "RR3 DATA TRANSFORM")
         val dataCard = card(page)
         dataCard.addView(
-            text("Decode or re-encode RR3 data", 17, Color.WHITE, bold = true),
+            text("Decode or re-encode RR3 data and game text", 17, Color.WHITE, bold = true),
             matchWrap()
         )
         dataCard.addView(
             text(
-                "The upstream RR3 RC4 transform is built into the native engine. Choose an encrypted .nct or .gui to decode it, or a decoded .bin or .xml to encode it again.",
+                "The upstream RR3 RC4 transform is built into the native engine. Choose .nct/.gui or .bin/.xml pairs to decode or encode. RR3 gametext.txt and text_<language>.txt have their own cipher; the app asks whether to decode or encode those.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
         )
         dataCard.addView(
-            actionButton("Choose RR3 data (.nct / .bin / .gui / .xml)") { chooseRr3DataFile() },
+            actionButton("Choose RR3 data (.nct / .bin / .gui / .xml / game text .txt)") { chooseRr3DataFile() },
             matchWrap(top = 12)
         )
         dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
@@ -256,13 +257,22 @@ class MainActivity : Activity() {
                 val name = displayName(uri)
                 val lower = name.lowercase()
                 val extension = name.substringAfterLast('.', "").lowercase()
-                if (extension !in setOf("nct", "bin", "gui", "xml")) {
-                    throw IllegalArgumentException("Choose an RR3 .nct, .bin, .gui or .xml file.")
+                val isGameText = extension == "txt" &&
+                    (lower == "gametext.txt" ||
+                        (lower.startsWith("text_") && lower.length > 9))
+                if (extension !in setOf("nct", "bin", "gui", "xml") && !isGameText) {
+                    throw IllegalArgumentException("Choose .nct/.bin/.gui/.xml or RR3 gametext/text_<language>.txt.")
                 }
 
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")
                 val bytes = input.use { it.readBytes() }
+
+                if (isGameText) {
+                    runOnUiThread { showRr3TextMode(name, bytes) }
+                    return@Thread
+                }
+
                 val alreadyPlainGui = extension == "gui" &&
                     bytes.size >= 5 &&
                     bytes.copyOfRange(0, 5).toString(Charsets.US_ASCII) == "<?xml"
@@ -285,12 +295,7 @@ class MainActivity : Activity() {
 
                 runOnUiThread {
                     dataStatus.text = "Transformed " + transformed.size + " bytes. Choose where to save the output."
-                    val outputIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "application/octet-stream"
-                        putExtra(Intent.EXTRA_TITLE, pendingTransformedName)
-                    }
-                    startActivityForResult(outputIntent, requestRr3TransformOutput)
+                    launchRr3OutputPicker()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -298,6 +303,50 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+
+    private fun showRr3TextMode(name: String, source: ByteArray) {
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(arrayOf("Decode game text", "Encode text for RR3")) { _, which ->
+                transformRr3TextFile(name, source, encode = which == 1)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun transformRr3TextFile(name: String, source: ByteArray, encode: Boolean) {
+        dataStatus.text = if (encode) "Encoding RR3 game text…" else "Decoding RR3 game text…"
+        Thread {
+            try {
+                val alreadyPlain = NativeBridge.nativeRr3TextIsPlain(source)
+                val output = if (!encode && alreadyPlain) {
+                    source
+                } else {
+                    NativeBridge.nativeTransformRr3Text(source)
+                        ?: throw IllegalStateException("The RR3 text transform failed.")
+                }
+                pendingTransformedData = output
+                pendingTransformedName = name
+                runOnUiThread {
+                    dataStatus.text = (if (encode) "Encoded " else "Decoded ") +
+                        output.size + " bytes. Choose where to save the output."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { dataStatus.text = e.message ?: "RR3 text transform failed." }
+            }
+        }.start()
+    }
+
+    private fun launchRr3OutputPicker() {
+        val outputIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/octet-stream"
+            putExtra(Intent.EXTRA_TITLE, pendingTransformedName)
+        }
+        startActivityForResult(outputIntent, requestRr3TransformOutput)
     }
 
     private fun writeTransformedRr3File(uri: Uri) {
