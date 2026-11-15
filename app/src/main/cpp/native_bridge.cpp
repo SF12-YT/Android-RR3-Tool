@@ -226,3 +226,44 @@ Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3Data(
         reinterpret_cast<const jbyte*>(transformed.data()));
     return output;
 }
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3Text(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bytes transformed;
+    if (!nfsnl::rr3TextTransform(source.data(), source.size(), transformed))
+        return nullptr;
+    if (transformed.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+
+    jbyteArray output = env->NewByteArray(static_cast<jsize>(transformed.size()));
+    if (!output) return nullptr;
+    env->SetByteArrayRegion(
+        output, 0, static_cast<jsize>(transformed.size()),
+        reinterpret_cast<const jbyte*>(transformed.data()));
+    return output;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextIsPlain(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return JNI_FALSE;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return JNI_FALSE;
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return JNI_FALSE;
+    return nfsnl::rr3TextIsPlain(source.data(), source.size()) ? JNI_TRUE : JNI_FALSE;
+}
