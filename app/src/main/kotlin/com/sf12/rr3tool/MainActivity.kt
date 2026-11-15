@@ -36,6 +36,7 @@ class MainActivity : Activity() {
 
     private lateinit var gameDataValue: TextView
     private lateinit var saveFolderValue: TextView
+    private lateinit var rootSaveValue: TextView
     private lateinit var engineValue: TextView
     private lateinit var saveStatus: TextView
     private lateinit var dataStatus: TextView
@@ -135,6 +136,20 @@ class MainActivity : Activity() {
         saveCard.addView(
             actionButton("Choose save folder") { chooseFolder(requestSaveFolder) },
             matchWrap(top = 12)
+        )
+        rootSaveValue = text("Root access not configured", 12, 0xFFB7C8D9.toInt())
+        saveCard.addView(rootSaveValue, matchWrap(top = 12))
+        saveCard.addView(
+            actionButton("Locate private RR3 save folder with root") { locateRootSaveFolder() },
+            matchWrap(top = 8)
+        )
+        saveCard.addView(
+            text(
+                "Root access is optional. It may be needed to reach the game's private doc folder on Android 11 and later.",
+                11,
+                0xFF7F93A9.toInt()
+            ),
+            matchWrap(top = 6)
         )
         loadSaveButton = actionButton("Load RR3 save") { loadRr3Save() }
         saveCard.addView(loadSaveButton, matchWrap(top = 10))
@@ -246,6 +261,7 @@ class MainActivity : Activity() {
 
         restoreSelection(gameDataValue, "game_data_tree")
         restoreSelection(saveFolderValue, "save_tree")
+        restoreRootSaveSelection()
         updateEngineStatus()
     }
 
@@ -616,6 +632,105 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
+
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
+
+    private fun runRootCommand(command: String): String {
+        val process = ProcessBuilder("su", "-c", command)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            throw IllegalStateException(
+                output.trim().ifBlank { "Root command failed (exit $exitCode)." }
+            )
+        }
+        return output.trim()
+    }
+
+    private fun rootFileExists(path: String): Boolean {
+        val result = runRootCommand("if [ -f ${shellQuote(path)} ]; then printf yes; fi")
+        return result == "yes"
+    }
+
+    private fun locateRootSaveFolder() {
+        rootSaveValue.text = "Requesting root and locating RR3 save…"
+        Thread {
+            try {
+                val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
+                if (uid != "0") throw IllegalStateException("Superuser access was not granted.")
+
+                val candidates = listOf(
+                    "/data/user/0/com.ea.games.r3_row/files/doc",
+                    "/data/data/com.ea.games.r3_row/files/doc"
+                )
+                val found = candidates.firstOrNull { candidate ->
+                    rootFileExists("$candidate/character.2.dat")
+                } ?: throw IllegalStateException(
+                    "Root access works, but character.2.dat was not found in the standard RR3 doc folder. Select the folder manually or check the installed game package."
+                )
+
+                preferences.edit()
+                    .putString("save_root_dir", found)
+                    .remove("save_tree")
+                    .apply()
+                runOnUiThread {
+                    rootSaveValue.text = "Root folder: $found"
+                    saveFolderValue.text = "Using private RR3 folder"
+                    saveStatus.text = "Root access granted. Tap Load RR3 save."
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    rootSaveValue.text = e.message ?: "Could not access the RR3 save folder."
+                }
+            }
+        }.start()
+    }
+
+    private fun restoreRootSaveSelection() {
+        val root = preferences.getString("save_root_dir", null)
+        rootSaveValue.text = if (root.isNullOrBlank()) {
+            "Root access not configured"
+        } else {
+            "Root folder: $root"
+        }
+    }
+
+    private fun copyFromRootPath(sourcePath: String, target: File) {
+        target.parentFile?.mkdirs()
+        val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(sourcePath)}").start()
+        process.inputStream.use { input ->
+            FileOutputStream(target).use { output -> input.copyTo(output) }
+        }
+        val error = process.errorStream.bufferedReader().use { it.readText() }
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+            target.delete()
+            throw IllegalStateException(error.trim().ifBlank { "Could not read $sourcePath with root." })
+        }
+    }
+
+    private fun copyToRootPath(source: File, targetPath: String) {
+        runRootCommand(
+            "cp -- ${shellQuote(source.absolutePath)} ${shellQuote(targetPath)}"
+        )
+    }
+
+    private fun createPersistentRootBackups(rootDir: String) {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val backupDir = "$rootDir/save_editor_backup_$stamp"
+        val commands = StringBuilder()
+        commands.append("mkdir -p ${shellQuote(backupDir)} && ")
+        commands.append("cp -- ${shellQuote("$rootDir/character.2.dat")} ${shellQuote("$backupDir/character.2.dat")}")
+        val tempPath = "$rootDir/TempSaveGame.dat"
+        if (rootFileExists(tempPath)) {
+            commands.append(" && cp -- ${shellQuote(tempPath)} ${shellQuote("$backupDir/TempSaveGame.dat")}")
+        }
+        runRootCommand(commands.toString())
+    }
+
     private fun chooseFolder(requestCode: Int) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -660,8 +775,9 @@ class MainActivity : Activity() {
                 gameDataValue.text = displayFolder(uri)
             }
             requestSaveFolder -> {
-                preferences.edit().putString("save_tree", uri.toString()).apply()
+                preferences.edit().putString("save_tree", uri.toString()).remove("save_root_dir").apply()
                 saveFolderValue.text = displayFolder(uri)
+                rootSaveValue.text = "Using selected document folder"
                 saveStatus.text = "Folder selected. Tap Load RR3 save."
                 saveFieldsContainer.removeAllViews()
             }
