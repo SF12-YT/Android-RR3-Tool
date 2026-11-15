@@ -35,6 +35,11 @@ class MainActivity : Activity() {
     private val requestEditableDataInput = 1105
 
     private lateinit var gameDataValue: TextView
+    private lateinit var gameFilesStatus: TextView
+    private lateinit var gameFilesSearch: EditText
+    private lateinit var gameFilesContainer: LinearLayout
+    private lateinit var indexGameFilesButton: TextView
+    private var indexedGameFiles: List<GameDataFile> = emptyList()
     private lateinit var saveFolderValue: TextView
     private lateinit var rootSaveValue: TextView
     private lateinit var engineValue: TextView
@@ -49,6 +54,7 @@ class MainActivity : Activity() {
     private var pendingTransformedData: ByteArray? = null
     private var pendingTransformedName: String = "rr3-data.bin"
     private var pendingOutputForDataEditor: Boolean = false
+    private var pendingOutputForBrowser: Boolean = false
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -119,6 +125,25 @@ class MainActivity : Activity() {
             actionButton("Choose game-data folder") { chooseFolder(requestGameData) },
             matchWrap(top = 12)
         )
+        gameFilesStatus = text(
+            "Choose the RR3 files/.depot folder, then index its non-texture game files.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        gameCard.addView(gameFilesStatus, matchWrap(top = 10))
+        indexGameFilesButton = actionButton("Index and browse RR3 files") { indexGameDataFiles() }
+        gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
+        gameFilesSearch = editBox("Search RR3 file names and paths", "", numeric = false)
+        gameCard.addView(gameFilesSearch, matchWrap(top = 10))
+        gameFilesContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        gameCard.addView(gameFilesContainer, matchWrap(top = 10))
+        gameFilesSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderGameFiles()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
 
         addSection(page, "SAVE EDITOR")
         val saveCard = card(page)
@@ -267,6 +292,249 @@ class MainActivity : Activity() {
 
 
 
+    private fun indexGameDataFiles() {
+        val stored = preferences.getString("game_data_tree", null)
+        if (stored.isNullOrBlank()) {
+            gameFilesStatus.text = "Choose the RR3 files/.depot folder first."
+            return
+        }
+
+        indexGameFilesButton.isEnabled = false
+        gameFilesStatus.text = "Indexing RR3 .depot files…"
+        gameFilesContainer.removeAllViews()
+        Thread {
+            try {
+                val files = GameDataBrowser.scan(contentResolver, Uri.parse(stored))
+                runOnUiThread {
+                    indexedGameFiles = files
+                    gameFilesSearch.setText("")
+                    gameFilesStatus.text =
+                        "Indexed ${files.size} supported files. Textures and 3D model assets are hidden."
+                    renderGameFiles()
+                    indexGameFilesButton.isEnabled = true
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Could not index the RR3 game-data folder."
+                    indexGameFilesButton.isEnabled = true
+                }
+            }
+        }.start()
+    }
+
+    private fun renderGameFiles() {
+        if (!::gameFilesContainer.isInitialized) return
+        gameFilesContainer.removeAllViews()
+        if (indexedGameFiles.isEmpty()) {
+            gameFilesContainer.addView(
+                text("No indexed files yet.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+            return
+        }
+
+        val query = gameFilesSearch.text.toString().trim().lowercase()
+        val matches = indexedGameFiles.asSequence()
+            .filter { query.isEmpty() || it.relativePath.lowercase().contains(query) }
+            .take(60)
+            .toList()
+
+        if (matches.isEmpty()) {
+            gameFilesContainer.addView(
+                text("No matching RR3 files.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+            return
+        }
+
+        for (entry in matches) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(11), dp(10), dp(11), dp(10))
+                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { showGameFileActions(entry) }
+            }
+            gameFilesContainer.addView(row, matchWrap(bottom = 6))
+            row.addView(text(entry.name, 13, Color.WHITE, bold = true), matchWrap())
+            val size = if (entry.sizeBytes >= 0) " · ${entry.sizeBytes} bytes" else ""
+            row.addView(
+                text(entry.relativePath + size, 11, 0xFF8FA4BA.toInt()),
+                matchWrap(top = 3)
+            )
+        }
+
+        val totalMatches = indexedGameFiles.count {
+            query.isEmpty() || it.relativePath.lowercase().contains(query)
+        }
+        if (totalMatches > matches.size) {
+            gameFilesContainer.addView(
+                text("Showing ${matches.size} of $totalMatches matches. Refine the search to narrow the list.", 11, 0xFF7F93A9.toInt()),
+                matchWrap(top = 4)
+            )
+        }
+    }
+
+    private fun showGameFileActions(entry: GameDataFile) {
+        val actions = arrayListOf("Export original file")
+        val lower = entry.name.lowercase()
+        val effectiveName = lower.removeSuffix(".z").removeSuffix(".bin")
+        val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
+        if (isWrapped) actions.add("Unwrap RR3 container and export")
+        if (effectiveName.endsWith(".nct") || effectiveName.endsWith(".gui") ||
+            effectiveName.endsWith(".xml") || effectiveName.endsWith(".bin")) {
+            actions.add("Decode / encode RR3 data")
+        }
+        if (effectiveName == "gametext.txt" ||
+            (effectiveName.startsWith("text_") && effectiveName.endsWith(".txt"))) {
+            actions.add("Decode / encode RR3 game text")
+        }
+        val extension = effectiveName.substringAfterLast('.', "").lowercase()
+        if (extension in setOf("sounddef", "evt", "tbl", "table", "txt")) {
+            actions.add("Open in RR3 text data editor")
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(entry.name)
+            .setItems(actions.toTypedArray()) { _, which ->
+                when (actions[which]) {
+                    "Export original file" -> exportGameFile(entry, unwrapOnly = false)
+                    "Unwrap RR3 container and export" -> exportGameFile(entry, unwrapOnly = true)
+                    "Decode / encode RR3 data" -> decodeGameDataFile(entry)
+                    "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
+                    "Open in RR3 text data editor" -> editGameDataFile(entry)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun readGameFile(entry: GameDataFile): ByteArray {
+        val input = contentResolver.openInputStream(entry.uri)
+            ?: throw IllegalStateException("Could not open ${entry.relativePath}.")
+        return input.use { it.readBytes() }
+    }
+
+    private fun unwrappedGameFile(entry: GameDataFile, source: ByteArray): Pair<String, ByteArray> {
+        val lower = entry.name.lowercase()
+        if (!lower.endsWith(".z") && !lower.endsWith(".bin")) {
+            return entry.name to source
+        }
+        val output = NativeBridge.nativeUnwrapRr3Asset(entry.name, source)
+            ?: throw IllegalStateException("The RR3 .z/.bin container could not be unpacked.")
+        val name = entry.name.removeSuffixIgnoreCaseLocal(".bin")
+            .removeSuffixIgnoreCaseLocal(".z")
+        return name to output
+    }
+
+    private fun exportGameFile(entry: GameDataFile, unwrapOnly: Boolean) {
+        gameFilesStatus.text = "Reading ${entry.relativePath}…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (name, bytes) = if (unwrapOnly) unwrappedGameFile(entry, source) else entry.name to source
+                pendingTransformedData = bytes
+                pendingTransformedName = name
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                runOnUiThread {
+                    gameFilesStatus.text = "Ready to export ${bytes.size} bytes."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Could not read the selected RR3 file."
+                }
+            }
+        }.start()
+    }
+
+    private fun decodeGameDataFile(entry: GameDataFile) {
+        gameFilesStatus.text = "Decoding ${entry.relativePath}…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (name, unpacked) = unwrappedGameFile(entry, source)
+                val extension = name.substringAfterLast('.', "").lowercase()
+                val output = when (extension) {
+                    "gui" -> {
+                        val plain = unpacked.size >= 5 &&
+                            unpacked.copyOfRange(0, 5).toString(Charsets.US_ASCII) == "<?xml"
+                        if (plain) unpacked else NativeBridge.nativeTransformRr3Data(unpacked)
+                            ?: throw IllegalStateException("The RR3 GUI transform failed.")
+                    }
+                    "xml" -> NativeBridge.nativeTransformRr3Data(unpacked)
+                        ?: throw IllegalStateException("The RR3 XML transform failed.")
+                    "nct", "bin" -> NativeBridge.nativeTransformRr3Data(unpacked)
+                        ?: throw IllegalStateException("The RR3 data transform failed.")
+                    else -> unpacked
+                }
+                val outputName = when (extension) {
+                    "gui" -> name.substringBeforeLast('.', name) + ".xml"
+                    "xml" -> name.substringBeforeLast('.', name) + ".gui"
+                    "nct" -> name.substringBeforeLast('.', name)
+                    else -> name
+                }
+                pendingTransformedData = output
+                pendingTransformedName = outputName
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                runOnUiThread {
+                    gameFilesStatus.text = "Decoded ${output.size} bytes. Choose an output file."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { gameFilesStatus.text = e.message ?: "RR3 data decoding failed." }
+            }
+        }.start()
+    }
+
+    private fun decodeGameTextFile(entry: GameDataFile) {
+        gameFilesStatus.text = "Reading RR3 game text…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (name, unpacked) = unwrappedGameFile(entry, source)
+                val alreadyPlain = NativeBridge.nativeRr3TextIsPlain(unpacked)
+                val output = if (alreadyPlain) unpacked else
+                    NativeBridge.nativeTransformRr3Text(unpacked)
+                        ?: throw IllegalStateException("The RR3 game-text transform failed.")
+                pendingTransformedData = output
+                pendingTransformedName = name
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                runOnUiThread {
+                    gameFilesStatus.text = "Decoded ${output.size} bytes. Choose an output file."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { gameFilesStatus.text = e.message ?: "RR3 game-text decoding failed." }
+            }
+        }.start()
+    }
+
+    private fun editGameDataFile(entry: GameDataFile) {
+        gameFilesStatus.text = "Opening ${entry.relativePath}…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (name, bytes) = unwrappedGameFile(entry, source)
+                val editable = NativeBridge.nativeOpenDataAsText(name, bytes)
+                    ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                runOnUiThread {
+                    gameFilesStatus.text = "Opened ${entry.relativePath}."
+                    showEditableDataDialog(name, bytes, editable)
+                }
+            } catch (e: Exception) {
+                runOnUiThread { gameFilesStatus.text = e.message ?: "Could not open this RR3 data file." }
+            }
+        }.start()
+    }
+
+    private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
+        if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
+
     private fun chooseEditableDataFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -373,6 +641,7 @@ class MainActivity : Activity() {
                         pendingTransformedData = output
                         pendingTransformedName = name
                         pendingOutputForDataEditor = true
+                        pendingOutputForBrowser = false
                         runOnUiThread {
                             dialog.dismiss()
                             dataEditorStatus.text =
@@ -451,6 +720,7 @@ class MainActivity : Activity() {
                 val baseName = name.substringBeforeLast('.', name)
                 pendingTransformedData = transformed
                 pendingOutputForDataEditor = false
+                pendingOutputForBrowser = false
                 pendingTransformedName = when (extension) {
                     "nct" -> baseName
                     "bin" -> baseName + ".nct"
@@ -495,6 +765,7 @@ class MainActivity : Activity() {
                 }
                 pendingTransformedData = output
                 pendingOutputForDataEditor = false
+                pendingOutputForBrowser = false
                 pendingTransformedName = name
                 runOnUiThread {
                     dataStatus.text = (if (encode) "Encoded " else "Decoded ") +
@@ -519,7 +790,7 @@ class MainActivity : Activity() {
     private fun writeTransformedRr3File(uri: Uri) {
         val bytes = pendingTransformedData
         if (bytes == null) {
-            dataStatus.text = "There is no transformed data waiting to be saved."
+            setPendingOutputStatus("There is no transformed data waiting to be saved.")
             return
         }
         setPendingOutputStatus("Writing output file…")
@@ -532,6 +803,7 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     setPendingOutputStatus("Saved " + bytes.size + " bytes.")
                     pendingOutputForDataEditor = false
+                    pendingOutputForBrowser = false
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -542,7 +814,9 @@ class MainActivity : Activity() {
     }
 
     private fun setPendingOutputStatus(message: String) {
-        if (pendingOutputForDataEditor && ::dataEditorStatus.isInitialized) {
+        if (pendingOutputForBrowser && ::gameFilesStatus.isInitialized) {
+            gameFilesStatus.text = message
+        } else if (pendingOutputForDataEditor && ::dataEditorStatus.isInitialized) {
             dataEditorStatus.text = message
         } else if (::dataStatus.isInitialized) {
             dataStatus.text = message
