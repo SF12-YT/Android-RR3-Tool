@@ -345,7 +345,7 @@ bool rr3CarSet(Rr3Car& car, const std::string& key, const std::string& value, st
         std::vector<float> ratios;
         const char* cursor = value.c_str();
         auto skipSpace = [&]() {
-            while (*cursor == ' ' || *cursor == '\\t' || *cursor == '\\r' || *cursor == '\\n') ++cursor;
+            while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
         };
         skipSpace();
         if (!*cursor) {
@@ -384,14 +384,14 @@ bool rr3CarSet(Rr3Car& car, const std::string& key, const std::string& value, st
 
     if (key == "gears") {
         const char* cursor = value.c_str();
-        while (*cursor == ' ' || *cursor == '\\t' || *cursor == '\\r' || *cursor == '\\n') ++cursor;
+        while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
         char* end = nullptr;
         const unsigned long requested = std::strtoul(cursor, &end, 10);
         if (end == cursor) {
             why = "Gears: a whole number from 1 to 12";
             return false;
         }
-        while (*end == ' ' || *end == '\\t' || *end == '\\r' || *end == '\\n') ++end;
+        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
         if (*end || requested < 1 || requested > 12) {
             why = "Gears: enter a whole number from 1 to 12";
             return false;
