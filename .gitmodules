@@ -1,0 +1,3 @@
+[submodule "third_party/Monkey-Tool"]
+	path = third_party/Monkey-Tool
+	url = https://github.com/zimex25/Monkey-Tool.git
