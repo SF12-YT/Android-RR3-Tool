@@ -156,7 +156,11 @@ internal object GameDataBrowser {
             for (child in orderedFolders) {
                 val path = if (folder.path.isEmpty()) child.name else folder.path + "/" + child.name
                 if (child.name.equals(".depot", ignoreCase = true)) {
-                    return Folder(child.documentId, "", 0)
+                    val parentName = folder.path.substringAfterLast('/')
+                    if (folder.path.isEmpty() || parentName.equals("files", ignoreCase = true)) {
+                        return Folder(child.documentId, "", 0)
+                    }
+                    continue
                 }
                 if (folder.depth < MAX_DEPOT_DEPTH) {
                     queue.add(Folder(child.documentId, path, folder.depth + 1))
