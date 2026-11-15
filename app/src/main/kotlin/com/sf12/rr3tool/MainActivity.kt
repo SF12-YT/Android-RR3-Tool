@@ -788,6 +788,28 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun locateGameDataWithoutRoot() {
+        gameFilesStatus.text =
+            "Choose Android/data or an EA RR3 package folder. The app checks com.ea.games.r3_row, com.ea.games.r3_na and com.ea.games.r3_cn for files/.depot. Android may restrict Android/data access on newer versions."
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+            val initial = DocumentsContract.buildTreeDocumentUri(
+                "com.android.externalstorage.documents",
+                "primary:Android/data"
+            )
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial)
+        }
+        try {
+            startActivityForResult(intent, requestGameData)
+        } catch (e: Exception) {
+            gameFilesStatus.text =
+                e.message ?: "The Android folder picker is unavailable. Choose files/.depot manually."
+        }
+    }
+
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
         gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
