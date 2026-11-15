@@ -843,8 +843,8 @@ class MainActivity : Activity() {
 
                 val checks = candidatePaths.joinToString("; ") { candidate ->
                     "if [ -d ${shellQuote(candidate)} ]; then " +
-                        "first_file=${' ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
-                        "if [ -n \"${'; then " +
+                        "first_file=\$(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
+                        "if [ -n \"\$first_file\" ]; then " +
                         "printf '%s\\n' ${shellQuote(candidate)}; exit 0; fi; fi"
                 }
                 val found = runRootCommand("$checks; exit 0")
