@@ -1493,12 +1493,16 @@ class MainActivity : Activity() {
     }
 
     private fun openEditableDataFile(uri: Uri) {
+        closeDataEditorAction?.invoke()
         dataEditorStatus.text = "Reading data file…"
         Thread {
             val careerFile = newCacheFile("rr3-career-source")
             val careerTextFile = newCacheFile("rr3-career-edit", ".txt")
+            val plainTextFile = newCacheFile("rr3-plain-text-source", ".txt")
             var careerFilesHandedToEditor = false
             var careerPager: CareerTextPager? = null
+            var plainTextHandedToEditor = false
+            var plainTextPager: PlainTextPager? = null
             try {
                 val name = displayName(uri)
                 val lowerName = name.lowercase(Locale.ROOT)
@@ -1540,6 +1544,34 @@ class MainActivity : Activity() {
                 }
 
                 val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                if (extension == "txt") {
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Could not open the selected text file.")
+                    input.use { source ->
+                        FileOutputStream(plainTextFile).use { destination ->
+                            source.copyTo(destination, 256 * 1024)
+                        }
+                    }
+
+                    val isGameText = lowerName == "gametext.txt" ||
+                        (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
+                    if (isGameText && !NativeBridge.nativeRr3TextIsPlain(plainTextFile.readBytes())) {
+                        throw IllegalArgumentException(
+                            "This RR3 game-text file is still encoded. Decode it in the Transform tab first, then open the decoded .txt file here."
+                        )
+                    }
+
+                    val pager = PlainTextPager(plainTextFile)
+                    plainTextPager = pager
+                    val firstPage = pager.readNextPage() ?: ""
+                    plainTextHandedToEditor = true
+                    runOnUiThread {
+                        dataEditorStatus.text = "Opened $name as a continuous, section-loaded text file."
+                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage)
+                    }
+                    return@Thread
+                }
+
                 if (extension == "nct" || extension == "gui") {
                     throw IllegalArgumentException("Use the RR3 Data Transform section for this .nct or .gui file.")
                 }
@@ -1564,6 +1596,10 @@ class MainActivity : Activity() {
                     careerPager?.close()
                     careerFile.delete()
                     careerTextFile.delete()
+                }
+                if (!plainTextHandedToEditor) {
+                    plainTextPager?.close()
+                    plainTextFile.delete()
                 }
             }
         }.start()
