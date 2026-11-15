@@ -1,26 +1,197 @@
 #include <jni.h>
 
+#include <cstdint>
+#include <sstream>
 #include <string>
 
 #include "nfsnl.h"
 #include "nfsnl_save.h"
 
+namespace {
+
+std::string fromJava(JNIEnv* env, jstring value) {
+    if (!value) return {};
+    const char* chars = env->GetStringUTFChars(value, nullptr);
+    if (!chars) return {};
+    std::string result(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return result;
+}
+
+jstring toJava(JNIEnv* env, const std::string& value) {
+    return env->NewStringUTF(value.c_str());
+}
+
+std::string jsonString(const std::string& value) {
+    std::ostringstream out;
+    out << '"';
+    for (unsigned char c : value) {
+        switch (c) {
+            case '"': out << "\\\""; break;
+            case '\\': out << "\\\\"; break;
+            case '\b': out << "\\b"; break;
+            case '\f': out << "\\f"; break;
+            case '\n': out << "\\n"; break;
+            case '\r': out << "\\r"; break;
+            case '\t': out << "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    const char* hex = "0123456789abcdef";
+                    out << "\\u00" << hex[(c >> 4) & 0xf] << hex[c & 0xf];
+                } else {
+                    out << static_cast<char>(c);
+                }
+        }
+    }
+    out << '"';
+    return out.str();
+}
+
+std::string errorJson(const std::string& error) {
+    return std::string("{\"ok\":false,\"error\":") + jsonString(error) + "}";
+}
+
+std::string okJson() {
+    return "{\"ok\":true,\"error\":\"\"}";
+}
+
+std::string stampNow() {
+    // The save core uses this only as a backup-folder suffix.
+    return "android";
+}
+
+} // namespace
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeStatus(JNIEnv* env, jobject /* thiz */) {
     std::string rr3Profile = "not found";
     for (const auto& profile : nfsnl::gameProfiles()) {
-        std::string name = profile.name;
-        if (name.find("Real Racing 3") != std::string::npos) {
-            rr3Profile = profile.id;
+        if (profile.id == "real_racing_3") {
+            rr3Profile = profile.name;
             break;
         }
     }
 
     const auto hiddenFields = nfsnl::saves::rr3HiddenFields();
     std::string status =
-        "C++17 engine loaded; RR3 profile: " + rr3Profile +
-        "; save calibration fields: " + std::to_string(hiddenFields.size()) +
-        ". Android document access is not connected yet.";
+        "C++17 engine loaded; profile: " + rr3Profile +
+        "; hidden save fields: " + std::to_string(hiddenFields.size()) + ".";
+    return toJava(env, status);
+}
 
-    return env->NewStringUTF(status.c_str());
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Save(
+    JNIEnv* env, jobject /* thiz */, jstring savePath, jstring keysPath) {
+    const std::string path = fromJava(env, savePath);
+    const std::string keyFile = fromJava(env, keysPath);
+    if (path.empty()) return toJava(env, errorJson("Save path is empty."));
+
+    nfsnl::saves::Rr3Save save;
+    std::string error;
+    if (!save.load(path, error)) return toJava(env, errorJson(error));
+
+    const auto keys = nfsnl::saves::loadKeys(keyFile);
+    std::ostringstream out;
+    out << "{\"ok\":true,\"error\":\"\",\"fields\":[";
+
+    bool first = true;
+    for (size_t index : save.sortedRoot()) {
+        if (index >= save.root.size()) continue;
+        const auto& record = save.root[index];
+        if (!first) out << ',';
+        first = false;
+        out << "{\"name\":" << jsonString(record.name)
+            << ",\"value\":" << jsonString(record.valueString())
+            << ",\"editable\":" << (record.editable() ? "true" : "false")
+            << ",\"type\":" << record.type() << '}';
+    }
+
+    out << "],\"hidden\":[";
+    const auto& hiddenFields = nfsnl::saves::rr3HiddenFields();
+    for (size_t i = 0; i < hiddenFields.size(); ++i) {
+        const auto& hidden = hiddenFields[i];
+        uint64_t value = 0;
+        const bool calibrated = save.hiddenGet(hidden, keys, value);
+        if (i) out << ',';
+        out << "{\"label\":" << jsonString(hidden.label)
+            << ",\"field\":" << jsonString(hidden.field)
+            << ",\"keyName\":" << jsonString(hidden.keyName)
+            << ",\"wide\":" << (hidden.wide ? "true" : "false")
+            << ",\"calibrated\":" << (calibrated ? "true" : "false")
+            << ",\"value\":";
+        if (calibrated) out << jsonString(std::to_string(value));
+        else out << "null";
+        out << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeCalibrateRr3Save(
+    JNIEnv* env, jobject /* thiz */, jstring savePath, jstring keysPath,
+    jint hiddenIndex, jstring displayedValue) {
+    const std::string path = fromJava(env, savePath);
+    const std::string keyFile = fromJava(env, keysPath);
+    const std::string shownText = fromJava(env, displayedValue);
+
+    const auto& hiddenFields = nfsnl::saves::rr3HiddenFields();
+    if (hiddenIndex < 0 || static_cast<size_t>(hiddenIndex) >= hiddenFields.size())
+        return toJava(env, errorJson("Unknown hidden field."));
+
+    uint64_t shown = 0;
+    std::string error;
+    if (!nfsnl::saves::rr3ParseNum(shownText, shown, error))
+        return toJava(env, errorJson(error));
+
+    nfsnl::saves::Rr3Save save;
+    if (!save.load(path, error)) return toJava(env, errorJson(error));
+
+    auto keys = nfsnl::saves::loadKeys(keyFile);
+    if (!save.calibrate(hiddenFields[static_cast<size_t>(hiddenIndex)], keys, shown, error))
+        return toJava(env, errorJson(error));
+    if (!nfsnl::saves::saveKeys(keyFile, keys))
+        return toJava(env, errorJson("Could not save calibration keys."));
+    return toJava(env, okJson());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3SaveField(
+    JNIEnv* env, jobject /* thiz */, jstring savePath, jstring keysPath,
+    jstring fieldName, jstring valueText) {
+    const std::string path = fromJava(env, savePath);
+    const std::string keyFile = fromJava(env, keysPath);
+    const std::string name = fromJava(env, fieldName);
+    const std::string value = fromJava(env, valueText);
+
+    nfsnl::saves::Rr3Save save;
+    std::string error;
+    if (!save.load(path, error)) return toJava(env, errorJson(error));
+
+    const auto& hiddenFields = nfsnl::saves::rr3HiddenFields();
+    auto keys = nfsnl::saves::loadKeys(keyFile);
+    bool handled = false;
+    for (const auto& hidden : hiddenFields) {
+        if (name != hidden.field) continue;
+        uint64_t parsed = 0;
+        if (!nfsnl::saves::rr3ParseNum(value, parsed, error))
+            return toJava(env, errorJson(error));
+        if (!save.hiddenSet(hidden, keys, parsed, error))
+            return toJava(env, errorJson(error));
+        handled = true;
+        break;
+    }
+
+    if (!handled) {
+        nfsnl::saves::Rr3Rec* record = save.find(name);
+        if (!record) return toJava(env, errorJson("Field not found in this save."));
+        if (!record->setFromString(value, error))
+            return toJava(env, errorJson(error));
+    }
+
+    std::string backupDir;
+    if (!save.save(stampNow(), backupDir, error))
+        return toJava(env, errorJson(error));
+    return toJava(env, std::string("{\"ok\":true,\"error\":\"\",\"backup\":") +
+                         jsonString(backupDir) + "}");
 }
