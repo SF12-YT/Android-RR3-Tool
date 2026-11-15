@@ -42,12 +42,13 @@ class MainActivity : Activity() {
      * turned into EditTexts. Any sections the user never scrolls to are copied
      * straight from the source file when building the output.
      */
-    private class CareerTextPager(file: File, private val pageSize: Int = 70) : Closeable {
-        private val reader: BufferedReader = file.bufferedReader(Charsets.UTF_8)
+    private class CareerTextPager(private val sourceFile: File, private val pageSize: Int = 70) : Closeable {
+        private val reader: BufferedReader = sourceFile.bufferedReader(Charsets.UTF_8)
         private val header = StringBuilder()
         private var pendingLine: String? = null
         private var reachedEof = false
         private val counts = mutableMapOf<String, Int>()
+        private var loadedRowCount = 0
 
         init {
             while (true) {
@@ -81,6 +82,7 @@ class MainActivity : Activity() {
                 rows.add(next)
             }
 
+            loadedRowCount += rows.size
             val priorCount = counts[type] ?: 0
             counts[type] = priorCount + rows.size
             val firstIndex = if (type == "EVENT") priorCount + 1
@@ -131,19 +133,22 @@ class MainActivity : Activity() {
                     }
                 }
 
-                pendingLine?.let {
-                    writer.write(it)
-                    writer.newLine()
-                    pendingLine = null
-                }
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    if (line.isNotBlank()) {
-                        writer.write(line)
-                        writer.newLine()
+                // Use a fresh reader for the untouched tail. Keeping the
+                // scrolling reader intact means a failed validation can be
+                // corrected and rebuilt without reopening the source file.
+                sourceFile.bufferedReader(Charsets.UTF_8).use { sourceReader ->
+                    var skippedRows = 0
+                    while (true) {
+                        val line = sourceReader.readLine() ?: break
+                        if (line.isBlank() || line.startsWith("#")) continue
+                        if (skippedRows < loadedRowCount) {
+                            skippedRows++
+                        } else {
+                            writer.write(line)
+                            writer.newLine()
+                        }
                     }
                 }
-                reachedEof = true
             }
         }
 
