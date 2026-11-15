@@ -337,3 +337,32 @@ Java_com_sf12_rr3tool_NativeBridge_nativeGetDataEditError(
     JNIEnv* env, jobject /* thiz */) {
     return toJava(env, gDataEditError.empty() ? "The data operation failed." : gDataEditError);
 }
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUnwrapRr3Asset(
+    JNIEnv* env, jobject /* thiz */, jstring fileName, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+
+    const std::string name = fromJava(env, fileName);
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bytes output;
+    std::string innerName;
+    if (!nfsnl::rr3Unwrap(name, source.data(), source.size(), output, &innerName, nullptr))
+        return nullptr;
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(output.size()),
+        reinterpret_cast<const jbyte*>(output.data()));
+    return result;
+}
+
