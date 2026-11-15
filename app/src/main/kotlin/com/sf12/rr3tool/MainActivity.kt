@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var gameFilesSearch: EditText
     private lateinit var gameFilesContainer: LinearLayout
     private lateinit var indexGameFilesButton: TextView
+    private lateinit var locateRootGameDataButton: TextView
     private var indexedGameFiles: List<GameDataFile> = emptyList()
     private lateinit var saveFolderValue: TextView
     private lateinit var rootSaveValue: TextView
@@ -131,6 +132,8 @@ class MainActivity : Activity() {
             0xFF9BAFC5.toInt()
         )
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
+        locateRootGameDataButton = actionButton("Locate private RR3 .depot with root") { locateRootGameDataFolder() }
+        gameCard.addView(locateRootGameDataButton, matchWrap(top = 8))
         indexGameFilesButton = actionButton("Index and browse RR3 files") { indexGameDataFiles() }
         gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
         gameFilesSearch = editBox("Search RR3 file names and paths", "", numeric = false)
@@ -285,6 +288,10 @@ class MainActivity : Activity() {
         )
 
         restoreSelection(gameDataValue, "game_data_tree")
+        val savedRootGameData = preferences.getString("game_data_root_dir", null)
+        if (!savedRootGameData.isNullOrBlank()) {
+            gameDataValue.text = "Root folder: $savedRootGameData"
+        }
         restoreSelection(saveFolderValue, "save_tree")
         restoreRootSaveSelection()
         updateEngineStatus()
@@ -293,9 +300,10 @@ class MainActivity : Activity() {
 
 
     private fun indexGameDataFiles() {
+        val rootPath = preferences.getString("game_data_root_dir", null)
         val stored = preferences.getString("game_data_tree", null)
-        if (stored.isNullOrBlank()) {
-            gameFilesStatus.text = "Choose the RR3 files/.depot folder first."
+        if (rootPath.isNullOrBlank() && stored.isNullOrBlank()) {
+            gameFilesStatus.text = "Choose the RR3 files/.depot folder or locate it with root."
             return
         }
 
@@ -304,7 +312,12 @@ class MainActivity : Activity() {
         gameFilesContainer.removeAllViews()
         Thread {
             try {
-                val files = GameDataBrowser.scan(contentResolver, Uri.parse(stored))
+                val files = if (!rootPath.isNullOrBlank()) {
+                    val listing = runRootCommand("find ${shellQuote(rootPath)} -type f -print")
+                    GameDataBrowser.fromRootListing(rootPath, listing)
+                } else {
+                    GameDataBrowser.scan(contentResolver, Uri.parse(stored!!))
+                }
                 runOnUiThread {
                     indexedGameFiles = files
                     gameFilesSearch.setText("")
@@ -318,6 +331,52 @@ class MainActivity : Activity() {
                     gameFilesStatus.text = e.message ?: "Could not index the RR3 game-data folder."
                     indexGameFilesButton.isEnabled = true
                 }
+            }
+        }.start()
+    }
+
+    private fun locateRootGameDataFolder() {
+        locateRootGameDataButton.isEnabled = false
+        gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
+        Thread {
+            try {
+                val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
+                if (uid != "0") throw IllegalStateException("Superuser access was not granted.")
+
+                val saveRoot = preferences.getString("save_root_dir", null)
+                val inferred = saveRoot?.substringBeforeLast('/')?.let { "$it/.depot" }
+                val candidates = (listOfNotNull(inferred) + listOf(
+                    "/data/user/0/com.ea.games.r3_row/files/.depot",
+                    "/data/data/com.ea.games.r3_row/files/.depot",
+                    "/data/user/0/com.ea.games.r3_na/files/.depot",
+                    "/data/data/com.ea.games.r3_na/files/.depot",
+                    "/data/user/0/com.ea.games.r3_cn/files/.depot",
+                    "/data/data/com.ea.games.r3_cn/files/.depot",
+                    "/storage/emulated/0/Android/data/com.ea.games.r3_row/files/.depot",
+                    "/storage/emulated/0/Android/data/com.ea.games.r3_na/files/.depot"
+                )).distinct()
+                val found = candidates.firstOrNull { candidate ->
+                    runRootCommand("if [ -d ${shellQuote(candidate)} ]; then printf yes; fi") == "yes"
+                } ?: throw IllegalStateException(
+                    "Root access works, but no standard RR3 .depot folder was found. Check the installed game package."
+                )
+
+                preferences.edit()
+                    .putString("game_data_root_dir", found)
+                    .remove("game_data_tree")
+                    .apply()
+                runOnUiThread {
+                    gameDataValue.text = "Root folder: $found"
+                    indexedGameFiles = emptyList()
+                    gameFilesContainer.removeAllViews()
+                    gameFilesStatus.text = "RR3 .depot located. Tap Index and browse RR3 files."
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Could not locate the RR3 .depot folder with root."
+                }
+            } finally {
+                runOnUiThread { locateRootGameDataButton.isEnabled = true }
             }
         }.start()
     }
@@ -415,7 +474,20 @@ class MainActivity : Activity() {
     }
 
     private fun readGameFile(entry: GameDataFile): ByteArray {
-        val input = contentResolver.openInputStream(entry.uri)
+        val rootPath = entry.rootPath
+        if (!rootPath.isNullOrBlank()) {
+            val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(rootPath)}").start()
+            val bytes = process.inputStream.use { it.readBytes() }
+            val error = process.errorStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                throw IllegalStateException(error.trim().ifBlank { "Could not read ${entry.relativePath} with root." })
+            }
+            return bytes
+        }
+
+        val uri = entry.uri ?: throw IllegalStateException("No readable location was stored for ${entry.relativePath}.")
+        val input = contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Could not open ${entry.relativePath}.")
         return input.use { it.readBytes() }
     }
@@ -1088,7 +1160,7 @@ class MainActivity : Activity() {
 
         when (requestCode) {
             requestGameData -> {
-                preferences.edit().putString("game_data_tree", uri.toString()).apply()
+                preferences.edit().putString("game_data_tree", uri.toString()).remove("game_data_root_dir").apply()
                 gameDataValue.text = displayFolder(uri)
                 indexedGameFiles = emptyList()
                 gameFilesSearch.setText("")
