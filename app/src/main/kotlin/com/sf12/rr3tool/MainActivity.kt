@@ -17,6 +17,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -35,26 +36,6 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity() {
-    /**
-     * Keep EditText's child-disallow request from disabling this nested scroll
-     * viewport, while forwarding it to the outer page so that the page itself
-     * does not steal vertical editor gestures.
-     */
-    private class PagedEditorScrollView(context: android.content.Context) : ScrollView(context) {
-        override fun requestDisallowInterceptTouchEvent(disallowIntercept: Boolean) {
-            parent?.requestDisallowInterceptTouchEvent(disallowIntercept)
-        }
-
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            val handled = super.dispatchTouchEvent(event)
-            if (event.actionMasked == MotionEvent.ACTION_UP ||
-                event.actionMasked == MotionEvent.ACTION_CANCEL
-            ) {
-                parent?.requestDisallowInterceptTouchEvent(false)
-            }
-            return handled
-        }
-    }
     private data class CareerTextPage(val label: String, val text: String)
 
     /**
@@ -441,22 +422,20 @@ class MainActivity : Activity() {
         )
         gameDataValue = text("No folder selected", 12, 0xFFB7C8D9.toInt())
         gameCard.addView(gameDataValue, matchWrap(top = 12))
+        locateRootGameDataButton = actionButton("Auto-detect installed RR3 .depot") {
+            locateRootGameDataFolder()
+        }
+        gameCard.addView(locateRootGameDataButton, matchWrap(top = 12))
         gameCard.addView(
-            actionButton("Choose accessible RR3 data folder") { locateGameDataWithoutRoot() },
-            matchWrap(top = 12)
-        )
-        gameCard.addView(
-            actionButton("Choose game-data folder manually") { chooseFolder(requestGameData) },
+            actionButton("Choose copied RR3 folder manually") { chooseFolder(requestGameData) },
             matchWrap(top = 8)
         )
         gameFilesStatus = text(
-            "Choose a folder containing a copied RR3 files/.depot tree, or use the root scan for the installed game data.",
+            "Auto-detect checks the installed RR3 package folders for a populated files/.depot directory.",
             12,
             0xFF9BAFC5.toInt()
         )
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
-        locateRootGameDataButton = actionButton("Locate private RR3 .depot with root") { locateRootGameDataFolder() }
-        gameCard.addView(locateRootGameDataButton, matchWrap(top = 8))
         indexGameFilesButton = actionButton("Index and browse RR3 files") { indexGameDataFiles() }
         gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
         gameFilesSearch = editBox("Search RR3 file names and paths", "", numeric = false)
@@ -833,76 +812,66 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun locateGameDataWithoutRoot() {
-        val previouslyGranted = preferences.getString("game_data_tree", null)
-        if (!previouslyGranted.isNullOrBlank()) {
-            gameFilesStatus.text = "Rechecking the previously granted folder for a populated RR3 .depot…"
-            indexGameDataFiles()
-            return
-        }
-
-        gameFilesStatus.text =
-            "On Android 11+, the system picker blocks Android/data and its subfolders. Select an accessible folder containing a copied RR3 files/.depot tree, or use root detection for the installed game."
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-        }
-        try {
-            startActivityForResult(intent, requestGameData)
-        } catch (e: Exception) {
-            gameFilesStatus.text =
-                e.message ?: "The Android folder picker is unavailable. Choose files/.depot manually."
-        }
-    }
-
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
-        gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
+        gameFilesStatus.text = "Checking the known RR3 package folders for files/.depot…"
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
-                if (uid != "0") throw IllegalStateException("Superuser access was not granted.")
+                if (uid != "0") {
+                    throw IllegalStateException("Automatic Android/data detection needs Superuser access on this Android version.")
+                }
 
-                val saveRoot = preferences.getString("save_root_dir", null)
-                val inferred = saveRoot?.substringBeforeLast('/')?.let { "$it/.depot" }
-                val discovered = runRootCommand(
-                    "find /data/user/0 /storage/emulated/0/Android/data " +
-                        "-type d -name .depot -print 2>/dev/null"
-                ).lineSequence().map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .toList()
-                val candidates = (listOfNotNull(inferred) + discovered).distinct()
-
-                var selected: String? = null
-                var bestFileCount = 0
-                for (candidate in candidates) {
-                    val count = runRootCommand(
-                        "find ${shellQuote(candidate)} -type f 2>/dev/null | head -n 100 | wc -l"
-                    ).trim().toIntOrNull() ?: 0
-                    if (count > bestFileCount) {
-                        bestFileCount = count
-                        selected = candidate
+                // RR3 uses different package IDs by region. Check only the
+                // expected Android/data/<package>/files/.depot locations.
+                // .depot is a dot-hidden directory; supplying its full path
+                // means [ -d ] and find can still see it.
+                val rr3Packages = listOf(
+                    "com.ea.games.r3_row",
+                    "com.ea.games.r3_na",
+                    "com.ea.games.r3_cn"
+                )
+                val storageRoots = listOf(
+                    "/storage/emulated/0/Android/data",
+                    "/data/media/0/Android/data"
+                )
+                val candidatePaths = rr3Packages.flatMap { packageName ->
+                    storageRoots.map { root ->
+                        "$root/$packageName/files/.depot"
                     }
                 }
-                val found = selected ?: throw IllegalStateException(
-                    "Root access works, but no populated .depot directory was found. The scan checks /data/user/0 and Android/data."
-                )
+
+                val checks = candidatePaths.joinToString("; ") { candidate ->
+                    "if [ -d ${shellQuote(candidate)} ]; then " +
+                        "first_file=\${'$'}(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
+                        "if [ -n \"\${'$'}first_file\" ]; then " +
+                        "printf '%s\\n' ${shellQuote(candidate)}; exit 0; fi; fi"
+                }
+                val found = runRootCommand("$checks; exit 0")
+                    .lineSequence()
+                    .map { it.trim() }
+                    .firstOrNull { it.isNotEmpty() }
+                    ?: throw IllegalStateException(
+                        "No populated RR3 files/.depot directory was found in the known package folders: " +
+                            rr3Packages.joinToString(", ") +
+                            ". The scanner checks the hidden .depot directory directly."
+                    )
 
                 preferences.edit()
                     .putString("game_data_root_dir", found)
                     .remove("game_data_tree")
                     .apply()
                 runOnUiThread {
-                    gameDataValue.text = "Root folder: $found"
+                    gameDataValue.text = found
                     indexedGameFiles = emptyList()
                     gameFilesContainer.removeAllViews()
-                    gameFilesStatus.text = "Found a populated .depot ($bestFileCount files checked). Tap Index and browse RR3 files."
+                    gameFilesStatus.text =
+                        "Detected the populated hidden .depot directory. Tap Index and browse RR3 files."
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    gameFilesStatus.text = e.message ?: "Could not locate the RR3 .depot folder with root."
+                    gameFilesStatus.text = e.message
+                        ?: "Could not detect RR3 Android/data files/.depot."
                 }
             } finally {
                 runOnUiThread { locateRootGameDataButton.isEnabled = true }
@@ -1772,6 +1741,61 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * EditText can consume vertical drags for caret movement instead of letting
+     * the editor viewport scroll. Handle quick vertical swipes ourselves. A
+     * long-press is left to EditText so native text selection still works.
+     */
+    private fun attachVerticalSwipeScrolling(editor: EditText, viewport: ScrollView) {
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout()
+        var downX = 0f
+        var downY = 0f
+        var lastY = 0f
+        var downTime = 0L
+        var scrolling = false
+
+        editor.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    lastY = event.y
+                    downTime = event.eventTime
+                    scrolling = false
+                    viewport.requestDisallowInterceptTouchEvent(true)
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = event.x - downX
+                    val deltaY = event.y - downY
+                    val isQuickGesture = event.eventTime - downTime < longPressTimeout
+                    if (!scrolling && isQuickGesture &&
+                        kotlin.math.abs(deltaY) > touchSlop &&
+                        kotlin.math.abs(deltaY) > kotlin.math.abs(deltaX)
+                    ) {
+                        scrolling = true
+                    }
+                    if (scrolling) {
+                        viewport.scrollBy(0, (lastY - event.y).toInt())
+                        lastY = event.y
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> {
+                    val handled = scrolling
+                    scrolling = false
+                    viewport.requestDisallowInterceptTouchEvent(false)
+                    handled
+                }
+                else -> scrolling
+            }
+        }
+    }
+
     private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
@@ -1802,7 +1826,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF0B1725.toInt())
         }
-        val editorScroll = PagedEditorScrollView(this).apply {
+        val editorScroll = ScrollView(this).apply {
             isFillViewport = false
             isSmoothScrollingEnabled = true
             isVerticalScrollBarEnabled = true
@@ -1837,6 +1861,7 @@ class MainActivity : Activity() {
                 minLines = minOf(lineCount, 4)
                 maxLines = 100_000
             }
+            attachVerticalSwipeScrolling(rowEditor, editorScroll)
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
         }
@@ -2052,7 +2077,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF0B1725.toInt())
         }
-        val editorScroll = PagedEditorScrollView(this).apply {
+        val editorScroll = ScrollView(this).apply {
             isFillViewport = false
             isSmoothScrollingEnabled = true
             isVerticalScrollBarEnabled = true
@@ -2087,6 +2112,7 @@ class MainActivity : Activity() {
                 minLines = minOf(lineCount, 4)
                 maxLines = 100_000
             }
+            attachVerticalSwipeScrolling(rowEditor, editorScroll)
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
         }
