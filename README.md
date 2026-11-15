@@ -15,8 +15,9 @@ The current Android foundation includes:
 - The separate RR3 game-text cipher for `gametext.txt` and `text_<language>.txt`.
 - An editable-text data editor for supported RR3 `.sounddef`, `.evt`, table and text files, rebuilt by the upstream C++ serializer.
 - Storage Access Framework file/folder selection, private calibration-key storage, and persistent pre-write save backups.
+- A searchable RR3 `.depot` browser that lists supported non-texture/non-model files, with raw export, RR3 `.z` / frame-container unwrapping, NCT/GUI transforms, game-text decoding, and supported text-data editing.
 
-The remaining RR3 workflows are being ported in stages: game-data browsing, structured car/career editing, and supported mod workflows where they do not depend on the omitted 3D or texture features.
+The remaining RR3 workflows are being ported in stages: structured car/career editing, audio conversion/preview, and supported mod workflows where they do not depend on the omitted 3D or texture features.
 
 ## Engine and keys
 
