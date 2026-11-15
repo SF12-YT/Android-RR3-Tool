@@ -1388,15 +1388,46 @@ class MainActivity : Activity() {
             carEditorStatus.text = "Open a car data file first."
             return
         }
-        carEditorStatus.text = "Rebuilding car data…"
+        // Capture every field on the UI thread before starting the worker.
+        val editedValues = carFieldInputs.mapValues { (_, input) -> input.text.toString() }
+        val changedValues = editedValues.filter { (key, value) ->
+            value != currentCarOriginalFields[key]
+        }
+        if (changedValues.isEmpty()) {
+            carEditorStatus.text = "No changes detected. Edit at least one field before building."
+            return
+        }
+
+        // RR3 stores strings inline in the encrypted record. Changing their
+        // byte length shifts later fields and may move them beyond known NCT
+        // pad bytes, so reject those edits before invoking the native writer.
+        val lengthSensitiveTextFields = setOf(
+            "year", "make", "model", "class", "drivetrain", "aspiration",
+            "layout", "handling", "unlock", "make_key", "name_key"
+        )
+        val resizedTextField = changedValues.keys.firstOrNull { key ->
+            key in lengthSensitiveTextFields &&
+                (currentCarOriginalFields[key] ?: "").toByteArray(Charsets.UTF_8).size !=
+                (editedValues[key] ?: "").toByteArray(Charsets.UTF_8).size
+        }
+        if (resizedTextField != null) {
+            val originalLength = (currentCarOriginalFields[resizedTextField] ?: "")
+                .toByteArray(Charsets.UTF_8).size
+            carEditorStatus.text =
+                "Cannot build: '$resizedTextField' must remain exactly $originalLength UTF-8 byte(s) long to preserve the RR3 .nct layout."
+            return
+        }
+
+        carEditorStatus.text = "Rebuilding " + changedValues.size + " changed field(s)…"
         Thread {
             try {
                 var output = original
-                for ((key, input) in carFieldInputs) {
-                    val value = input.text.toString()
-                    if (value == currentCarOriginalFields[key]) continue
+                for ((key, value) in changedValues) {
                     output = NativeBridge.nativeSetRr3CarField(output, key, value)
                         ?: throw IllegalStateException(NativeBridge.nativeGetRr3CarError())
+                }
+                if (output.contentEquals(original)) {
+                    throw IllegalStateException("The rebuilt data is identical to the original. Check that the edited values are different.")
                 }
                 pendingTransformedFile?.delete()
                 pendingTransformedFile = null
@@ -1406,13 +1437,17 @@ class MainActivity : Activity() {
                 pendingOutputForBrowser = false
                 pendingOutputForCarEditor = true
                 runOnUiThread {
-                    carEditorStatus.text = "Built ${output.size} bytes. Choose a separate output file."
+                    carEditorStatus.text = "Car data rebuilt successfully (" + output.size + " bytes). Choose a separate output file."
                     launchRr3OutputPicker()
                 }
             } catch (e: Exception) {
-                runOnUiThread { carEditorStatus.text = e.message ?: "Could not rebuild this car file." }
+                runOnUiThread {
+                    carEditorStatus.text = e.message ?: "Could not rebuild this car file."
+                }
             } catch (e: OutOfMemoryError) {
-                runOnUiThread { carEditorStatus.text = "Android ran out of memory while rebuilding this car file." }
+                runOnUiThread {
+                    carEditorStatus.text = "Android ran out of memory while rebuilding this car file. The original remains unchanged."
+                }
             }
         }.start()
     }
