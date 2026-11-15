@@ -2039,12 +2039,13 @@ class MainActivity : Activity() {
             building = true
             buildButton?.isEnabled = false
             closeButton?.isEnabled = false
+            val editedPages = pageEditors.map { it.text.toString() }
             loadStatus.text = "Merging edited lines into a new text file…"
             dataEditorStatus.text = "Building " + sourceName + "…"
             Thread {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
                 try {
-                    pager.writeMerged(pageEditors.map { it.text.toString() }, outputFile)
+                    pager.writeMerged(editedPages, outputFile)
                     pendingTransformedData = null
                     pendingTransformedFile?.delete()
                     pendingTransformedFile = outputFile
@@ -2206,11 +2207,12 @@ class MainActivity : Activity() {
         buildButton.setOnClickListener {
             buildButton.isEnabled = false
             closeButton.isEnabled = false
+            val editedText = editor.text.toString()
             status.text = "Rebuilding the RR3 data file…"
             dataEditorStatus.text = "Rebuilding " + name + "…"
             Thread {
                 try {
-                    val output = NativeBridge.nativeBuildEditedData(name, editor.text.toString(), original)
+                    val output = NativeBridge.nativeBuildEditedData(name, editedText, original)
                         ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
                     pendingTransformedFile?.delete()
                     pendingTransformedFile = null
