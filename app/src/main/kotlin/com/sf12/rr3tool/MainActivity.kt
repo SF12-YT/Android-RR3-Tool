@@ -848,11 +848,6 @@ class MainActivity : Activity() {
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-            val initial = DocumentsContract.buildTreeDocumentUri(
-                "com.android.externalstorage.documents",
-                "primary:Android/data"
-            )
-            putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial)
         }
         try {
             startActivityForResult(intent, requestGameData)
