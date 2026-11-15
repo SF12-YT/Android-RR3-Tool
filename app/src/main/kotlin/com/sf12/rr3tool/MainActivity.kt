@@ -821,23 +821,31 @@ class MainActivity : Activity() {
     }
 
     private fun loadRr3Save() {
+        val rootDir = preferences.getString("save_root_dir", null)
         val stored = preferences.getString("save_tree", null)
-        if (stored.isNullOrBlank()) {
-            saveStatus.text = "Choose the save folder first."
+        if (rootDir.isNullOrBlank() && stored.isNullOrBlank()) {
+            saveStatus.text = "Choose a save folder or locate the private RR3 folder with root."
             return
         }
 
         saveStatus.text = "Reading RR3 save…"
         loadSaveButton.isEnabled = false
         runBackground {
-            val treeUri = Uri.parse(stored)
             stageDir.mkdirs()
-            val saveUri = findChildDocument(treeUri, "character.2.dat")
-                ?: throw IllegalStateException("character.2.dat was not found in the selected folder.")
-            copyUriToFile(saveUri, stagedSave)
+            if (!rootDir.isNullOrBlank()) {
+                copyFromRootPath("$rootDir/character.2.dat", stagedSave)
+                val tempPath = "$rootDir/TempSaveGame.dat"
+                if (rootFileExists(tempPath)) copyFromRootPath(tempPath, stagedTempSave)
+                else stagedTempSave.delete()
+            } else {
+                val treeUri = Uri.parse(stored!!)
+                val saveUri = findChildDocument(treeUri, "character.2.dat")
+                    ?: throw IllegalStateException("character.2.dat was not found in the selected folder.")
+                copyUriToFile(saveUri, stagedSave)
 
-            val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
-            if (tempUri != null) copyUriToFile(tempUri, stagedTempSave) else stagedTempSave.delete()
+                val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
+                if (tempUri != null) copyUriToFile(tempUri, stagedTempSave) else stagedTempSave.delete()
+            }
 
             val result = NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
             val json = JSONObject(result)
@@ -1056,11 +1064,14 @@ class MainActivity : Activity() {
     }
 
     private fun updateHiddenField(field: String, value: String) {
-        val stored = preferences.getString("save_tree", null) ?: return
+        val rootDir = preferences.getString("save_root_dir", null)
+        val stored = preferences.getString("save_tree", null)
+        if (rootDir.isNullOrBlank() && stored.isNullOrBlank()) return
         saveStatus.text = "Updating save…"
         runBackground {
-            val treeUri = Uri.parse(stored)
-            createPersistentBackups(treeUri)
+            val treeUri = if (rootDir.isNullOrBlank()) Uri.parse(stored!!) else null
+            if (!rootDir.isNullOrBlank()) createPersistentRootBackups(rootDir)
+            else createPersistentBackups(treeUri!!)
 
             val result = JSONObject(
                 NativeBridge.nativeSetRr3SaveField(
@@ -1074,21 +1085,30 @@ class MainActivity : Activity() {
                 throw IllegalStateException(result.optString("error", "Could not update save."))
             }
 
-            val saveUri = findChildDocument(treeUri, "character.2.dat")
-                ?: throw IllegalStateException("The save file disappeared from the selected folder.")
-            copyFileToUri(stagedSave, saveUri)
+            if (!rootDir.isNullOrBlank()) {
+                copyToRootPath(stagedSave, "$rootDir/character.2.dat")
+                if (stagedTempSave.exists()) {
+                    copyToRootPath(stagedTempSave, "$rootDir/TempSaveGame.dat")
+                    copyFromRootPath("$rootDir/TempSaveGame.dat", stagedTempSave)
+                }
+                copyFromRootPath("$rootDir/character.2.dat", stagedSave)
+            } else {
+                val saveUri = findChildDocument(treeUri!!, "character.2.dat")
+                    ?: throw IllegalStateException("The save file disappeared from the selected folder.")
+                copyFileToUri(stagedSave, saveUri)
 
-            if (stagedTempSave.exists()) {
-                val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
-                    ?: throw IllegalStateException("TempSaveGame.dat is missing; the main save was written, but the secondary copy could not be updated.")
-                copyFileToUri(stagedTempSave, tempUri)
+                if (stagedTempSave.exists()) {
+                    val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
+                        ?: throw IllegalStateException("TempSaveGame.dat is missing; the main save was written, but the secondary copy could not be updated.")
+                    copyFileToUri(stagedTempSave, tempUri)
+                }
             }
 
             val inspected = JSONObject(
                 NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
             )
             runOnUiThread {
-                saveStatus.text = "Save written and verified. Original save copies were backed up in the selected folder."
+                saveStatus.text = "Save written and verified. Original save copies were backed up."
                 renderSavePayload(inspected)
             }
         }
