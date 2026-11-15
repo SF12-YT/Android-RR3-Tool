@@ -14,7 +14,7 @@ The current Android foundation includes:
 - Reversible .nct / .gui and .bin / .xml conversion using the upstream embedded RR3 RC4 table and key material.
 - The separate RR3 game-text cipher for `gametext.txt` and `text_<language>.txt`.
 - An editable-text data editor for supported RR3 `.sounddef`, `.evt`, table and text files, rebuilt by the upstream C++ serializer.
-- Storage Access Framework file/folder selection, private calibration-key storage, and persistent pre-write save backups.
+- Storage Access Framework file/folder selection plus optional `su` access to locate and index RR3's private `.depot` folder on rooted devices; private calibration-key storage and persistent pre-write save backups.
 - A searchable RR3 `.depot` browser that lists supported non-texture/non-model files, with raw export, RR3 `.z` / frame-container unwrapping, NCT/GUI transforms, game-text decoding, supported text-data editing, and PCM/float/IMA-ADPCM WEM plus GNSU-to-WAV conversion.
 
 The remaining RR3 workflows are being ported in stages: structured car/career editing, embedded bank splitting, Wwise Vorbis decoding (which needs vgmstream), and supported mod workflows where they do not depend on the omitted 3D or texture features.
