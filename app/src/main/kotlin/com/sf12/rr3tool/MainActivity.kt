@@ -167,6 +167,7 @@ class MainActivity : Activity() {
     private class PlainTextPager(private val sourceFile: File, private val pageSize: Int = 240) : Closeable {
         private val reader: BufferedReader = sourceFile.bufferedReader(Charsets.UTF_8)
         private var loadedLineCount = 0
+        private val pageLineCounts = mutableListOf<Int>()
 
         @Synchronized
         fun readNextPage(): String? {
@@ -179,11 +180,32 @@ class MainActivity : Activity() {
             }
             if (count == 0) return null
             loadedLineCount += count
+            pageLineCounts.add(count)
             return page.toString()
         }
 
         @Synchronized
-        fun writeMerged(pageTexts: List<String>, output: File) {
+        fun writeMerged(
+            pageTexts: List<String>,
+            output: File,
+            preserveLineCount: Boolean = false
+        ) {
+            if (preserveLineCount) {
+                if (pageTexts.size != pageLineCounts.size) {
+                    throw IllegalStateException("The RR3 localisation file has an unexpected number of edited sections.")
+                }
+                for (index in pageTexts.indices) {
+                    val page = pageTexts[index]
+                    val editedLineCount = if (page.isEmpty()) 0
+                        else page.count { it == '\n' } + if (page.endsWith('\n')) 0 else 1
+                    if (editedLineCount != pageLineCounts[index]) {
+                        throw IllegalStateException(
+                            "RR3 game text must keep its original line count. Section " +
+                                (index + 1) + " must contain exactly " + pageLineCounts[index] + " line(s)."
+                        )
+                    }
+                }
+            }
             output.bufferedWriter(Charsets.UTF_8).use { writer ->
                 for (page in pageTexts) {
                     if (page.isEmpty()) continue
@@ -2092,7 +2114,11 @@ class MainActivity : Activity() {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
                 var encodedFile: File? = null
                 try {
-                    pager.writeMerged(editedPages, outputFile)
+                    pager.writeMerged(
+                        editedPages,
+                        outputFile,
+                        preserveLineCount = encodeGameText
+                    )
                     var readyFile = outputFile
                     if (encodeGameText) {
                         val editedBytes = outputFile.readBytes()
