@@ -140,7 +140,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeStatus(JNIEnv* env, jobject /* thiz */)
     std::string status =
         "C++17 engine loaded; profile: " + rr3Profile +
         "; hidden save fields: " + std::to_string(hiddenFields.size()) + ".";
-    status += "; streaming NCT self-test: " +
+    status += std::string("; streaming NCT self-test: ") +
         (android_nct::verifyAgainstUpstream() ? "passed" : "FAILED");
     return toJava(env, status);
 }
@@ -732,18 +732,17 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3CareerFile(
     gRr3CareerError.clear();
     const std::string path = fromJava(env, plainPath);
     nfsnl::Bytes plain;
-    if (path.empty() || !nfsnl::readFile(path, plain) || plain.empty())
-        return toJava(env, errorJson("Could not read the decoded career file from temporary storage."));
-
     nfsnl::Rr3Career career;
     std::string why;
     bool parsed = false;
     try {
+        if (path.empty() || !nfsnl::readFile(path, plain) || plain.empty())
+            return toJava(env, errorJson("Could not read the decoded career file from temporary storage."));
         parsed = nfsnl::rr3CareerRead(plain.data(), plain.size(), career, why);
     } catch (const std::bad_alloc&) {
-        gRr3CareerError = "Not enough native memory to inspect the career database.";
+        gRr3CareerError = "Not enough native memory to load or inspect the career database.";
     } catch (...) {
-        gRr3CareerError = "The career parser failed unexpectedly.";
+        gRr3CareerError = "The career file could not be loaded or parsed safely.";
     }
     if (!parsed) {
         if (gRr3CareerError.empty()) gRr3CareerError = why.empty()
