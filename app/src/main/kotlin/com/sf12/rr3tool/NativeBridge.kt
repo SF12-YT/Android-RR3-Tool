@@ -7,6 +7,8 @@ internal object NativeBridge {
 
     external fun nativeStatus(): String
 
+    external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
+
     external fun nativeInspectRr3Save(savePath: String, keysPath: String): String
 
     external fun nativeCalibrateRr3Save(
