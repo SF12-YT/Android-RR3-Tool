@@ -1770,7 +1770,7 @@ class MainActivity : Activity() {
                 background = rounded(0xFF0B1725.toInt(), 0f)
                 val lineCount = maxOf(1, page.text.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
-                maxLines = lineCount
+                maxLines = 100_000
             }
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
@@ -2020,7 +2020,7 @@ class MainActivity : Activity() {
                 background = rounded(0xFF0B1725.toInt(), 0f)
                 val lineCount = maxOf(1, value.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
-                maxLines = lineCount
+                maxLines = 100_000
             }
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
@@ -2752,8 +2752,9 @@ class MainActivity : Activity() {
                 gameDataValue.text = displayFolder(uri)
                 indexedGameFiles = emptyList()
                 gameFilesSearch.setText("")
-                gameFilesStatus.text = "Folder selected. Index the RR3 .depot files to browse them."
+                gameFilesStatus.text = "Folder selected. Checking known RR3 package names and validating files/.depot…"
                 gameFilesContainer.removeAllViews()
+                indexGameDataFiles()
             }
             requestSaveFolder -> {
                 preferences.edit().putString("save_tree", uri.toString()).remove("save_root_dir").apply()
