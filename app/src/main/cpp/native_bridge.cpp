@@ -16,7 +16,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeStatus(JNIEnv* env, jobject /* thiz */)
         }
     }
 
-    const auto hiddenFields = nfsnl::rr3HiddenFields();
+    const auto hiddenFields = nfsnl::saves::rr3HiddenFields();
     std::string status =
         "C++17 engine loaded; RR3 profile: " + rr3Profile +
         "; save calibration fields: " + std::to_string(hiddenFields.size()) +
