@@ -414,7 +414,7 @@ class MainActivity : Activity() {
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "Grant Android/data access once; the app checks package folders and selects a populated RR3 files/.depot directory automatically.",
+                "On Android 11 and later, Android restricts normal apps from reading another app's Android/data folder. Auto-detect uses root to locate RR3's populated files/.depot directory; without root, choose a copied folder or a folder exposed by a document provider.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -431,7 +431,7 @@ class MainActivity : Activity() {
             matchWrap(top = 8)
         )
         gameFilesStatus = text(
-            "Auto-detect checks the installed RR3 package folders for a populated files/.depot directory.",
+            "Auto-detect checks installed RR3 package variants and known storage locations using root access.",
             12,
             0xFF9BAFC5.toInt()
         )
@@ -814,45 +814,114 @@ class MainActivity : Activity() {
 
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
-        gameFilesStatus.text = "Checking known RR3 package folders for files/.depot…"
+        gameFilesStatus.text = "Requesting root and checking RR3 storage locations…"
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
-                if (uid != "0") throw IllegalStateException("Automatic Android/data detection needs Superuser access on this Android version.")
-                val rr3Packages = listOf(
+                if (uid != "0") {
+                    throw IllegalStateException(
+                        "Root access was not granted. Android 12 blocks normal apps from reading another app's Android/data folder. Grant this app Superuser access, then retry."
+                    )
+                }
+
+                // Keep known RR3 IDs, but also discover installed regional variants
+                // so a package suffix not listed here does not make detection fail.
+                val installedPackages = runCatching {
+                    runRootCommand("pm list packages")
+                }.getOrDefault("")
+                    .lineSequence()
+                    .map { it.trim().removePrefix("package:") }
+                    .filter {
+                        Regex("""com\.ea\.games\.r3_[a-z0-9_]+""").matches(it)
+                    }
+                    .toList()
+
+                val rr3Packages = (installedPackages + listOf(
                     "com.ea.games.r3_row",
                     "com.ea.games.r3_na",
                     "com.ea.games.r3_cn"
-                )
-                val storageRoots = listOf(
-                    "/storage/emulated/0/Android/data",
-                    "/data/media/0/Android/data"
-                )
+                )).distinct()
+
+                // Resolve the Android user/profile from this app's UID rather
+                // than assuming every installation belongs to user 0.
+                val userId = android.os.Process.myUid() / 100000
+                val ownExternalSuffix = "/Android/data/$packageName/files"
+                val ownExternalRoots = getExternalFilesDirs(null)
+                    .filterNotNull()
+                    .mapNotNull { directory ->
+                        val absolutePath = directory.absolutePath
+                        if (absolutePath.endsWith(ownExternalSuffix)) {
+                            absolutePath.removeSuffix(ownExternalSuffix)
+                        } else {
+                            null
+                        }
+                    }
+
+                // /data/media is the backing storage path and can avoid
+                // Android's scoped-storage FUSE view when the caller is root.
+                val storageRoots = linkedSetOf<String>().apply {
+                    add("/data/media/$userId")
+                    addAll(ownExternalRoots)
+                    add("/storage/emulated/$userId")
+                    add("/mnt/user/$userId/primary")
+                }.toList()
+
                 val candidates = rr3Packages.flatMap { packageName ->
-                    storageRoots.map { root -> "$root/$packageName/files/.depot" }
-                }
-                val checks = candidates.joinToString("; ") { candidate ->
-                    "if [ -d ${shellQuote(candidate)} ]; then " +
-                        "first_file=\$(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
+                    storageRoots.map { root ->
+                        "$root/Android/data/$packageName/files/.depot"
+                    }
+                }.distinct()
+
+                val checks = candidates.joinToString("\n") { candidate ->
+                    val quoted = shellQuote(candidate)
+                    "if [ -d $quoted ]; then " +
+                        "first_file=\"\$(find $quoted -type f -print -quit 2>/dev/null)\"; " +
                         "if [ -n \"\$first_file\" ]; then " +
-                        "printf '%s\\n' ${shellQuote(candidate)}; exit 0; fi; fi"
+                        "printf 'FOUND|%s\\n' $quoted; exit 0; " +
+                        "else printf 'EMPTY_OR_UNREADABLE|%s\\n' $quoted; fi; " +
+                        "else printf 'MISSING|%s\\n' $quoted; fi"
                 }
-                val found = runRootCommand("$checks; exit 0")
-                    .lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
-                    ?: throw IllegalStateException(
-                        "No populated RR3 files/.depot directory was found in the predefined package list: " +
-                            rr3Packages.joinToString(", ")
+
+                val scanOutput = runRootCommand("$checks\nexit 0")
+                val found = scanOutput.lineSequence()
+                    .firstOrNull { it.startsWith("FOUND|") }
+                    ?.substringAfter("FOUND|")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+
+                if (found.isNullOrBlank()) {
+                    val existingCandidates = scanOutput.lineSequence()
+                        .filter { it.startsWith("EMPTY_OR_UNREADABLE|") }
+                        .map { it.substringAfter('|') }
+                        .toList()
+                    val detail = if (existingCandidates.isNotEmpty()) {
+                        " These candidate directories exist, but root could not find files inside them: " +
+                            existingCandidates.joinToString(", ") + "."
+                    } else {
+                        " None of the checked package paths exists."
+                    }
+                    throw IllegalStateException(
+                        "Root access works, but no populated RR3 files/.depot directory was found. " +
+                            "Checked " + candidates.size + " paths for " +
+                            rr3Packages.joinToString(", ") + " under Android user " +
+                            userId + "." + detail
                     )
+                }
+
                 preferences.edit().putString("game_data_root_dir", found)
                     .remove("game_data_tree").apply()
                 runOnUiThread {
                     gameDataValue.text = found
                     indexedGameFiles = emptyList()
                     gameFilesContainer.removeAllViews()
-                    gameFilesStatus.text = "Detected populated hidden .depot directory. Tap Index and browse RR3 files."
+                    gameFilesStatus.text =
+                        "Found populated RR3 .depot: $found. Tap Index and browse RR3 files."
                 }
             } catch (e: Exception) {
-                runOnUiThread { gameFilesStatus.text = e.message ?: "Could not detect RR3 Android/data files/.depot." }
+                runOnUiThread {
+                    gameFilesStatus.text = e.message
+                        ?: "Could not detect RR3 Android/data files/.depot."
+                }
             } finally {
                 runOnUiThread { locateRootGameDataButton.isEnabled = true }
             }
@@ -1722,54 +1791,65 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Handle vertical swipes on the text surface directly. EditText otherwise
-     * interprets drags as caret movement. Long-press selection remains native.
+     * Let a vertical finger drag scroll the paging viewport instead of moving
+     * the EditText caret. Screen coordinates stay stable while the ScrollView
+     * itself moves; local event.y does not. A real text selection keeps native
+     * long-press/selection dragging behaviour.
      */
     private fun attachVerticalSwipeScrolling(editor: EditText, viewport: ScrollView) {
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        val longPressTimeout = ViewConfiguration.getLongPressTimeout()
-        var downX = 0f
-        var downY = 0f
-        var lastY = 0f
-        var downTime = 0L
+        var downRawX = 0f
+        var downRawY = 0f
+        var lastRawY = 0f
         var scrolling = false
+
         editor.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                    lastY = event.y
-                    downTime = event.eventTime
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    lastRawY = event.rawY
                     scrolling = false
                     viewport.requestDisallowInterceptTouchEvent(true)
                     false
                 }
+
                 MotionEvent.ACTION_MOVE -> {
-                    val totalX = event.x - downX
-                    val totalY = event.y - downY
-                    val quickGesture = event.eventTime - downTime < longPressTimeout
-                    if (!scrolling && quickGesture &&
+                    val totalX = event.rawX - downRawX
+                    val totalY = event.rawY - downRawY
+                    val hasActiveTextSelection =
+                        editor.selectionStart >= 0 &&
+                            editor.selectionEnd >= 0 &&
+                            editor.selectionStart != editor.selectionEnd
+
+                    if (!scrolling && !hasActiveTextSelection &&
                         kotlin.math.abs(totalY) > touchSlop &&
                         kotlin.math.abs(totalY) > kotlin.math.abs(totalX)
-                    ) scrolling = true
+                    ) {
+                        scrolling = true
+                    }
+
                     if (scrolling) {
-                        viewport.scrollBy(0, (lastY - event.y).toInt())
-                        lastY = event.y
+                        viewport.scrollBy(0, (lastRawY - event.rawY).toInt())
+                        lastRawY = event.rawY
                         true
                     } else {
                         false
                     }
                 }
+
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val consumed = scrolling
                     scrolling = false
                     viewport.requestDisallowInterceptTouchEvent(false)
                     consumed
                 }
+
                 else -> scrolling
             }
         }
     }
+
     private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
