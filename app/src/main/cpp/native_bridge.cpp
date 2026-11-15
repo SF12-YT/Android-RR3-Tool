@@ -366,3 +366,42 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUnwrapRr3Asset(
     return result;
 }
 
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
+    JNIEnv* env, jobject /* thiz */, jstring fileName, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+
+    std::string name = fromJava(env, fileName);
+    for (char& c : name) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bytes wav;
+    std::string error;
+    bool converted = false;
+    if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".wem") == 0) {
+        converted = nfsnl::wemToWav(source.data(), source.size(), wav, &error);
+    } else if (name.size() >= 5 && name.compare(name.size() - 5, 5, ".gnsu") == 0) {
+        converted = nfsnl::gnsuToWav(source.data(), source.size(), wav, &error);
+    }
+    if (!converted || wav.empty() ||
+        wav.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        return nullptr;
+    }
+
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(wav.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(wav.size()),
+        reinterpret_cast<const jbyte*>(wav.data()));
+    return result;
+}
+
