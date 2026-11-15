@@ -965,7 +965,7 @@ class MainActivity : Activity() {
             if (stagedTempSave.exists()) {
                 val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
                     ?: throw IllegalStateException("TempSaveGame.dat is missing; the main save was written, but the secondary copy could not be updated.")
-                copyFileToUri(stagedSave, tempUri)
+                copyFileToUri(stagedTempSave, tempUri)
             }
 
             val inspected = JSONObject(
