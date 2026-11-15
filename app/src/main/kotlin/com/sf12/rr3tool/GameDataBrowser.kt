@@ -10,8 +10,9 @@ import java.util.ArrayDeque
 internal data class GameDataFile(
     val name: String,
     val relativePath: String,
-    val uri: Uri,
-    val sizeBytes: Long
+    val uri: Uri?,
+    val sizeBytes: Long,
+    val rootPath: String? = null
 )
 
 internal object GameDataBrowser {
@@ -36,6 +37,37 @@ internal object GameDataBrowser {
         "sba", "pvr", "dds", "astc", "ktx", "m3g", "sb3d",
         "png", "jpg", "jpeg", "bmp", "tga", "points", "banim"
     )
+
+    fun fromRootListing(rootPath: String, listing: String): List<GameDataFile> {
+        val root = rootPath.trimEnd('/')
+        val result = ArrayList<GameDataFile>()
+        for (rawLine in listing.lineSequence()) {
+            val absolutePath = rawLine.trim()
+            if (absolutePath.isEmpty() || !absolutePath.startsWith(root + "/")) continue
+            val relativePath = absolutePath.removePrefix(root + "/")
+            if (relativePath.isEmpty()) continue
+            val name = relativePath.substringAfterLast('/')
+            val effectiveName = name.removeSuffixIgnoreCase(".bin")
+                .removeSuffixIgnoreCase(".z")
+            val extension = effectiveName.substringAfterLast('.', "").lowercase()
+            if (extension in excludedExtensions) continue
+            result.add(
+                GameDataFile(
+                    name = name,
+                    relativePath = relativePath,
+                    uri = null,
+                    sizeBytes = -1L,
+                    rootPath = absolutePath
+                )
+            )
+            if (result.size >= MAX_FILES) {
+                throw IllegalStateException(
+                    "The RR3 .depot folder contains more than $MAX_FILES supported files."
+                )
+            }
+        }
+        return result.sortedBy { it.relativePath.lowercase() }
+    }
 
     fun scan(resolver: ContentResolver, treeUri: Uri): List<GameDataFile> {
         val rootId = DocumentsContract.getTreeDocumentId(treeUri)
