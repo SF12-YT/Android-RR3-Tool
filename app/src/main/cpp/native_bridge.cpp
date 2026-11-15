@@ -12,6 +12,7 @@
 namespace {
 
 thread_local std::string gDataEditError;
+thread_local std::string gRr3AudioError;
 
 std::string fromJava(JNIEnv* env, jstring value) {
     if (!value) return {};
@@ -394,8 +395,12 @@ Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
     }
     if (!converted || wav.empty() ||
         wav.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        gRr3AudioError = error.empty()
+            ? "This file is not a supported RR3 WEM/GNSU audio stream."
+            : error;
         return nullptr;
     }
+    gRr3AudioError.clear();
 
     jbyteArray result = env->NewByteArray(static_cast<jsize>(wav.size()));
     if (!result) return nullptr;
@@ -405,3 +410,13 @@ Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
     return result;
 }
 
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3AudioError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(
+        env,
+        gRr3AudioError.empty()
+            ? "The RR3 audio conversion failed."
+            : gRr3AudioError);
+}
