@@ -414,7 +414,7 @@ class MainActivity : Activity() {
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "Locate the RR3 package under Android/data without root, or choose files/.depot manually. The scan checks for the actual .depot folder before indexing.",
+                "Grant Android/data access once; the app checks package folders and selects a populated RR3 files/.depot directory automatically.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -815,8 +815,15 @@ class MainActivity : Activity() {
     }
 
     private fun locateGameDataWithoutRoot() {
+        val previouslyGranted = preferences.getString("game_data_tree", null)
+        if (!previouslyGranted.isNullOrBlank()) {
+            gameFilesStatus.text = "Rechecking the previously granted folder for a populated RR3 .depot…"
+            indexGameDataFiles()
+            return
+        }
+
         gameFilesStatus.text =
-            "Choose Android/data or an EA RR3 package folder. The app checks com.ea.games.r3_row, com.ea.games.r3_na and com.ea.games.r3_cn for files/.depot. Android may restrict Android/data access on newer versions."
+            "Choose Android/data once. The app will inspect package folders and find the populated RR3 files/.depot itself. Android requires this storage grant on newer versions."
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -857,7 +864,11 @@ class MainActivity : Activity() {
                     "/storage/emulated/0/Android/data/com.ea.games.r3_na/files/.depot"
                 )).distinct()
                 val found = candidates.firstOrNull { candidate ->
-                    runRootCommand("if [ -d ${shellQuote(candidate)} ]; then printf yes; fi") == "yes"
+                    runRootCommand(
+                        "if [ -d ${shellQuote(candidate)} ] && " +
+                            "[ -n \"$(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null)\" ]; " +
+                            "then printf yes; fi"
+                    ) == "yes"
                 } ?: throw IllegalStateException(
                     "Root access works, but no standard RR3 .depot folder was found. Check the installed game package."
                 )
@@ -1734,51 +1745,57 @@ class MainActivity : Activity() {
     }
 
     /**
-     * EditText asks its ancestors not to intercept touch events so cursor
-     * selection works. In this paged editor that also prevents the containing
-     * ScrollView from receiving vertical drags. Hand vertical gestures to the
-     * editor ScrollView, while keeping the Activity's outer page from stealing
-     * the gesture.
+     * Paged EditTexts expand to show their whole loaded section, so they do not
+     * have an internal vertical scroll range. Android's EditText also keeps
+     * parent ScrollViews from intercepting drags for cursor selection. To make
+     * scrolling reliable, ordinary vertical drags are applied directly to the
+     * editor viewport; taps and long-press selection are still handled by the
+     * EditText itself.
      */
     private fun handVerticalScrollFromEditTextTo(
         editor: EditText,
         editorScroll: ScrollView
     ) {
         var downY = 0f
-        var handedToScroll = false
+        var lastY = 0f
+        var draggingViewport = false
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
 
-        editor.setOnTouchListener { view, event ->
+        editor.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downY = event.rawY
-                    handedToScroll = false
+                    lastY = event.rawY
+                    draggingViewport = false
                     rootScrollView.requestDisallowInterceptTouchEvent(true)
+                    false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (handedToScroll || kotlin.math.abs(event.rawY - downY) > touchSlop) {
-                        handedToScroll = true
-                        view.parent?.requestDisallowInterceptTouchEvent(false)
-                        rootScrollView.requestDisallowInterceptTouchEvent(true)
+                    val distance = kotlin.math.abs(event.rawY - downY)
+                    val heldFor = event.eventTime - event.downTime
+                    if (!draggingViewport && distance > touchSlop && heldFor < longPressTimeout) {
+                        draggingViewport = true
+                    }
+
+                    if (draggingViewport) {
+                        val scrollBy = (lastY - event.rawY).toInt()
+                        if (scrollBy != 0) editorScroll.scrollBy(0, scrollBy)
+                        lastY = event.rawY
+                        true
+                    } else {
+                        false
                     }
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (!handedToScroll) rootScrollView.requestDisallowInterceptTouchEvent(false)
-                }
+                MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_CANCEL -> {
-                    if (!handedToScroll) rootScrollView.requestDisallowInterceptTouchEvent(false)
+                    val consumed = draggingViewport
+                    draggingViewport = false
+                    rootScrollView.requestDisallowInterceptTouchEvent(false)
+                    consumed
                 }
+                else -> draggingViewport
             }
-            false
-        }
-
-        editorScroll.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_UP ||
-                event.actionMasked == MotionEvent.ACTION_CANCEL
-            ) {
-                rootScrollView.requestDisallowInterceptTouchEvent(false)
-            }
-            false
         }
     }
 
@@ -2845,7 +2862,7 @@ class MainActivity : Activity() {
                 gameDataValue.text = displayFolder(uri)
                 indexedGameFiles = emptyList()
                 gameFilesSearch.setText("")
-                gameFilesStatus.text = "Folder selected. Checking known RR3 package names and validating files/.depot…"
+                gameFilesStatus.text = "Storage access granted. Searching package folders for a populated RR3 .depot…"
                 gameFilesContainer.removeAllViews()
                 indexGameDataFiles()
             }
