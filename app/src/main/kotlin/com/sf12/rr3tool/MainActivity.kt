@@ -3,6 +3,9 @@ package com.sf12.rr3tool
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.graphics.Color
 import android.graphics.Typeface
@@ -12,6 +15,8 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.InputType
@@ -22,11 +27,13 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONObject
+import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
@@ -261,7 +268,50 @@ class MainActivity : Activity() {
     private lateinit var dataEditorStatus: TextView
     private lateinit var dataEditorWorkspace: LinearLayout
     private lateinit var rootScrollView: ScrollView
+    private lateinit var editorScreen: LinearLayout
+    private lateinit var editorScreenTitle: TextView
     private var closeDataEditorAction: (() -> Unit)? = null
+    private var shizukuStorageService: IRr3StorageService? = null
+    private var shizukuBindPending = false
+    private var shizukuBound = false
+    private var pendingShizukuAction: (() -> Unit)? = null
+    private val shizukuPermissionRequestCode = 4812
+    private val shizukuPermissionListener =
+        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode == shizukuPermissionRequestCode) {
+                if (grantResult == PackageManager.PERMISSION_GRANTED) {
+                    bindShizukuStorageService()
+                } else {
+                    runOnUiThread {
+                        gameFilesStatus.text = "Shizuku permission was denied. Root access or a manually accessible folder is still available."
+                    }
+                    pendingShizukuAction = null
+                }
+            }
+        }
+    private val shizukuServiceArgs by lazy {
+        Shizuku.UserServiceArgs(
+            ComponentName(this, Rr3StorageUserService::class.java)
+        ).daemon(false).processNameSuffix("rr3storage").debuggable(false).version(1)
+    }
+    private val shizukuServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            shizukuBindPending = false
+            shizukuStorageService = service?.let { IRr3StorageService.Stub.asInterface(it) }
+            shizukuBound = shizukuStorageService != null
+            val ready = pendingShizukuAction
+            pendingShizukuAction = null
+            if (shizukuStorageService != null) ready?.invoke()
+            else runOnUiThread {
+                gameFilesStatus.text = "Shizuku connected, but the RR3 storage service could not be created."
+            }
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            shizukuStorageService = null
+            shizukuBound = false
+            shizukuBindPending = false
+        }
+    }
     private lateinit var carEditorStatus: TextView
     private lateinit var careerInspectorStatus: TextView
     private lateinit var trackInspectorStatus: TextView
@@ -308,6 +358,7 @@ class MainActivity : Activity() {
         window.statusBarColor = Color.rgb(9, 17, 29)
         window.navigationBarColor = Color.rgb(9, 17, 29)
 
+        val appRoot = FrameLayout(this)
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Color.rgb(9, 17, 29))
             isFillViewport = true
@@ -318,7 +369,41 @@ class MainActivity : Activity() {
             setPadding(dp(22), dp(24), dp(22), dp(30))
         }
         scroll.addView(page)
-        setContentView(scroll)
+        appRoot.addView(scroll, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
+        editorScreen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(9, 17, 29))
+            visibility = View.GONE
+        }
+        val editorToolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(18), dp(10))
+            setBackgroundColor(0xFF0D1B2C.toInt())
+        }
+        editorToolbar.addView(actionButton("‹ Back") {
+            closeDataEditorAction?.invoke() ?: closeDataEditorScreen()
+        })
+        editorScreenTitle = text("Editor", 18, Color.WHITE, bold = true)
+        editorToolbar.addView(editorScreenTitle, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginStart = dp(14) })
+        editorScreen.addView(editorToolbar, matchWrap())
+        dataEditorWorkspace = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(14))
+        }
+        editorScreen.addView(dataEditorWorkspace, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        appRoot.addView(editorScreen, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        setContentView(appRoot)
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
 
         page.addView(
             text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
@@ -417,7 +502,7 @@ class MainActivity : Activity() {
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "On Android 11 and later, Android restricts normal apps from reading another app's Android/data folder. Auto-detect uses root to locate RR3's populated files/.depot directory; without root, choose a copied folder or a folder exposed by a document provider.",
+                "Browse the installed RR3 files directly with root or Shizuku. Shizuku works without root using Android's Wireless Debugging (Android 11+), so the game folder does not need to be copied. Manual folder access remains available where Android permits it.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -425,16 +510,20 @@ class MainActivity : Activity() {
         )
         gameDataValue = text("No folder selected", 12, 0xFFB7C8D9.toInt())
         gameCard.addView(gameDataValue, matchWrap(top = 12))
-        locateRootGameDataButton = actionButton("Auto-detect installed RR3 .depot") {
+        locateRootGameDataButton = actionButton("Auto-detect installed RR3 .depot (root)") {
             locateRootGameDataFolder()
         }
         gameCard.addView(locateRootGameDataButton, matchWrap(top = 12))
         gameCard.addView(
-            actionButton("Choose copied RR3 folder manually") { chooseFolder(requestGameData) },
+            actionButton("Find installed RR3 folder without root (Shizuku)") { locateShizukuGameDataFolder() },
+            matchWrap(top = 8)
+        )
+        gameCard.addView(
+            actionButton("Choose accessible RR3 folder manually") { chooseFolder(requestGameData) },
             matchWrap(top = 8)
         )
         gameFilesStatus = text(
-            "Auto-detect checks installed RR3 package variants and known storage locations using root access.",
+            "Choose root or Shizuku to detect the installed game without copying it. Shizuku needs to be running and authorised.",
             12,
             0xFF9BAFC5.toInt()
         )
@@ -554,13 +643,6 @@ class MainActivity : Activity() {
         )
         dataEditorStatus = text("No data file opened.", 12, 0xFF9BAFC5.toInt())
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
-        dataEditorWorkspace = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        editorCard.addView(dataEditorWorkspace, matchWrap(top = 12))
-
-
         addSection(carPage, "RR3 CAR EDITOR")
         val carCard = card(carPage)
         carCard.addView(
@@ -782,8 +864,13 @@ class MainActivity : Activity() {
     private fun indexGameDataFiles() {
         val rootPath = preferences.getString("game_data_root_dir", null)
         val stored = preferences.getString("game_data_tree", null)
+        val backend = preferences.getString("game_data_backend", "root")
         if (rootPath.isNullOrBlank() && stored.isNullOrBlank()) {
-            gameFilesStatus.text = "Choose the RR3 files/.depot folder or locate it with root."
+            gameFilesStatus.text = "Choose root, Shizuku, or a folder Android allows you to access."
+            return
+        }
+        if (!rootPath.isNullOrBlank() && backend == "shizuku" && shizukuStorageService == null) {
+            ensureShizukuStorageService { indexGameDataFiles() }
             return
         }
 
@@ -793,8 +880,16 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val files = if (!rootPath.isNullOrBlank()) {
-                    val listing = runRootCommand("find ${shellQuote(rootPath)} -type f -print")
-                    GameDataBrowser.fromRootListing(rootPath, listing)
+                    val listing = if (backend == "shizuku") {
+                        val service = shizukuStorageService
+                            ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                        val pipe = service.listFiles(rootPath)
+                            ?: throw IllegalStateException("Shizuku could not list the RR3 files.")
+                        ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    } else {
+                        runRootCommand("find ${shellQuote(rootPath)} -type f -print")
+                    }
+                    GameDataBrowser.fromRootListing(rootPath, listing, useShizuku = backend == "shizuku")
                 } else {
                     GameDataBrowser.scan(contentResolver, Uri.parse(stored!!))
                 }
@@ -813,6 +908,87 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun ensureShizukuStorageService(onReady: () -> Unit) {
+        if (shizukuStorageService != null) { onReady(); return }
+        pendingShizukuAction = onReady
+        if (!Shizuku.pingBinder()) {
+            pendingShizukuAction = null
+            AlertDialog.Builder(this)
+                .setTitle("Shizuku is not running")
+                .setMessage("Install Shizuku, then start it using Wireless Debugging in Developer Options. This works on Android 11+ without a computer or root. Shizuku must be restarted after a reboot.")
+                .setPositiveButton("Shizuku setup") { _, _ ->
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/guide/setup/")))
+                }.setNegativeButton("Cancel", null).show()
+            gameFilesStatus.text = "Shizuku is not running. Start it through Wireless Debugging, then retry."
+            return
+        }
+        if (Shizuku.getVersion() < 10) {
+            pendingShizukuAction = null
+            gameFilesStatus.text = "This Shizuku version is too old. Update Shizuku and retry."
+            return
+        }
+        try {
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(shizukuPermissionRequestCode)
+                gameFilesStatus.text = "Waiting for Shizuku permission…"
+                return
+            }
+            bindShizukuStorageService()
+        } catch (e: Exception) {
+            pendingShizukuAction = null
+            gameFilesStatus.text = e.message ?: "Could not connect to Shizuku."
+        }
+    }
+
+    private fun bindShizukuStorageService() {
+        if (shizukuStorageService != null) {
+            val ready = pendingShizukuAction
+            pendingShizukuAction = null
+            ready?.invoke()
+            return
+        }
+        if (shizukuBindPending) return
+        try {
+            shizukuBindPending = true
+            Shizuku.bindUserService(shizukuServiceArgs, shizukuServiceConnection)
+            gameFilesStatus.text = "Connecting to Shizuku's storage service…"
+        } catch (e: Exception) {
+            shizukuBindPending = false
+            pendingShizukuAction = null
+            gameFilesStatus.text = e.message ?: "Could not bind the Shizuku storage service."
+        }
+    }
+
+    private fun locateShizukuGameDataFolder() {
+        gameFilesStatus.text = "Checking Shizuku and locating the installed RR3 folder…"
+        ensureShizukuStorageService {
+            val service = shizukuStorageService ?: return@ensureShizukuStorageService
+            Thread {
+                try {
+                    val uid = service.getUid()
+                    if (uid != 0 && uid != 2000) {
+                        throw IllegalStateException("Shizuku's service is running with an unexpected UID ($uid). Restart Shizuku using its Wireless Debugging method and retry.")
+                    }
+                    val found = service.findRr3Depot()?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: throw IllegalStateException("Shizuku can run, but no populated RR3 files/.depot folder was found under Android/data.")
+                    runOnUiThread {
+                        preferences.edit()
+                            .putString("game_data_root_dir", found)
+                            .putString("game_data_backend", "shizuku")
+                            .remove("game_data_tree")
+                            .apply()
+                        gameDataValue.text = found
+                        indexedGameFiles = emptyList()
+                        gameFilesContainer.removeAllViews()
+                        gameFilesStatus.text = "Found RR3 .depot using Shizuku (UID $uid): $found. Tap Index and browse RR3 files."
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { gameFilesStatus.text = e.message ?: "Shizuku could not access the RR3 game folder." }
+                }
+            }.start()
+        }
     }
 
     private fun locateRootGameDataFolder() {
@@ -889,8 +1065,11 @@ class MainActivity : Activity() {
                     )
                 }
 
-                preferences.edit().putString("game_data_root_dir", found)
-                    .remove("game_data_tree").apply()
+                preferences.edit()
+                    .putString("game_data_root_dir", found)
+                    .putString("game_data_backend", "root")
+                    .remove("game_data_tree")
+                    .apply()
                 runOnUiThread {
                     gameDataValue.text = found
                     indexedGameFiles = emptyList()
@@ -1010,6 +1189,15 @@ class MainActivity : Activity() {
     private fun readGameFile(entry: GameDataFile): ByteArray {
         val rootPath = entry.rootPath
         if (!rootPath.isNullOrBlank()) {
+            if (entry.isShizuku) {
+                val depotPath = entry.depotRootPath
+                    ?: throw IllegalStateException("The Shizuku RR3 folder path was lost. Re-detect the game folder.")
+                val service = shizukuStorageService
+                    ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                val pipe = service.openFile(depotPath, rootPath)
+                    ?: throw IllegalStateException("Shizuku could not open ${entry.relativePath}.")
+                return ParcelFileDescriptor.AutoCloseInputStream(pipe).use { it.readBytes() }
+            }
             val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(rootPath)}").start()
             val bytes = process.inputStream.use { it.readBytes() }
             val error = process.errorStream.bufferedReader().use { it.readText() }
@@ -1855,32 +2043,30 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val queryInput = editBox("Find in file…", "", numeric = false)
-        controls.addView(
-            queryInput,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(6)
-            }
-        )
+        val queryInput = editBox("Find in loaded text…", "", numeric = false)
+        controls.addView(queryInput, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginEnd = dp(6) })
 
         val matches = mutableListOf<PagedTextMatch>()
+        val watchedEditors = HashSet<EditText>()
         var selectedMatch = -1
+        var matchAnchor: PagedTextMatch? = null
+        var searchPending = false
+        var preserveAnchorOnNextSearch = false
         val status = text(
-            "Enter text to find. Search runs 1 second after you stop typing.",
-            11,
-            0xFF8FA4BA.toInt()
+            "Enter text to find. Search runs 1 second after you stop typing. Only loaded sections are searched.",
+            11, 0xFF8FA4BA.toInt()
         )
         val handler = Handler(Looper.getMainLooper())
+        lateinit var searchRunnable: Runnable
 
         fun updateStatus() {
-            if (matches.isEmpty()) {
-                status.text = if (queryInput.text.isNullOrBlank()) {
-                    "Enter text to find. Search runs 1 second after you stop typing."
-                } else {
-                    "No matches in the loaded sections."
-                }
-            } else {
-                status.text = "Match " + (selectedMatch + 1) + " of " + matches.size + " · loaded sections"
+            status.text = when {
+                queryInput.text.isNullOrBlank() -> "Enter text to find. Search runs 1 second after you stop typing."
+                searchPending -> "Searching loaded sections…"
+                matches.isEmpty() -> "No matches in the currently loaded sections."
+                else -> "Match ${selectedMatch + 1} of ${matches.size} · loaded sections"
             }
         }
 
@@ -1888,94 +2074,149 @@ class MainActivity : Activity() {
             if (matches.isEmpty()) return
             selectedMatch = ((index % matches.size) + matches.size) % matches.size
             val match = matches[selectedMatch]
+            if (match.start < 0 || match.end > match.editor.text.length || match.start >= match.end) {
+                matches.clear()
+                selectedMatch = -1
+                updateStatus()
+                return
+            }
+            match.editor.requestFocus()
             match.editor.setSelection(match.start, match.end)
             match.editor.post {
                 val layout = match.editor.layout
-                val line = layout?.getLineForOffset(match.start) ?: 0
-                val lineTop = layout?.getLineTop(line) ?: 0
-                val targetY = (match.editor.top + lineTop - viewport.height / 3).coerceAtLeast(0)
-                viewport.smoothScrollTo(0, targetY)
+                if (layout != null && match.editor.isAttachedToWindow) {
+                    val lineTop = layout.getLineTop(layout.getLineForOffset(match.start))
+                    viewport.smoothScrollTo(0, (match.editor.top + lineTop - viewport.height / 3).coerceAtLeast(0))
+                }
             }
             updateStatus()
         }
 
         fun rebuildMatches(preserveCurrent: Boolean) {
-            val previous = if (preserveCurrent) matches.getOrNull(selectedMatch) else null
+            val previous = if (preserveCurrent) matchAnchor else null
+            matchAnchor = null
             val query = queryInput.text.toString()
             matches.clear()
             selectedMatch = -1
-
             if (query.isNotEmpty()) {
                 for (editor in pageEditors) {
                     val content = editor.text.toString()
                     var from = 0
                     while (from <= content.length - query.length) {
-                        val found = content.indexOf(query, startIndex = from, ignoreCase = true)
+                        val found = content.indexOf(query, from, ignoreCase = true)
                         if (found < 0) break
                         matches.add(PagedTextMatch(editor, found, found + query.length))
                         from = found + maxOf(1, query.length)
                     }
                 }
             }
-
+            searchPending = false
             if (matches.isEmpty()) {
                 updateStatus()
                 return
             }
-
             val previousIndex = previous?.let { old ->
                 matches.indexOfFirst { it.editor === old.editor && it.start == old.start && it.end == old.end }
             } ?: -1
             if (previousIndex >= 0) {
                 selectedMatch = previousIndex
                 updateStatus()
-            } else {
-                goToMatch(0)
+            } else goToMatch(0)
+        }
+
+        fun scheduleSearch(preserveCurrent: Boolean = false) {
+            if (preserveCurrent && selectedMatch in matches.indices) matchAnchor = matches[selectedMatch]
+            else if (!preserveCurrent) matchAnchor = null
+            preserveAnchorOnNextSearch = preserveCurrent
+            matches.clear()
+            selectedMatch = -1
+            searchPending = queryInput.text.isNotBlank()
+            handler.removeCallbacks(searchRunnable)
+            updateStatus()
+            if (queryInput.text.isBlank()) {
+                searchPending = false
+                matchAnchor = null
+                updateStatus()
+            } else handler.postDelayed(searchRunnable, 1000L)
+        }
+
+        searchRunnable = Runnable {
+            val preserve = preserveAnchorOnNextSearch
+            preserveAnchorOnNextSearch = false
+            rebuildMatches(preserve)
+        }
+
+        fun watchNewEditors() {
+            for (editor in pageEditors) {
+                if (!watchedEditors.add(editor)) continue
+                editor.addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        if (queryInput.text.isNotBlank()) scheduleSearch(false)
+                    }
+                    override fun afterTextChanged(s: Editable?) = Unit
+                })
             }
         }
-
-        lateinit var searchRunnable: Runnable
-        fun scheduleSearch() {
-            handler.removeCallbacks(searchRunnable)
-            handler.postDelayed(searchRunnable, 1000L)
-        }
-
-        searchRunnable = Runnable { rebuildMatches(preserveCurrent = false) }
 
         queryInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                scheduleSearch()
+                scheduleSearch(false)
             }
             override fun afterTextChanged(s: Editable?) = Unit
         })
-
         val previousButton = actionButton("Prev") {
-            if (matches.isNotEmpty()) goToMatch(selectedMatch - 1)
+            if (!searchPending && matches.isNotEmpty()) goToMatch(selectedMatch - 1)
         }
-        controls.addView(
-            previousButton,
-            LinearLayout.LayoutParams(dp(64), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginEnd = dp(5)
-            }
-        )
+        controls.addView(previousButton, LinearLayout.LayoutParams(
+            dp(64), LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { marginEnd = dp(5) })
         val nextButton = actionButton("Next") {
-            if (matches.isNotEmpty()) goToMatch(selectedMatch + 1)
+            if (!searchPending && matches.isNotEmpty()) goToMatch(selectedMatch + 1)
         }
-        controls.addView(
-            nextButton,
-            LinearLayout.LayoutParams(dp(64), LinearLayout.LayoutParams.WRAP_CONTENT)
-        )
-
+        controls.addView(nextButton, LinearLayout.LayoutParams(dp(64), LinearLayout.LayoutParams.WRAP_CONTENT))
         panel.addView(controls, matchWrap())
         panel.addView(status, matchWrap(top = 5))
         parent.addView(panel, matchWrap(bottom = 5))
+        watchNewEditors()
 
         return {
-            if (queryInput.text.isNotBlank()) {
-                scheduleSearch()
-            }
+            watchNewEditors()
+            if (queryInput.text.isNotBlank()) scheduleSearch(preserveCurrent = true)
         }
+    }
+
+    private fun openDataEditorScreen(title: String) {
+        editorScreenTitle.text = title
+        dataEditorWorkspace.removeAllViews()
+        rootScrollView.visibility = View.GONE
+        editorScreen.visibility = View.VISIBLE
+    }
+
+    private fun closeDataEditorScreen() {
+        if (!::editorScreen.isInitialized) return
+        dataEditorWorkspace.removeAllViews()
+        editorScreen.visibility = View.GONE
+        rootScrollView.visibility = View.VISIBLE
+        closeDataEditorAction = null
+    }
+
+    override fun onDestroy() {
+        runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
+        if (shizukuBound) runCatching {
+            Shizuku.unbindUserService(shizukuServiceArgs, shizukuServiceConnection, true)
+        }
+        shizukuStorageService = null
+        shizukuBound = false
+        super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (::editorScreen.isInitialized && editorScreen.visibility == View.VISIBLE) {
+            closeDataEditorAction?.invoke() ?: closeDataEditorScreen()
+        } else super.onBackPressed()
     }
 
     private fun showCareerEditableEditor(
@@ -2063,9 +2304,7 @@ class MainActivity : Activity() {
             pager.close()
             sourcePlainFile.delete()
             workingTextFile.delete()
-            dataEditorWorkspace.removeAllViews()
-            dataEditorWorkspace.visibility = View.GONE
-            closeDataEditorAction = null
+            closeDataEditorScreen()
         }
 
         fun loadNextSection() {
@@ -2199,7 +2438,8 @@ class MainActivity : Activity() {
                 editorScroll,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(520)
+                    0,
+                    1f
                 )
             )
             addView(loadStatus, matchWrap(top = 8, bottom = 8))
@@ -2229,9 +2469,10 @@ class MainActivity : Activity() {
             }
         }
         closeDataEditorAction = { closeEditor() }
-        dataEditorWorkspace.removeAllViews()
-        dataEditorWorkspace.addView(content, matchWrap())
-        dataEditorWorkspace.visibility = View.VISIBLE
+        openDataEditorScreen(sourceName)
+        dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT
+        ))
         editorScroll.post {
             val child = editorScroll.getChildAt(0)
             if (child != null && child.height <= editorScroll.height + dp(120)) {
@@ -2319,9 +2560,7 @@ class MainActivity : Activity() {
             closed = true
             pager.close()
             sourceFile.delete()
-            dataEditorWorkspace.removeAllViews()
-            dataEditorWorkspace.visibility = View.GONE
-            closeDataEditorAction = null
+            closeDataEditorScreen()
         }
 
         fun loadNextPage() {
@@ -2439,7 +2678,8 @@ class MainActivity : Activity() {
                 editorScroll,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(520)
+                    0,
+                    1f
                 )
             )
             addView(loadStatus, matchWrap(top = 8, bottom = 8))
@@ -2469,9 +2709,10 @@ class MainActivity : Activity() {
             }
         }
         closeDataEditorAction = { closeEditor() }
-        dataEditorWorkspace.removeAllViews()
-        dataEditorWorkspace.addView(content, matchWrap())
-        dataEditorWorkspace.visibility = View.VISIBLE
+        openDataEditorScreen(sourceName)
+        dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT
+        ))
         editorScroll.post {
             val child = editorScroll.getChildAt(0)
             if (child != null && child.height <= editorScroll.height + dp(120)) {
@@ -2500,24 +2741,8 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = rounded(0xFF0B1725.toInt(), dp(8).toFloat())
             minLines = 18
+            maxLines = 100_000
         }
-        val editorScroll = ScrollView(this).apply {
-            isFillViewport = false
-            isVerticalScrollBarEnabled = true
-            isScrollbarFadingEnabled = false
-            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setScrollBarSize(dp(12))
-            }
-            addView(
-                editor,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(500)
-                )
-            )
-        }
-        keepOuterPageFromStealingEditorTouch(editor)
         val status = text(
             "Edit the decoded representation. The original remains unchanged until you choose a separate output.",
             12,
@@ -2548,16 +2773,14 @@ class MainActivity : Activity() {
                 text("Source: " + name, 11, 0xFF75B9F1.toInt(), bold = true),
                 matchWrap(bottom = 8)
             )
-            addView(editorScroll, matchWrap())
+            addView(editor, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+            ))
             addView(status, matchWrap(top = 8, bottom = 8))
             addView(actions, matchWrap())
         }
 
-        closeDataEditorAction = {
-            dataEditorWorkspace.removeAllViews()
-            dataEditorWorkspace.visibility = View.GONE
-            closeDataEditorAction = null
-        }
+        closeDataEditorAction = { closeDataEditorScreen() }
         buildButton.setOnClickListener {
             buildButton.isEnabled = false
             closeButton.isEnabled = false
@@ -2591,9 +2814,10 @@ class MainActivity : Activity() {
             }.start()
         }
 
-        dataEditorWorkspace.removeAllViews()
-        dataEditorWorkspace.addView(content, matchWrap())
-        dataEditorWorkspace.visibility = View.VISIBLE
+        openDataEditorScreen(name)
+        dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT
+        ))
     }
 
     private fun chooseRr3DataFile() {
@@ -3041,7 +3265,11 @@ class MainActivity : Activity() {
 
         when (requestCode) {
             requestGameData -> {
-                preferences.edit().putString("game_data_tree", uri.toString()).remove("game_data_root_dir").apply()
+                preferences.edit()
+                    .putString("game_data_tree", uri.toString())
+                    .remove("game_data_root_dir")
+                    .remove("game_data_backend")
+                    .apply()
                 gameDataValue.text = displayFolder(uri)
                 indexedGameFiles = emptyList()
                 gameFilesSearch.setText("")
