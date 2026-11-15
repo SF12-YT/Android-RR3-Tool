@@ -32,6 +32,8 @@ internal object GameDataBrowser {
     private const val MAX_FILES = 100_000
     private const val MAX_FOLDERS_TO_FIND_DEPOT = 500
     private const val MAX_DEPOT_DEPTH = 6
+    private const val MAX_DEPOT_CONTENT_FOLDERS_TO_CHECK = 256
+    private const val MAX_DEPOT_FILES_TO_CONFIRM = 24
     private val preferredRr3Packages = listOf(
         "com.ea.games.r3_row",
         "com.ea.games.r3_na",
@@ -77,14 +79,17 @@ internal object GameDataBrowser {
     fun scan(resolver: ContentResolver, treeUri: Uri): List<GameDataFile> {
         val rootId = DocumentsContract.getTreeDocumentId(treeUri)
         val rootName = rootId.substringAfterLast('/').substringAfterLast(':')
-        val depot = if (rootName.equals(".depot", ignoreCase = true)) {
-            Folder(rootId, "", 0)
-        } else {
-            findDepotFolder(resolver, treeUri, rootId)
-                ?: throw IllegalStateException(
-                    "No .depot folder was found below the selected folder. Select the RR3 files/.depot folder directly."
-                )
-        }
+        val depot = (
+            if (rootName.equals(".depot", ignoreCase = true)) {
+                Folder(rootId, "", 0).takeIf {
+                    countFilesInDepot(resolver, treeUri, rootId) > 0
+                }
+            } else {
+                findDepotFolder(resolver, treeUri, rootId)
+            }
+        ) ?: throw IllegalStateException(
+            "No populated RR3 .depot folder was found. Select Android/data (or the RR3 package folder) and make sure the game data is present."
+        )
 
         val result = ArrayList<GameDataFile>()
         val queue = ArrayDeque<Folder>()
@@ -137,6 +142,8 @@ internal object GameDataBrowser {
         val visited = HashSet<String>()
         queue.add(Folder(rootId, "", 0))
         var inspected = 0
+        var bestCandidate: Folder? = null
+        var bestFileCount = 0
 
         while (queue.isNotEmpty() && inspected < MAX_FOLDERS_TO_FIND_DEPOT) {
             val folder = queue.removeFirst()
@@ -158,7 +165,16 @@ internal object GameDataBrowser {
                 if (child.name.equals(".depot", ignoreCase = true)) {
                     val parentName = folder.path.substringAfterLast('/')
                     if (folder.path.isEmpty() || parentName.equals("files", ignoreCase = true)) {
-                        return Folder(child.documentId, "", 0)
+                        val fileCount = countFilesInDepot(resolver, treeUri, child.documentId)
+                        if (fileCount > bestFileCount) {
+                            bestFileCount = fileCount
+                            bestCandidate = Folder(child.documentId, "", 0)
+                        }
+                        // A populated RR3 depot reaches this cap quickly. Keep
+                        // searching when a candidate is empty or only partial.
+                        if (bestFileCount >= MAX_DEPOT_FILES_TO_CONFIRM) {
+                            return bestCandidate
+                        }
                     }
                     continue
                 }
@@ -167,7 +183,48 @@ internal object GameDataBrowser {
                 }
             }
         }
-        return null
+        return bestCandidate
+    }
+
+    /**
+     * Count actual files below a candidate .depot, not just the existence of
+     * a directory with that name. This rejects stale/empty package folders and
+     * prefers the candidate that looks like a populated game-data directory.
+     */
+    private fun countFilesInDepot(
+        resolver: ContentResolver,
+        treeUri: Uri,
+        depotDocumentId: String
+    ): Int {
+        val queue = ArrayDeque<String>()
+        val visited = HashSet<String>()
+        queue.add(depotDocumentId)
+        var inspected = 0
+        var fileCount = 0
+
+        while (queue.isNotEmpty() &&
+            inspected < MAX_DEPOT_CONTENT_FOLDERS_TO_CHECK &&
+            fileCount < MAX_DEPOT_FILES_TO_CONFIRM
+        ) {
+            val parentId = queue.removeFirst()
+            if (!visited.add(parentId)) continue
+            inspected++
+
+            val entries = try {
+                children(resolver, treeUri, parentId)
+            } catch (_: Exception) {
+                continue
+            }
+            for (entry in entries) {
+                if (entry.isDirectory) {
+                    queue.add(entry.documentId)
+                } else {
+                    fileCount++
+                    if (fileCount >= MAX_DEPOT_FILES_TO_CONFIRM) break
+                }
+            }
+        }
+        return fileCount
     }
 
     private fun children(
