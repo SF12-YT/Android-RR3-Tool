@@ -394,6 +394,9 @@ class MainActivity : Activity() {
         if (extension in setOf("sounddef", "evt", "tbl", "table", "txt")) {
             actions.add("Open in RR3 text data editor")
         }
+        if (extension == "wem" || extension == "gnsu") {
+            actions.add("Convert audio to WAV")
+        }
 
         AlertDialog.Builder(this)
             .setTitle(entry.name)
@@ -404,6 +407,7 @@ class MainActivity : Activity() {
                     "Decode / encode RR3 data" -> decodeGameDataFile(entry)
                     "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
+                    "Convert audio to WAV" -> convertGameAudio(entry)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -525,6 +529,30 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread { gameFilesStatus.text = e.message ?: "RR3 game-text decoding failed." }
+            }
+        }.start()
+    }
+
+    private fun convertGameAudio(entry: GameDataFile) {
+        gameFilesStatus.text = "Converting RR3 audio to WAV…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (name, unpacked) = unwrappedGameFile(entry, source)
+                val wav = NativeBridge.nativeConvertRr3Audio(name, unpacked)
+                    ?: throw IllegalStateException(NativeBridge.nativeGetRr3AudioError())
+                pendingTransformedData = wav
+                pendingTransformedName = name.substringBeforeLast('.', name) + ".wav"
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                runOnUiThread {
+                    gameFilesStatus.text = "Converted ${wav.size} bytes of WAV audio. Choose an output file."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "RR3 audio conversion failed."
+                }
             }
         }.start()
     }
