@@ -11,6 +11,8 @@
 
 namespace {
 
+thread_local std::string gDataEditError;
+
 std::string fromJava(JNIEnv* env, jstring value) {
     if (!value) return {};
     const char* chars = env->GetStringUTFChars(value, nullptr);
@@ -283,8 +285,8 @@ Java_com_sf12_rr3tool_NativeBridge_nativeOpenDataAsText(
     if (env->ExceptionCheck()) return nullptr;
 
     std::string text;
-    std::string error;
-    if (!nfsnl::dataEditableText(path, source.data(), source.size(), text, error))
+    gDataEditError.clear();
+    if (!nfsnl::dataEditableText(path, source.data(), source.size(), text, gDataEditError))
         return nullptr;
     return toJava(env, text);
 }
@@ -305,9 +307,9 @@ Java_com_sf12_rr3tool_NativeBridge_nativeBuildEditedData(
     if (env->ExceptionCheck()) return nullptr;
 
     nfsnl::Bytes output;
-    std::string error;
+    gDataEditError.clear();
     if (!nfsnl::dataFromEditedText(
-            path, text, source.data(), source.size(), output, error))
+            path, text, source.data(), source.size(), output, gDataEditError))
         return nullptr;
     if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
         return nullptr;
@@ -327,4 +329,11 @@ Java_com_sf12_rr3tool_NativeBridge_nativeGetDataEditHelp(
         env,
         "Supported RR3 data files are converted by the upstream data editor. "
         "The editor preserves the original file as a reference while building a new output file.");
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetDataEditError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(env, gDataEditError.empty() ? "The data operation failed." : gDataEditError);
 }
