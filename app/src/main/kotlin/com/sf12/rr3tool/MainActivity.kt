@@ -32,12 +32,14 @@ class MainActivity : Activity() {
     private val requestSaveFolder = 1102
     private val requestRr3TransformInput = 1103
     private val requestRr3TransformOutput = 1104
+    private val requestEditableDataInput = 1105
 
     private lateinit var gameDataValue: TextView
     private lateinit var saveFolderValue: TextView
     private lateinit var engineValue: TextView
     private lateinit var saveStatus: TextView
     private lateinit var dataStatus: TextView
+    private lateinit var dataEditorStatus: TextView
     private lateinit var saveFieldsContainer: LinearLayout
     private lateinit var advancedFieldsContainer: LinearLayout
     private lateinit var advancedSearch: EditText
@@ -183,6 +185,27 @@ class MainActivity : Activity() {
         dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
         dataCard.addView(dataStatus, matchWrap(top = 10))
 
+        addSection(page, "RR3 DATA EDITOR")
+        val editorCard = card(page)
+        editorCard.addView(
+            text("Edit supported RR3 data files as text", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        editorCard.addView(
+            text(
+                "Open supported .sounddef, .evt, table and text files. The native engine converts them into an editable representation and rebuilds the original format when saved.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        editorCard.addView(
+            actionButton("Open editable RR3 data file") { chooseEditableDataFile() },
+            matchWrap(top = 12)
+        )
+        dataEditorStatus = text("No data file opened.", 12, 0xFF9BAFC5.toInt())
+        editorCard.addView(dataEditorStatus, matchWrap(top = 10))
+
         addSection(page, "NATIVE ENGINE")
         val engineCard = card(page)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -225,6 +248,130 @@ class MainActivity : Activity() {
         updateEngineStatus()
     }
 
+
+
+    private fun chooseEditableDataFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestEditableDataInput)
+    }
+
+    private fun openEditableDataFile(uri: Uri) {
+        dataEditorStatus.text = "Reading and decoding data file…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                val extension = name.substringAfterLast('.', "").lowercase()
+                if (extension == "nct" || extension == "gui") {
+                    throw IllegalArgumentException("Use the RR3 Data Transform section for .nct and .gui files.")
+                }
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file.")
+                val original = input.use { it.readBytes() }
+                val editable = NativeBridge.nativeOpenDataAsText(name, original)
+                    ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+
+                runOnUiThread {
+                    dataEditorStatus.text = "Opened " + name + " (" + original.size + " bytes)."
+                    showEditableDataDialog(name, original, editable)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dataEditorStatus.text = e.message ?: "Could not open this data file."
+                }
+            }
+        }.start()
+    }
+
+    private fun showEditableDataDialog(
+        name: String,
+        original: ByteArray,
+        editableText: String
+    ) {
+        val editor = EditText(this).apply {
+            setText(editableText)
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF6F849B.toInt())
+            textSize = 13f
+            typeface = Typeface.MONOSPACE
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setHorizontallyScrolling(false)
+            isVerticalScrollBarEnabled = true
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+            minLines = 14
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(4))
+            addView(
+                text(
+                    "Edit the decoded representation. The original file stays untouched until you choose a separate output.",
+                    12,
+                    0xFF9BAFC5.toInt()
+                ),
+                matchWrap(bottom = 10)
+            )
+            val editorScroll = ScrollView(this@MainActivity).apply {
+                addView(
+                    editor,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(420)
+                    )
+                )
+            }
+            addView(
+                editorScroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(440)
+                )
+            )
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Build output", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val edited = editor.text.toString()
+                val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                saveButton.isEnabled = false
+                dataEditorStatus.text = "Rebuilding RR3 data file…"
+                Thread {
+                    try {
+                        val output = NativeBridge.nativeBuildEditedData(name, edited, original)
+                            ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                        pendingTransformedData = output
+                        pendingTransformedName = name
+                        runOnUiThread {
+                            dialog.dismiss()
+                            dataEditorStatus.text =
+                                "Built " + output.size + " bytes. Choose a new output file."
+                            launchRr3OutputPicker()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            saveButton.isEnabled = true
+                            dataEditorStatus.text = e.message ?: "Could not rebuild the data file."
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
 
     private fun chooseRr3DataFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -478,6 +625,10 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestRr3TransformOutput) {
             writeTransformedRr3File(uri)
+            return
+        }
+        if (requestCode == requestEditableDataInput) {
+            openEditableDataFile(uri)
             return
         }
         val accessFlags = data.flags and (
