@@ -164,19 +164,19 @@ class MainActivity : Activity() {
         addSection(page, "RR3 DATA TRANSFORM")
         val dataCard = card(page)
         dataCard.addView(
-            text("Decode or re-encode .nct / .gui data", 17, Color.WHITE, bold = true),
+            text("Decode or re-encode RR3 data", 17, Color.WHITE, bold = true),
             matchWrap()
         )
         dataCard.addView(
             text(
-                "The upstream RR3 RC4 transform is built into the native engine. It is reversible, so the same operation decodes encrypted data or re-encodes edited data.",
+                "The upstream RR3 RC4 transform is built into the native engine. Choose an encrypted .nct or .gui to decode it, or a decoded .bin or .xml to encode it again.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
         )
         dataCard.addView(
-            actionButton("Choose .nct / .gui file") { chooseRr3DataFile() },
+            actionButton("Choose RR3 data (.nct / .bin / .gui / .xml)") { chooseRr3DataFile() },
             matchWrap(top = 12)
         )
         dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
@@ -255,20 +255,32 @@ class MainActivity : Activity() {
             try {
                 val name = displayName(uri)
                 val lower = name.lowercase()
-                if (!lower.endsWith(".nct") && !lower.endsWith(".gui")) {
-                    throw IllegalArgumentException("Choose an RR3 .nct or .gui file.")
+                val extension = name.substringAfterLast('.', "").lowercase()
+                if (extension !in setOf("nct", "bin", "gui", "xml")) {
+                    throw IllegalArgumentException("Choose an RR3 .nct, .bin, .gui or .xml file.")
                 }
 
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")
                 val bytes = input.use { it.readBytes() }
-                val transformed = NativeBridge.nativeTransformRr3Data(bytes)
-                    ?: throw IllegalStateException("The RR3 transform failed.")
-                pendingTransformedData = transformed
-                pendingTransformedName = if (lower.endsWith(".nct")) {
-                    name.dropLast(4).ifBlank { "rr3-data.bin" }
+                val alreadyPlainGui = extension == "gui" &&
+                    bytes.size >= 5 &&
+                    bytes.copyOfRange(0, 5).toString(Charsets.US_ASCII) == "<?xml"
+                val transformed = if (alreadyPlainGui) {
+                    bytes
                 } else {
-                    name + ".transformed"
+                    NativeBridge.nativeTransformRr3Data(bytes)
+                        ?: throw IllegalStateException("The RR3 transform failed.")
+                }
+
+                val baseName = name.substringBeforeLast('.', name)
+                pendingTransformedData = transformed
+                pendingTransformedName = when (extension) {
+                    "nct" -> baseName
+                    "bin" -> baseName + ".nct"
+                    "gui" -> baseName + ".xml"
+                    "xml" -> baseName + ".gui"
+                    else -> "rr3-data.bin"
                 }
 
                 runOnUiThread {
