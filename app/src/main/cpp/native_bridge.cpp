@@ -1,5 +1,6 @@
 #include <jni.h>
 
+#include <chrono>
 #include <cstdint>
 #include <sstream>
 #include <string>
@@ -56,8 +57,10 @@ std::string okJson() {
 }
 
 std::string stampNow() {
-    // The save core uses this only as a backup-folder suffix.
-    return "android";
+    // Unique per write so a second edit never overwrites an earlier backup.
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
 } // namespace
