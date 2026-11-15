@@ -15,6 +15,16 @@ internal object NativeBridge {
 
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
+    external fun nativeGetRr3TransformError(): String
+
+    external fun nativeInspectRr3Car(input: ByteArray): String
+
+    external fun nativeSetRr3CarField(input: ByteArray, key: String, value: String): ByteArray?
+
+    external fun nativeGetRr3CarError(): String
+
+    external fun nativeInspectRr3Career(input: ByteArray): String
+
     external fun nativeUnwrapRr3Asset(fileName: String, input: ByteArray): ByteArray?
 
     external fun nativeConvertRr3Audio(fileName: String, input: ByteArray): ByteArray?

@@ -1,8 +1,11 @@
 #include <jni.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <sstream>
 #include <string>
 
@@ -13,6 +16,9 @@ namespace {
 
 thread_local std::string gDataEditError;
 thread_local std::string gRr3AudioError;
+thread_local std::string gRr3TransformError;
+thread_local std::string gRr3CarError;
+thread_local std::string gRr3CareerError;
 
 std::string fromJava(JNIEnv* env, jstring value) {
     if (!value) return {};
@@ -207,27 +213,54 @@ Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3SaveField(
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3Data(
     JNIEnv* env, jobject /* thiz */, jbyteArray input) {
-    if (!input) return nullptr;
+    gRr3TransformError.clear();
+    if (!input) { gRr3TransformError = "No input data was supplied."; return nullptr; }
     const jsize length = env->GetArrayLength(input);
-    if (length <= 0) return nullptr;
+    if (length <= 0) { gRr3TransformError = "The selected file is empty."; return nullptr; }
 
-    nfsnl::Bytes source(static_cast<size_t>(length));
-    env->GetByteArrayRegion(
-        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
-    if (env->ExceptionCheck()) return nullptr;
+    // Work directly from the Java array and reuse that same array for the
+    // output. This avoids both an extra native input copy and a second Java
+    // allocation for large assets such as the 14 MB career file.
+    jbyte* source = env->GetByteArrayElements(input, nullptr);
+    if (!source) {
+        gRr3TransformError = "Android could not access the input data buffer.";
+        return nullptr;
+    }
 
     nfsnl::Bytes transformed;
-    if (!nfsnl::nctTransform(source.data(), source.size(), transformed))
-        return nullptr;
-    if (transformed.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
-        return nullptr;
+    bool ok = false;
+    try {
+        ok = nfsnl::nctTransform(
+            reinterpret_cast<const uint8_t*>(source),
+            static_cast<size_t>(length), transformed);
+    } catch (const std::bad_alloc&) {
+        gRr3TransformError = "Not enough memory to decode this file. Close other apps and try again.";
+    } catch (...) {
+        gRr3TransformError = "The native RR3 transform failed unexpectedly.";
+    }
 
-    jbyteArray output = env->NewByteArray(static_cast<jsize>(transformed.size()));
-    if (!output) return nullptr;
-    env->SetByteArrayRegion(
-        output, 0, static_cast<jsize>(transformed.size()),
-        reinterpret_cast<const jbyte*>(transformed.data()));
-    return output;
+    if (!ok || !gRr3TransformError.empty()) {
+        env->ReleaseByteArrayElements(input, source, JNI_ABORT);
+        if (gRr3TransformError.empty()) gRr3TransformError = "The RR3 data transform failed.";
+        return nullptr;
+    }
+    if (transformed.size() != static_cast<size_t>(length)) {
+        env->ReleaseByteArrayElements(input, source, JNI_ABORT);
+        gRr3TransformError = "The RR3 transform returned an unexpected output length.";
+        return nullptr;
+    }
+
+    std::memcpy(source, transformed.data(), transformed.size());
+    // Mode 0 copies the modified bytes back if JNI gave us a temporary copy.
+    env->ReleaseByteArrayElements(input, source, 0);
+    return input;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3TransformError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(env, gRr3TransformError.empty()
+        ? "The RR3 data transform failed." : gRr3TransformError);
 }
 
 
@@ -419,4 +452,180 @@ Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3AudioError(
         gRr3AudioError.empty()
             ? "The RR3 audio conversion failed."
             : gRr3AudioError);
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Car(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3CarError.clear();
+    if (!input) return toJava(env, errorJson("No car data was supplied."));
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return toJava(env, errorJson("The car data file is empty."));
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return toJava(env, errorJson("Could not read the car data buffer."));
+
+    nfsnl::Rr3Car car;
+    bool ok = false;
+    try {
+        ok = nfsnl::rr3CarRead(reinterpret_cast<const uint8_t*>(bytes),
+                               static_cast<size_t>(length), car);
+    } catch (const std::bad_alloc&) {
+        gRr3CarError = "Not enough memory to inspect this car file.";
+    } catch (...) {
+        gRr3CarError = "The native car parser failed unexpectedly.";
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!ok) {
+        if (gRr3CarError.empty()) gRr3CarError = car.why.empty()
+            ? "This file does not match the RR3 car-data format." : car.why;
+        return toJava(env, errorJson(gRr3CarError));
+    }
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"fields\":[";
+    const auto fields = nfsnl::rr3CarFields(car);
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (i) out << ',';
+        out << "{\"key\":" << jsonString(fields[i].key)
+            << ",\"label\":" << jsonString(fields[i].label)
+            << ",\"value\":" << jsonString(fields[i].value)
+            << ",\"text\":" << (fields[i].text ? "true" : "false") << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3CarField(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input, jstring keyText, jstring valueText) {
+    gRr3CarError.clear();
+    if (!input) { gRr3CarError = "No car data was supplied."; return nullptr; }
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) { gRr3CarError = "The car data file is empty."; return nullptr; }
+
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) { gRr3CarError = "Could not read the car data buffer."; return nullptr; }
+    nfsnl::Rr3Car car;
+    bool parsed = false;
+    try {
+        parsed = nfsnl::rr3CarRead(reinterpret_cast<const uint8_t*>(bytes),
+                                   static_cast<size_t>(length), car);
+    } catch (const std::bad_alloc&) {
+        gRr3CarError = "Not enough memory to update this car file.";
+    } catch (...) {
+        gRr3CarError = "The native car parser failed unexpectedly.";
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!parsed) {
+        if (gRr3CarError.empty()) gRr3CarError = car.why.empty()
+            ? "This file does not match the RR3 car-data format." : car.why;
+        return nullptr;
+    }
+
+    std::string why;
+    if (!nfsnl::rr3CarSet(car, fromJava(env, keyText), fromJava(env, valueText), why)) {
+        gRr3CarError = why.empty() ? "The car field could not be changed." : why;
+        return nullptr;
+    }
+
+    nfsnl::Bytes output;
+    try {
+        if (!nfsnl::rr3CarWrite(car, output, why)) {
+            gRr3CarError = why.empty() ? "The car file could not be rebuilt." : why;
+            return nullptr;
+        }
+    } catch (const std::bad_alloc&) {
+        gRr3CarError = "Not enough memory to rebuild this car file.";
+        return nullptr;
+    } catch (...) {
+        gRr3CarError = "The native car writer failed unexpectedly.";
+        return nullptr;
+    }
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        gRr3CarError = "The rebuilt car file is too large for Android.";
+        return nullptr;
+    }
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) { gRr3CarError = "Android could not allocate the rebuilt car file."; return nullptr; }
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()),
+                            reinterpret_cast<const jbyte*>(output.data()));
+    if (env->ExceptionCheck()) {
+        gRr3CarError = "Android could not copy the rebuilt car file.";
+        return nullptr;
+    }
+    return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3CarError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(env, gRr3CarError.empty() ? "The RR3 car operation failed." : gRr3CarError);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Career(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3CareerError.clear();
+    if (!input) return toJava(env, errorJson("No career data was supplied."));
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return toJava(env, errorJson("The career data file is empty."));
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return toJava(env, errorJson("Could not read the career data buffer."));
+
+    nfsnl::Bytes plain;
+    nfsnl::Rr3Career career;
+    bool parsed = false;
+    std::string why;
+    try {
+        if (!nfsnl::nctTransform(reinterpret_cast<const uint8_t*>(bytes),
+                                 static_cast<size_t>(length), plain)) {
+            why = "The NCT transform failed.";
+        } else {
+            parsed = nfsnl::rr3CareerRead(plain.data(), plain.size(), career, why);
+        }
+    } catch (const std::bad_alloc&) {
+        gRr3CareerError = "Not enough memory to inspect this career file. Close other apps and try again.";
+    } catch (...) {
+        gRr3CareerError = "The native career parser failed unexpectedly.";
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!parsed) {
+        if (gRr3CareerError.empty()) gRr3CareerError = why.empty()
+            ? "This file does not match the supported RR3 career format." : why;
+        return toJava(env, errorJson(gRr3CareerError));
+    }
+
+    size_t eventCount = 0;
+    for (const auto& tier : career.tiers) eventCount += tier.events.size();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"version\":" << career.version
+        << ",\"tracks\":" << career.tracks.size()
+        << ",\"seriesCount\":" << career.series.size()
+        << ",\"tiersCount\":" << career.tiers.size()
+        << ",\"superGroups\":" << career.superGroups.size()
+        << ",\"eventsCount\":" << eventCount
+        << ",\"series\":[";
+    const size_t limit = std::min<size_t>(career.series.size(), 160);
+    for (size_t i = 0; i < limit; ++i) {
+        const auto& series = career.series[i];
+        if (i) out << ',';
+        out << "{\"id\":" << series.id()
+            << ",\"type\":" << series.type()
+            << ",\"titleKey\":" << jsonString(series.titleKey())
+            << ",\"descriptionKey\":" << jsonString(series.descKey()) << '}';
+    }
+    out << "],\"tiers\":[";
+    const size_t tierLimit = std::min<size_t>(career.tiers.size(), 240);
+    for (size_t i = 0; i < tierLimit; ++i) {
+        const auto& tier = career.tiers[i];
+        if (i) out << ',';
+        out << "{\"id\":" << tier.id()
+            << ",\"seriesId\":" << tier.seriesId()
+            << ",\"index\":" << tier.indexInSeries()
+            << ",\"cars\":" << tier.cars.size()
+            << ",\"events\":" << tier.events.size() << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
 }

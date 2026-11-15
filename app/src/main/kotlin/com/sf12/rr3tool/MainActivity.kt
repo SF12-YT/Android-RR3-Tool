@@ -15,7 +15,9 @@ import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.View
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -33,6 +35,8 @@ class MainActivity : Activity() {
     private val requestRr3TransformInput = 1103
     private val requestRr3TransformOutput = 1104
     private val requestEditableDataInput = 1105
+    private val requestCarEditorInput = 1106
+    private val requestCareerInspectorInput = 1107
 
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
@@ -47,6 +51,10 @@ class MainActivity : Activity() {
     private lateinit var saveStatus: TextView
     private lateinit var dataStatus: TextView
     private lateinit var dataEditorStatus: TextView
+    private lateinit var carEditorStatus: TextView
+    private lateinit var careerInspectorStatus: TextView
+    private lateinit var carFieldsContainer: LinearLayout
+    private lateinit var careerDetailsContainer: LinearLayout
     private lateinit var saveFieldsContainer: LinearLayout
     private lateinit var advancedFieldsContainer: LinearLayout
     private lateinit var advancedSearch: EditText
@@ -56,6 +64,12 @@ class MainActivity : Activity() {
     private var pendingTransformedName: String = "rr3-data.bin"
     private var pendingOutputForDataEditor: Boolean = false
     private var pendingOutputForBrowser: Boolean = false
+    private var pendingOutputForCarEditor: Boolean = false
+    private var selectTabAction: ((String) -> Unit)? = null
+    private var currentCarOriginal: ByteArray? = null
+    private var currentCarName: String = "car.bin.nct"
+    private var currentCarOriginalFields: Map<String, String> = emptyMap()
+    private val carFieldInputs = linkedMapOf<String, EditText>()
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -106,11 +120,83 @@ class MainActivity : Activity() {
                 14,
                 0xFF9BAFC5.toInt()
             ),
-            matchWrap(top = 5, bottom = 22)
+            matchWrap(top = 5, bottom = 16)
         )
 
-        addSection(page, "GAME DATA")
-        val gameCard = card(page)
+        val tabNames = listOf(
+            "Game Data", "Save Editor", "Transform", "Data Editor",
+            "Car Editor", "Career", "About"
+        )
+        val tabPages = linkedMapOf<String, LinearLayout>()
+        for (name in tabNames) {
+            tabPages[name] = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+            }
+        }
+        val tabButtons = linkedMapOf<String, TextView>()
+        val tabScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+        }
+        val tabBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        tabScroll.addView(tabBar)
+        page.addView(tabScroll, matchWrap(bottom = 14))
+
+        val contentHost = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        page.addView(contentHost, matchWrap())
+        tabPages.values.forEach { contentHost.addView(it, matchWrap()) }
+
+        fun selectTab(selected: String) {
+            tabPages.forEach { (name, content) ->
+                content.visibility = if (name == selected) View.VISIBLE else View.GONE
+            }
+            tabButtons.forEach { (name, button) ->
+                val active = name == selected
+                button.background = rounded(
+                    if (active) 0xFF1766A8.toInt() else 0xFF121F30.toInt(),
+                    dp(18).toFloat()
+                )
+                button.setTextColor(if (active) Color.WHITE else 0xFF9BAFC5.toInt())
+            }
+        }
+
+        for (name in tabNames) {
+            val button = text(name, 12, 0xFF9BAFC5.toInt(), bold = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(15), dp(10), dp(15), dp(10))
+                background = rounded(0xFF121F30.toInt(), dp(18).toFloat())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { selectTab(name) }
+            }
+            tabButtons[name] = button
+            tabBar.addView(
+                button,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(7) }
+            )
+        }
+        selectTabAction = { name -> selectTab(name) }
+        selectTab("Game Data")
+
+        val gameDataPage = tabPages.getValue("Game Data")
+        val savePage = tabPages.getValue("Save Editor")
+        val transformPage = tabPages.getValue("Transform")
+        val editorPage = tabPages.getValue("Data Editor")
+        val carPage = tabPages.getValue("Car Editor")
+        val careerPage = tabPages.getValue("Career")
+        val aboutPage = tabPages.getValue("About")
+
+        addSection(gameDataPage, "GAME DATA")
+        val gameCard = card(gameDataPage)
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
@@ -148,8 +234,8 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: Editable?) = Unit
         })
 
-        addSection(page, "SAVE EDITOR")
-        val saveCard = card(page)
+        addSection(savePage, "SAVE EDITOR")
+        val saveCard = card(savePage)
         saveCard.addView(text("RR3 save location", 17, Color.WHITE, bold = true), matchWrap())
         saveCard.addView(
             text(
@@ -208,8 +294,8 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: Editable?) = Unit
         })
 
-        addSection(page, "RR3 DATA TRANSFORM")
-        val dataCard = card(page)
+        addSection(transformPage, "RR3 DATA TRANSFORM")
+        val dataCard = card(transformPage)
         dataCard.addView(
             text("Decode or re-encode RR3 data and game text", 17, Color.WHITE, bold = true),
             matchWrap()
@@ -229,8 +315,8 @@ class MainActivity : Activity() {
         dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
         dataCard.addView(dataStatus, matchWrap(top = 10))
 
-        addSection(page, "RR3 DATA EDITOR")
-        val editorCard = card(page)
+        addSection(editorPage, "RR3 DATA EDITOR")
+        val editorCard = card(editorPage)
         editorCard.addView(
             text("Edit supported RR3 data files as text", 17, Color.WHITE, bold = true),
             matchWrap()
@@ -250,8 +336,59 @@ class MainActivity : Activity() {
         dataEditorStatus = text("No data file opened.", 12, 0xFF9BAFC5.toInt())
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
 
-        addSection(page, "NATIVE ENGINE")
-        val engineCard = card(page)
+
+        addSection(carPage, "RR3 CAR EDITOR")
+        val carCard = card(carPage)
+        carCard.addView(
+            text("Edit a car's structured game data", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        carCard.addView(
+            text(
+                "Open a vehicles/data/<id>_<car>.bin.nct file. The app reads the actual car fields and lets you change supported values without editing encrypted bytes by hand. Output is saved as a separate file.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        carCard.addView(
+            actionButton("Choose car data (.bin.nct)") { chooseCarEditorFile() },
+            matchWrap(top = 12)
+        )
+        carEditorStatus = text("No car data file opened.", 12, 0xFF9BAFC5.toInt())
+        carCard.addView(carEditorStatus, matchWrap(top = 10))
+        carFieldsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        carCard.addView(carFieldsContainer, matchWrap(top = 12))
+
+        addSection(careerPage, "RR3 CAREER INSPECTOR")
+        val careerCard = card(careerPage)
+        careerCard.addView(
+            text("Inspect the career database", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        careerCard.addView(
+            text(
+                "Open data/events.dat.nct to validate and inspect its RRCE career structure, including tracks, series, tiers and event counts. This first pass is read-only; it does not rewrite the career file.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        careerCard.addView(
+            actionButton("Choose events.dat.nct") { chooseCareerInspectorFile() },
+            matchWrap(top = 12)
+        )
+        careerInspectorStatus = text("No career file opened.", 12, 0xFF9BAFC5.toInt())
+        careerCard.addView(careerInspectorStatus, matchWrap(top = 10))
+        careerDetailsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        careerCard.addView(careerDetailsContainer, matchWrap(top = 12))
+
+        addSection(aboutPage, "NATIVE ENGINE")
+        val engineCard = card(aboutPage)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
         engineCard.addView(engineValue, matchWrap())
         engineCard.addView(
@@ -263,22 +400,22 @@ class MainActivity : Activity() {
             matchWrap(top = 12)
         )
 
-        addSection(page, "PORT STATUS")
-        val statusCard = card(page)
+        addSection(aboutPage, "PORT STATUS")
+        val statusCard = card(aboutPage)
         statusCard.addView(
             text("Android foundation", 16, Color.WHITE, bold = true),
             matchWrap()
         )
         statusCard.addView(
             text(
-                "The app uses the upstream C++ save parser and RR3 calibration routines. Archive browsing and the other RR3 data editors are still being integrated.",
+                "The app uses the upstream C++ save parser, car-data parser and career-file reader. Large NCT transforms run in the native engine; source game files remain untouched unless you explicitly export replacements.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
         )
 
-        page.addView(
+        aboutPage.addView(
             text(
                 "Unofficial fan project  •  Not affiliated with EA",
                 11,
@@ -441,6 +578,8 @@ class MainActivity : Activity() {
         val effectiveName = lower.removeSuffix(".z")
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
+        if (lower == "events.dat.nct") actions.add("Inspect RR3 career data")
+        if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
         if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
             effectiveName.endsWith(".gui") || effectiveName.endsWith(".xml")) {
             actions.add("Decode / encode RR3 data")
@@ -464,6 +603,8 @@ class MainActivity : Activity() {
                     "Export original file" -> exportGameFile(entry, unwrapOnly = false)
                     "Unwrap RR3 container and export" -> exportGameFile(entry, unwrapOnly = true)
                     "Decode / encode RR3 data" -> decodeGameDataFile(entry)
+                    "Inspect RR3 career data" -> inspectCareerGameFile(entry)
+                    "Open in RR3 car editor" -> inspectCarGameFile(entry)
                     "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
                     "Convert audio to WAV" -> convertGameAudio(entry)
@@ -529,6 +670,7 @@ class MainActivity : Activity() {
                 pendingTransformedName = name
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
                 runOnUiThread {
                     gameFilesStatus.text = "Ready to export ${bytes.size} bytes."
                     launchRr3OutputPicker()
@@ -553,12 +695,12 @@ class MainActivity : Activity() {
                         val plain = unpacked.size >= 5 &&
                             unpacked.copyOfRange(0, 5).toString(Charsets.US_ASCII) == "<?xml"
                         if (plain) unpacked else NativeBridge.nativeTransformRr3Data(unpacked)
-                            ?: throw IllegalStateException("The RR3 GUI transform failed.")
+                            ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
                     }
                     "xml" -> NativeBridge.nativeTransformRr3Data(unpacked)
-                        ?: throw IllegalStateException("The RR3 XML transform failed.")
+                        ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
                     "nct", "bin" -> NativeBridge.nativeTransformRr3Data(unpacked)
-                        ?: throw IllegalStateException("The RR3 data transform failed.")
+                        ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
                     else -> unpacked
                 }
                 val outputName = when (extension) {
@@ -571,12 +713,15 @@ class MainActivity : Activity() {
                 pendingTransformedName = outputName
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
                 runOnUiThread {
                     gameFilesStatus.text = "Decoded ${output.size} bytes. Choose an output file."
                     launchRr3OutputPicker()
                 }
             } catch (e: Exception) {
                 runOnUiThread { gameFilesStatus.text = e.message ?: "RR3 data decoding failed." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { gameFilesStatus.text = "Android ran out of memory while decoding this file. Close other apps and retry." }
             }
         }.start()
     }
@@ -595,6 +740,7 @@ class MainActivity : Activity() {
                 pendingTransformedName = name
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
                 runOnUiThread {
                     gameFilesStatus.text = "Decoded ${output.size} bytes. Choose an output file."
                     launchRr3OutputPicker()
@@ -617,6 +763,7 @@ class MainActivity : Activity() {
                 pendingTransformedName = name.substringBeforeLast('.', name) + ".wav"
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
                 runOnUiThread {
                     gameFilesStatus.text = "Converted ${wav.size} bytes of WAV audio. Choose an output file."
                     launchRr3OutputPicker()
@@ -649,6 +796,253 @@ class MainActivity : Activity() {
 
     private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
         if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
+
+
+    private fun chooseCarEditorFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestCarEditorInput)
+    }
+
+    private fun chooseCareerInspectorFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestCareerInspectorInput)
+    }
+
+    private fun inspectCarGameFile(entry: GameDataFile) {
+        carEditorStatus.text = "Reading ${entry.relativePath}…"
+        Thread {
+            try {
+                val bytes = readGameFile(entry)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Car(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this car file."))
+                }
+                runOnUiThread {
+                    currentCarOriginal = bytes
+                    currentCarName = entry.name
+                    renderCarFields(payload)
+                    carEditorStatus.text = "Loaded ${entry.relativePath} (${bytes.size} bytes)."
+                    selectTabFromView("Car Editor")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { carEditorStatus.text = e.message ?: "Could not inspect this car file." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { carEditorStatus.text = "Android ran out of memory while reading this car file." }
+            }
+        }.start()
+    }
+
+    private fun inspectCareerGameFile(entry: GameDataFile) {
+        careerInspectorStatus.text = "Reading ${entry.relativePath}…"
+        Thread {
+            try {
+                val bytes = readGameFile(entry)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Career(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this career file."))
+                }
+                runOnUiThread {
+                    renderCareerDetails(entry.name, bytes.size, payload)
+                    careerInspectorStatus.text = "Inspected ${entry.relativePath} (${bytes.size} bytes)."
+                    selectTabFromView("Career")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { careerInspectorStatus.text = e.message ?: "Could not inspect this career file." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while reading this career file." }
+            }
+        }.start()
+    }
+
+    private fun openCarEditorFile(uri: Uri) {
+        carEditorStatus.text = "Reading car data file…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                if (!name.lowercase().endsWith(".bin.nct")) {
+                    throw IllegalArgumentException("Choose a car data file ending in .bin.nct.")
+                }
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected car data file.")
+                val bytes = input.use { it.readBytes() }
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Car(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this car file."))
+                }
+                runOnUiThread {
+                    currentCarOriginal = bytes
+                    currentCarName = name
+                    renderCarFields(payload)
+                    carEditorStatus.text = "Loaded $name (${bytes.size} bytes)."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { carEditorStatus.text = e.message ?: "Could not inspect this car file." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { carEditorStatus.text = "Android ran out of memory while reading this car file." }
+            }
+        }.start()
+    }
+
+    private fun renderCarFields(payload: JSONObject) {
+        carFieldsContainer.removeAllViews()
+        carFieldInputs.clear()
+        val fields = payload.optJSONArray("fields") ?: return
+        val original = linkedMapOf<String, String>()
+        for (i in 0 until fields.length()) {
+            val item = fields.optJSONObject(i) ?: continue
+            val key = item.optString("key")
+            if (key.isBlank() || key == "id") continue
+            val label = item.optString("label", key)
+            val value = item.optString("value")
+            original[key] = value
+            val fieldCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+            }
+            carFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
+            fieldCard.addView(text(label, 12, 0xFF9BAFC5.toInt(), bold = true), matchWrap())
+            val input = editBox("Value", value, numeric = !item.optBoolean("text") && key != "gear_ratios")
+            fieldCard.addView(input, matchWrap(top = 7))
+            carFieldInputs[key] = input
+        }
+        currentCarOriginalFields = original
+        if (carFieldInputs.isEmpty()) {
+            carFieldsContainer.addView(text("No editable fields were returned.", 12, 0xFF7F93A9.toInt()), matchWrap())
+            return
+        }
+        carFieldsContainer.addView(
+            actionButton("Build modified car file") { buildCarEditorOutput() },
+            matchWrap(top = 8)
+        )
+    }
+
+    private fun buildCarEditorOutput() {
+        val original = currentCarOriginal ?: run {
+            carEditorStatus.text = "Open a car data file first."
+            return
+        }
+        carEditorStatus.text = "Rebuilding car data…"
+        Thread {
+            try {
+                var output = original
+                for ((key, input) in carFieldInputs) {
+                    val value = input.text.toString()
+                    if (value == currentCarOriginalFields[key]) continue
+                    output = NativeBridge.nativeSetRr3CarField(output, key, value)
+                        ?: throw IllegalStateException(NativeBridge.nativeGetRr3CarError())
+                }
+                pendingTransformedData = output
+                pendingTransformedName = currentCarName
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = false
+                pendingOutputForCarEditor = true
+                runOnUiThread {
+                    carEditorStatus.text = "Built ${output.size} bytes. Choose a separate output file."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { carEditorStatus.text = e.message ?: "Could not rebuild this car file." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { carEditorStatus.text = "Android ran out of memory while rebuilding this car file." }
+            }
+        }.start()
+    }
+
+    private fun openCareerInspectorFile(uri: Uri) {
+        careerInspectorStatus.text = "Reading career file…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                if (!name.equals("events.dat.nct", ignoreCase = true)) {
+                    throw IllegalArgumentException("Choose the RR3 data/events.dat.nct file.")
+                }
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected career file.")
+                val bytes = input.use { it.readBytes() }
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Career(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this career file."))
+                }
+                runOnUiThread {
+                    renderCareerDetails(name, bytes.size, payload)
+                    careerInspectorStatus.text = "Inspected $name (${bytes.size} bytes)."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { careerInspectorStatus.text = e.message ?: "Could not inspect this career file." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while reading this career file." }
+            }
+        }.start()
+    }
+
+    private fun renderCareerDetails(name: String, size: Int, payload: JSONObject) {
+        careerDetailsContainer.removeAllViews()
+        val summary = text(
+            "$name · ${size} bytes\nFormat version: 0x${payload.optInt("version").toString(16).uppercase()}\n" +
+                "Tracks: ${payload.optInt("tracks")} · Series: ${payload.optInt("seriesCount")} · " +
+                "Tiers: ${payload.optInt("tiersCount")} · Events: ${payload.optInt("eventsCount")} · " +
+                "Career groups: ${payload.optInt("superGroups")}",
+            13,
+            Color.WHITE
+        )
+        careerDetailsContainer.addView(summary, matchWrap(bottom = 12))
+        careerDetailsContainer.addView(
+            text("SERIES (internal text keys)", 11, 0xFF75B9F1.toInt(), bold = true),
+            matchWrap(bottom = 7)
+        )
+        val series = payload.optJSONArray("series")
+        if (series != null) {
+            val count = minOf(series.length(), 80)
+            for (i in 0 until count) {
+                val item = series.optJSONObject(i) ?: continue
+                val row = "${item.optInt("id")}  ·  ${item.optString("titleKey")}\n" +
+                    "${item.optString("descriptionKey")}  ·  type ${item.optInt("type")}"
+                careerDetailsContainer.addView(
+                    text(row, 11, 0xFFB7C8D9.toInt()),
+                    matchWrap(bottom = 5)
+                )
+            }
+            if (series.length() > count) {
+                careerDetailsContainer.addView(
+                    text("Showing the first $count of ${series.length()} series.", 11, 0xFF7F93A9.toInt()),
+                    matchWrap(top = 4)
+                )
+            }
+        }
+        careerDetailsContainer.addView(
+            text("TIER STRUCTURE", 11, 0xFF75B9F1.toInt(), bold = true),
+            matchWrap(top = 12, bottom = 7)
+        )
+        val tiers = payload.optJSONArray("tiers")
+        if (tiers != null) {
+            val count = minOf(tiers.length(), 80)
+            for (i in 0 until count) {
+                val item = tiers.optJSONObject(i) ?: continue
+                careerDetailsContainer.addView(
+                    text(
+                        "Tier ${item.optInt("id")} · series ${item.optInt("seriesId")} · " +
+                            "${item.optInt("cars")} allowed cars · ${item.optInt("events")} events",
+                        11,
+                        0xFFB7C8D9.toInt()
+                    ),
+                    matchWrap(bottom = 4)
+                )
+            }
+        }
+    }
+
+    private fun selectTabFromView(name: String) {
+        selectTabAction?.invoke(name)
+    }
 
     private fun chooseEditableDataFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -757,6 +1151,7 @@ class MainActivity : Activity() {
                         pendingTransformedName = name
                         pendingOutputForDataEditor = true
                         pendingOutputForBrowser = false
+                        pendingOutputForCarEditor = false
                         runOnUiThread {
                             dialog.dismiss()
                             dataEditorStatus.text =
@@ -829,13 +1224,14 @@ class MainActivity : Activity() {
                     bytes
                 } else {
                     NativeBridge.nativeTransformRr3Data(bytes)
-                        ?: throw IllegalStateException("The RR3 transform failed.")
+                        ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
                 }
 
                 val baseName = name.substringBeforeLast('.', name)
                 pendingTransformedData = transformed
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = false
+                pendingOutputForCarEditor = false
                 pendingTransformedName = when (extension) {
                     "nct" -> baseName
                     "bin" -> baseName + ".nct"
@@ -852,6 +1248,8 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     dataStatus.text = e.message ?: "RR3 data transform failed."
                 }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { dataStatus.text = "Android ran out of memory while transforming this file. Close other apps and retry." }
             }
         }.start()
     }
@@ -881,6 +1279,7 @@ class MainActivity : Activity() {
                 pendingTransformedData = output
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = false
+                pendingOutputForCarEditor = false
                 pendingTransformedName = name
                 runOnUiThread {
                     dataStatus.text = (if (encode) "Encoded " else "Decoded ") +
@@ -919,6 +1318,7 @@ class MainActivity : Activity() {
                     setPendingOutputStatus("Saved " + bytes.size + " bytes.")
                     pendingOutputForDataEditor = false
                     pendingOutputForBrowser = false
+                    pendingOutputForCarEditor = false
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -929,7 +1329,9 @@ class MainActivity : Activity() {
     }
 
     private fun setPendingOutputStatus(message: String) {
-        if (pendingOutputForBrowser && ::gameFilesStatus.isInitialized) {
+        if (pendingOutputForCarEditor && ::carEditorStatus.isInitialized) {
+            carEditorStatus.text = message
+        } else if (pendingOutputForBrowser && ::gameFilesStatus.isInitialized) {
             gameFilesStatus.text = message
         } else if (pendingOutputForDataEditor && ::dataEditorStatus.isInitialized) {
             dataEditorStatus.text = message
@@ -1146,6 +1548,14 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestEditableDataInput) {
             openEditableDataFile(uri)
+            return
+        }
+        if (requestCode == requestCarEditorInput) {
+            openCarEditorFile(uri)
+            return
+        }
+        if (requestCode == requestCareerInspectorInput) {
+            openCareerInspectorFile(uri)
             return
         }
         val accessFlags = data.flags and (
