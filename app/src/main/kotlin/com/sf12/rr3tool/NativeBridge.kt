@@ -11,6 +11,8 @@ internal object NativeBridge {
 
     external fun nativeBuildEditedData(fileName: String, editedText: String, original: ByteArray): ByteArray?
 
+    external fun nativeGetDataEditError(): String
+
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?
