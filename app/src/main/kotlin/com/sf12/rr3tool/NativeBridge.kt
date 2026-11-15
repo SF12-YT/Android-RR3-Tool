@@ -7,6 +7,10 @@ internal object NativeBridge {
 
     external fun nativeStatus(): String
 
+    external fun nativeOpenDataAsText(fileName: String, original: ByteArray): String?
+
+    external fun nativeBuildEditedData(fileName: String, editedText: String, original: ByteArray): ByteArray?
+
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?
