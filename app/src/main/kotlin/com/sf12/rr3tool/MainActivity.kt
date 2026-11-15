@@ -1304,13 +1304,44 @@ class MainActivity : Activity() {
     }
 
     private fun openEditableDataFile(uri: Uri) {
-        dataEditorStatus.text = "Reading and decoding data file…"
+        dataEditorStatus.text = "Reading data file…"
         Thread {
+            val careerFile = newCacheFile("rr3-career-editor")
             try {
                 val name = displayName(uri)
-                val extension = name.substringAfterLast('.', "").lowercase()
+                val lowerName = name.lowercase(Locale.ROOT)
+
+                // events.dat is a structured career database, not a generic binary
+                // table. Converting all ~14 MB into editable pseudo-text creates a
+                // huge expanded string and can exhaust the phone's heap/layout memory.
+                // Decode/read it on disk and send it through the dedicated parser.
+                if (lowerName == "events.dat" || lowerName == "events.dat.nct") {
+                    val decodedSize = if (lowerName.endsWith(".nct")) {
+                        transformUriToCache(uri, careerFile)
+                    } else {
+                        copyUriToFile(uri, careerFile)
+                        careerFile.length()
+                    }
+                    val payload = JSONObject(
+                        NativeBridge.nativeInspectRr3CareerFile(careerFile.absolutePath)
+                    )
+                    if (!payload.optBoolean("ok")) {
+                        throw IllegalStateException(
+                            payload.optString("error", "Could not parse this RR3 career database.")
+                        )
+                    }
+                    runOnUiThread {
+                        renderCareerDetails("events.dat", decodedSize.toInt(), payload)
+                        careerInspectorStatus.text = "Inspected events.dat ($decodedSize bytes) from Data Editor."
+                        dataEditorStatus.text = "events.dat opened in the Career Inspector."
+                        selectTabFromView("Career")
+                    }
+                    return@Thread
+                }
+
+                val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
                 if (extension == "nct" || extension == "gui") {
-                    throw IllegalArgumentException("Use the RR3 Data Transform section for .nct and .gui files.")
+                    throw IllegalArgumentException("Use the RR3 Data Transform section for this .nct or .gui file.")
                 }
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")
@@ -1326,6 +1357,12 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     dataEditorStatus.text = e.message ?: "Could not open this data file."
                 }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    dataEditorStatus.text = "Not enough memory to open this file as editable text. Try the dedicated RR3 inspector for structured game data."
+                }
+            } finally {
+                careerFile.delete()
             }
         }.start()
     }
