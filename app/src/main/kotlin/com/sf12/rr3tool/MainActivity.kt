@@ -1582,7 +1582,7 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
                 runOnUiThread {
                     dataEditorStatus.text = "Opened " + name + " (" + original.size + " bytes)."
-                    showEditableDataDialog(name, original, editable)
+                    showEditableDataEditor(name, original, editable)
                 }
             } catch (e: Exception) {
                 runOnUiThread { dataEditorStatus.text = e.message ?: "Could not open this data file." }
@@ -1605,7 +1605,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun showCareerEditableDialog(
+    private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
         workingTextFile: File,
@@ -1618,41 +1618,40 @@ class MainActivity : Activity() {
         var isLoadingPage = false
         var reachedEnd = false
         var building = false
-        var dismissed = false
+        var closed = false
+        var buildButton: TextView? = null
+        var closeButton: TextView? = null
 
         val help = text(
-            "Sectioned career editor · " +
+            "Career data · " +
                 summary.optInt("series") + " series · " +
                 summary.optInt("tiers") + " tiers · " +
                 summary.optInt("events") + " events. " +
-                "Scroll down to load more sections. Edit values after the fixed ID/index columns; untouched sections stay on disk.",
+                "Scroll through the file; more text is loaded before the bottom. Fixed IDs and indexes should be left unchanged.",
             12,
             0xFF9BAFC5.toInt()
         )
-
         val pageContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0B1725.toInt())
         }
         val editorScroll = ScrollView(this).apply {
             isFillViewport = false
             isSmoothScrollingEnabled = true
-            addView(pageContainer, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            addView(
+                pageContainer,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
         }
-        val loadStatus = text("Scroll to load the next section…", 11, 0xFF75B9F1.toInt())
+        val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
 
         fun addPage(page: CareerTextPage) {
-            val section = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(11), dp(12), dp(11))
-                background = rounded(0xFF101F30.toInt(), dp(12).toFloat())
-            }
-            section.addView(
-                text(page.label, 11, 0xFF75B9F1.toInt(), bold = true),
-                matchWrap(bottom = 8)
-            )
             val rowEditor = EditText(this).apply {
                 setText(page.text)
                 setTextColor(Color.WHITE)
@@ -1665,61 +1664,59 @@ class MainActivity : Activity() {
                     InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                 setHorizontallyScrolling(false)
                 isVerticalScrollBarEnabled = false
-                setPadding(dp(10), dp(9), dp(10), dp(9))
-                background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
-                val lineCount = page.text.count { it == '\n' } + 1
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = rounded(0xFF0B1725.toInt(), 0f)
+                val lineCount = maxOf(1, page.text.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
-                maxLines = lineCount.coerceAtLeast(1)
+                maxLines = lineCount
             }
             pageEditors.add(rowEditor)
-            section.addView(rowEditor, matchWrap())
-            pageContainer.addView(section, matchWrap(bottom = 9))
+            pageContainer.addView(rowEditor, matchWrap())
         }
 
-        addPage(firstPage)
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(8), dp(14), dp(4))
-            addView(help, matchWrap(bottom = 10))
-            addView(
-                editorScroll,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(470)
-                )
-            )
-            addView(loadStatus, matchWrap(top = 8))
+        fun closeEditor() {
+            if (building) {
+                loadStatus.text = "Wait for the rebuild to finish before closing the editor."
+                return
+            }
+            if (closed) return
+            closed = true
+            pager.close()
+            sourcePlainFile.delete()
+            workingTextFile.delete()
+            dataEditorWorkspace.removeAllViews()
+            dataEditorWorkspace.visibility = View.GONE
+            closeDataEditorAction = null
         }
 
         fun loadNextSection() {
-            if (isLoadingPage || reachedEnd || building || dismissed) return
+            if (isLoadingPage || reachedEnd || building || closed) return
             isLoadingPage = true
-            loadStatus.text = "Loading the next section…"
+            loadStatus.text = "Loading more career data…"
             Thread {
                 var nextPage: CareerTextPage? = null
                 var failure: String? = null
                 try {
                     nextPage = pager.readNextPage()
                 } catch (e: Exception) {
-                    failure = e.message ?: "Could not read the next section."
+                    failure = e.message ?: "Could not read the next part of the file."
                 }
                 runOnUiThread {
                     isLoadingPage = false
-                    if (dismissed) return@runOnUiThread
+                    if (closed) return@runOnUiThread
                     if (failure != null) {
                         reachedEnd = true
                         loadStatus.text = failure
                     } else if (nextPage == null) {
                         reachedEnd = true
-                        loadStatus.text = "End of career text · all sections loaded."
+                        loadStatus.text = "End of file."
                     } else {
                         addPage(nextPage!!)
-                        loadStatus.text = "Keep scrolling to load the next section…"
+                        loadStatus.text = "Keep scrolling; more text will load automatically."
                         editorScroll.post {
                             val child = editorScroll.getChildAt(0)
                             if (child != null &&
-                                editorScroll.scrollY + editorScroll.height >= child.height - dp(360)
+                                editorScroll.scrollY + editorScroll.height >= child.height - dp(600)
                             ) {
                                 loadNextSection()
                             }
@@ -1729,119 +1726,353 @@ class MainActivity : Activity() {
             }.start()
         }
 
+        fun buildOutput() {
+            if (isLoadingPage || building || closed) {
+                loadStatus.text = "Wait for the current loading operation to finish."
+                return
+            }
+            building = true
+            buildButton?.isEnabled = false
+            closeButton?.isEnabled = false
+            val editedPages = pageEditors.map { it.text.toString() }
+            loadStatus.text = "Merging the edited text and rebuilding the career file…"
+            dataEditorStatus.text = "Rebuilding " + sourceName + "…"
+
+            Thread {
+                val mergedTextFile = newCacheFile("rr3-career-merged", ".txt")
+                val rebuiltPlain = newCacheFile("rr3-career-built")
+                var outputFile: File? = null
+                try {
+                    pager.writeMerged(editedPages, mergedTextFile)
+                    val build = JSONObject(
+                        NativeBridge.nativeBuildRr3CareerText(
+                            sourcePlainFile.absolutePath,
+                            mergedTextFile.absolutePath,
+                            rebuiltPlain.absolutePath
+                        )
+                    )
+                    mergedTextFile.delete()
+                    if (!build.optBoolean("ok")) {
+                        throw IllegalStateException(
+                            build.optString("error", "Could not rebuild the career file.")
+                        )
+                    }
+                    if (encryptedSource) {
+                        outputFile = newCacheFile("rr3-career-encoded")
+                        FileInputStream(rebuiltPlain).use { input ->
+                            FileOutputStream(outputFile!!).use { output ->
+                                transformNctStream(input, output)
+                            }
+                        }
+                        rebuiltPlain.delete()
+                    } else {
+                        outputFile = rebuiltPlain
+                    }
+                    val readyFile = outputFile
+                        ?: throw IllegalStateException("The rebuilt career file was not created.")
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = readyFile
+                    pendingTransformedSize = readyFile.length()
+                    pendingTransformedName = sourceName
+                    pendingOutputForDataEditor = true
+                    pendingOutputForBrowser = false
+                    pendingOutputForCarEditor = false
+                    runOnUiThread {
+                        building = false
+                        closeEditor()
+                        val outputKind = if (encryptedSource) "re-encoded .dat.nct" else "rebuilt .dat"
+                        dataEditorStatus.text =
+                            "Built " + outputKind + " (" + readyFile.length() + " bytes). Choose where to save it."
+                        launchRr3OutputPicker()
+                    }
+                } catch (e: Exception) {
+                    rebuiltPlain.delete()
+                    mergedTextFile.delete()
+                    outputFile?.delete()
+                    runOnUiThread {
+                        building = false
+                        buildButton?.isEnabled = true
+                        closeButton?.isEnabled = true
+                        loadStatus.text = e.message ?: "Could not rebuild the career file."
+                    }
+                } catch (e: OutOfMemoryError) {
+                    rebuiltPlain.delete()
+                    mergedTextFile.delete()
+                    outputFile?.delete()
+                    runOnUiThread {
+                        building = false
+                        buildButton?.isEnabled = true
+                        closeButton?.isEnabled = true
+                        loadStatus.text =
+                            "Android ran out of memory while rebuilding. The original file remains unchanged."
+                    }
+                }
+            }.start()
+        }
+
+        addPage(firstPage)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(help, matchWrap(bottom = 8))
+            addView(
+                editorScroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(520)
+                )
+            )
+            addView(loadStatus, matchWrap(top = 8, bottom = 8))
+            val actions = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            buildButton = actionButton("Build and export") { buildOutput() }
+            closeButton = actionButton("Close editor") { closeEditor() }
+            actions.addView(
+                buildButton,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(6)
+                }
+            )
+            actions.addView(
+                closeButton,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            addView(actions, matchWrap())
+        }
+
         editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
             val child = (view as ScrollView).getChildAt(0)
-            if (child != null && scrollY + view.height >= child.height - dp(360)) {
+            if (child != null && scrollY + view.height >= child.height - dp(600)) {
                 loadNextSection()
             }
         }
+        closeDataEditorAction = { closeEditor() }
+        dataEditorWorkspace.removeAllViews()
+        dataEditorWorkspace.addView(content, matchWrap())
+        dataEditorWorkspace.visibility = View.VISIBLE
         editorScroll.post {
             val child = editorScroll.getChildAt(0)
             if (child != null && child.height <= editorScroll.height + dp(120)) {
                 loadNextSection()
             }
         }
+    }
 
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(sourceName + " — section editor")
-            .setView(content)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Build and export", null)
-            .create()
+    private fun showPagedTextEditorInline(
+        sourceName: String,
+        sourceFile: File,
+        pager: PlainTextPager,
+        firstPage: String
+    ) {
+        val pageEditors = mutableListOf<EditText>()
+        var isLoadingPage = false
+        var reachedEnd = false
+        var building = false
+        var closed = false
+        var buildButton: TextView? = null
+        var closeButton: TextView? = null
 
-        dialog.setOnDismissListener {
-            dismissed = true
-            pager.close()
-            sourcePlainFile.delete()
-            workingTextFile.delete()
+        val help = text(
+            "Plain-text editor · " + sourceName +
+                ". The file is shown as one continuous document. More lines load automatically as you scroll.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        val pageContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0B1725.toInt())
         }
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (isLoadingPage || building) {
-                    loadStatus.text = "A section is still loading or saving. Try again in a moment."
-                    return@setOnClickListener
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = false
+            isSmoothScrollingEnabled = true
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            addView(
+                pageContainer,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        val loadStatus = text("Scroll to load more text…", 11, 0xFF75B9F1.toInt())
+
+        fun addPage(value: String) {
+            val rowEditor = EditText(this).apply {
+                setText(value)
+                setTextColor(Color.WHITE)
+                setHintTextColor(0xFF6F849B.toInt())
+                textSize = 12f
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                setHorizontallyScrolling(false)
+                isVerticalScrollBarEnabled = false
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = rounded(0xFF0B1725.toInt(), 0f)
+                val lineCount = maxOf(1, value.count { it == '\n' } + 1)
+                minLines = minOf(lineCount, 4)
+                maxLines = lineCount
+            }
+            pageEditors.add(rowEditor)
+            pageContainer.addView(rowEditor, matchWrap())
+        }
+
+        fun closeEditor() {
+            if (building) {
+                loadStatus.text = "Wait for the output to finish building before closing the editor."
+                return
+            }
+            if (closed) return
+            closed = true
+            pager.close()
+            sourceFile.delete()
+            dataEditorWorkspace.removeAllViews()
+            dataEditorWorkspace.visibility = View.GONE
+            closeDataEditorAction = null
+        }
+
+        fun loadNextPage() {
+            if (isLoadingPage || reachedEnd || building || closed) return
+            isLoadingPage = true
+            loadStatus.text = "Loading more lines…"
+            Thread {
+                var nextPage: String? = null
+                var failure: String? = null
+                try {
+                    nextPage = pager.readNextPage()
+                } catch (e: Exception) {
+                    failure = e.message ?: "Could not read the next part of the text file."
                 }
-
-                building = true
-                val editedPages = pageEditors.map { it.text.toString() }
-                val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                saveButton.isEnabled = false
-                loadStatus.text = "Merging edited sections and rebuilding events.dat…"
-                dataEditorStatus.text = "Rebuilding events.dat from the edited sections…"
-
-                Thread {
-                    val mergedTextFile = newCacheFile("rr3-career-merged", ".txt")
-                    val rebuiltPlain = newCacheFile("rr3-career-built")
-                    var outputFile: File? = null
-                    try {
-                        pager.writeMerged(editedPages, mergedTextFile)
-                        val build = JSONObject(
-                            NativeBridge.nativeBuildRr3CareerText(
-                                sourcePlainFile.absolutePath,
-                                mergedTextFile.absolutePath,
-                                rebuiltPlain.absolutePath
-                            )
-                        )
-                        mergedTextFile.delete()
-                        if (!build.optBoolean("ok")) {
-                            throw IllegalStateException(
-                                build.optString("error", "Could not rebuild events.dat.")
-                            )
-                        }
-                        if (encryptedSource) {
-                            outputFile = newCacheFile("rr3-career-encoded")
-                            FileInputStream(rebuiltPlain).use { input ->
-                                FileOutputStream(outputFile!!).use { output ->
-                                    transformNctStream(input, output)
-                                }
+                runOnUiThread {
+                    isLoadingPage = false
+                    if (closed) return@runOnUiThread
+                    if (failure != null) {
+                        reachedEnd = true
+                        loadStatus.text = failure
+                    } else if (nextPage == null) {
+                        reachedEnd = true
+                        loadStatus.text = "End of file."
+                    } else {
+                        addPage(nextPage!!)
+                        loadStatus.text = "Keep scrolling; the next part loads automatically."
+                        editorScroll.post {
+                            val child = editorScroll.getChildAt(0)
+                            if (child != null &&
+                                editorScroll.scrollY + editorScroll.height >= child.height - dp(600)
+                            ) {
+                                loadNextPage()
                             }
-                            rebuiltPlain.delete()
-                        } else {
-                            outputFile = rebuiltPlain
-                        }
-                        val readyFile = outputFile
-                            ?: throw IllegalStateException("The rebuilt career file was not created.")
-                        pendingTransformedData = null
-                        pendingTransformedFile?.delete()
-                        pendingTransformedFile = readyFile
-                        pendingTransformedSize = readyFile.length()
-                        pendingTransformedName = sourceName
-                        pendingOutputForDataEditor = true
-                        pendingOutputForBrowser = false
-                        pendingOutputForCarEditor = false
-                        runOnUiThread {
-                            dialog.dismiss()
-                            val outputKind = if (encryptedSource) "re-encoded .dat.nct" else "rebuilt .dat"
-                            dataEditorStatus.text =
-                                "Built " + outputKind + " (" + readyFile.length() + " bytes). Choose where to save it."
-                            launchRr3OutputPicker()
-                        }
-                    } catch (e: Exception) {
-                        rebuiltPlain.delete()
-                        mergedTextFile.delete()
-                        outputFile?.delete()
-                        runOnUiThread {
-                            building = false
-                            saveButton.isEnabled = true
-                            loadStatus.text = e.message ?: "Could not rebuild events.dat."
-                        }
-                    } catch (e: OutOfMemoryError) {
-                        rebuiltPlain.delete()
-                        mergedTextFile.delete()
-                        outputFile?.delete()
-                        runOnUiThread {
-                            building = false
-                            saveButton.isEnabled = true
-                            loadStatus.text =
-                                "Android ran out of memory while rebuilding the career file. Your source file is unchanged."
                         }
                     }
-                }.start()
+                }
+            }.start()
+        }
+
+        fun buildOutput() {
+            if (isLoadingPage || building || closed) {
+                loadStatus.text = "Wait for the current loading operation to finish."
+                return
+            }
+            building = true
+            buildButton?.isEnabled = false
+            closeButton?.isEnabled = false
+            loadStatus.text = "Merging edited lines into a new text file…"
+            dataEditorStatus.text = "Building " + sourceName + "…"
+            Thread {
+                val outputFile = newCacheFile("rr3-text-edited", ".txt")
+                try {
+                    pager.writeMerged(pageEditors.map { it.text.toString() }, outputFile)
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = outputFile
+                    pendingTransformedSize = outputFile.length()
+                    pendingTransformedName = sourceName
+                    pendingOutputForDataEditor = true
+                    pendingOutputForBrowser = false
+                    pendingOutputForCarEditor = false
+                    runOnUiThread {
+                        building = false
+                        closeEditor()
+                        dataEditorStatus.text =
+                            "Built " + outputFile.length() + " bytes. Choose where to save the edited text."
+                        launchRr3OutputPicker()
+                    }
+                } catch (e: Exception) {
+                    outputFile.delete()
+                    runOnUiThread {
+                        building = false
+                        buildButton?.isEnabled = true
+                        closeButton?.isEnabled = true
+                        loadStatus.text = e.message ?: "Could not build the text file."
+                    }
+                } catch (e: OutOfMemoryError) {
+                    outputFile.delete()
+                    runOnUiThread {
+                        building = false
+                        buildButton?.isEnabled = true
+                        closeButton?.isEnabled = true
+                        loadStatus.text = "Android ran out of memory. The original text file remains unchanged."
+                    }
+                }
+            }.start()
+        }
+
+        addPage(firstPage)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(help, matchWrap(bottom = 8))
+            addView(
+                editorScroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(520)
+                )
+            )
+            addView(loadStatus, matchWrap(top = 8, bottom = 8))
+            val actions = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            buildButton = actionButton("Build and export") { buildOutput() }
+            closeButton = actionButton("Close editor") { closeEditor() }
+            actions.addView(
+                buildButton,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(6)
+                }
+            )
+            actions.addView(
+                closeButton,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            addView(actions, matchWrap())
+        }
+
+        editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
+            val child = (view as ScrollView).getChildAt(0)
+            if (child != null && scrollY + view.height >= child.height - dp(600)) {
+                loadNextPage()
             }
         }
-        dialog.show()
+        closeDataEditorAction = { closeEditor() }
+        dataEditorWorkspace.removeAllViews()
+        dataEditorWorkspace.addView(content, matchWrap())
+        dataEditorWorkspace.visibility = View.VISIBLE
+        editorScroll.post {
+            val child = editorScroll.getChildAt(0)
+            if (child != null && child.height <= editorScroll.height + dp(120)) {
+                loadNextPage()
+            }
+        }
     }
-    private fun showEditableDataDialog(
+
+    private fun showEditableDataEditor(
         name: String,
         original: ByteArray,
         editableText: String
@@ -1858,79 +2089,98 @@ class MainActivity : Activity() {
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setHorizontallyScrolling(false)
             isVerticalScrollBarEnabled = true
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
-            minLines = 14
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = rounded(0xFF0B1725.toInt(), dp(8).toFloat())
+            minLines = 18
         }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(8), dp(14), dp(4))
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
             addView(
-                text(
-                    "Edit the decoded representation. The original file stays untouched until you choose a separate output.",
-                    12,
-                    0xFF9BAFC5.toInt()
-                ),
-                matchWrap(bottom = 10)
-            )
-            val editorScroll = ScrollView(this@MainActivity).apply {
-                addView(
-                    editor,
-                    LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        dp(420)
-                    )
-                )
-            }
-            addView(
-                editorScroll,
+                editor,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(440)
+                    dp(500)
                 )
             )
         }
-
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(name)
-            .setView(content)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Build output", null)
-            .create()
-
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val edited = editor.text.toString()
-                val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                saveButton.isEnabled = false
-                dataEditorStatus.text = "Rebuilding RR3 data file…"
-                Thread {
-                    try {
-                        val output = NativeBridge.nativeBuildEditedData(name, edited, original)
-                            ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
-                        pendingTransformedFile?.delete()
-                        pendingTransformedFile = null
-                        pendingTransformedData = output
-                        pendingTransformedName = name
-                        pendingOutputForDataEditor = true
-                        pendingOutputForBrowser = false
-                        pendingOutputForCarEditor = false
-                        runOnUiThread {
-                            dialog.dismiss()
-                            dataEditorStatus.text =
-                                "Built " + output.size + " bytes. Choose a new output file."
-                            launchRr3OutputPicker()
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread {
-                            saveButton.isEnabled = true
-                            dataEditorStatus.text = e.message ?: "Could not rebuild the data file."
-                        }
-                    }
-                }.start()
-            }
+        val status = text(
+            "Edit the decoded representation. The original remains unchanged until you choose a separate output.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        dialog.show()
+        val buildButton = actionButton("Build and export") { }
+        val closeButton = actionButton("Close editor") {
+            closeDataEditorAction?.invoke()
+        }
+        actions.addView(
+            buildButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+        actions.addView(
+            closeButton,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                text("Source: " + name, 11, 0xFF75B9F1.toInt(), bold = true),
+                matchWrap(bottom = 8)
+            )
+            addView(editorScroll, matchWrap())
+            addView(status, matchWrap(top = 8, bottom = 8))
+            addView(actions, matchWrap())
+        }
+
+        closeDataEditorAction = {
+            dataEditorWorkspace.removeAllViews()
+            dataEditorWorkspace.visibility = View.GONE
+            closeDataEditorAction = null
+        }
+        buildButton.setOnClickListener {
+            buildButton.isEnabled = false
+            closeButton.isEnabled = false
+            status.text = "Rebuilding the RR3 data file…"
+            dataEditorStatus.text = "Rebuilding " + name + "…"
+            Thread {
+                try {
+                    val output = NativeBridge.nativeBuildEditedData(name, editor.text.toString(), original)
+                        ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = null
+                    pendingTransformedData = output
+                    pendingTransformedName = name
+                    pendingOutputForDataEditor = true
+                    pendingOutputForBrowser = false
+                    pendingOutputForCarEditor = false
+                    runOnUiThread {
+                        closeDataEditorAction?.invoke()
+                        dataEditorStatus.text =
+                            "Built " + output.size + " bytes. Choose a new output file."
+                        launchRr3OutputPicker()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        buildButton.isEnabled = true
+                        closeButton.isEnabled = true
+                        status.text = e.message ?: "Could not rebuild the data file."
+                    }
+                }
+            }.start()
+        }
+
+        dataEditorWorkspace.removeAllViews()
+        dataEditorWorkspace.addView(content, matchWrap())
+        dataEditorWorkspace.visibility = View.VISIBLE
     }
 
     private fun chooseRr3DataFile() {
