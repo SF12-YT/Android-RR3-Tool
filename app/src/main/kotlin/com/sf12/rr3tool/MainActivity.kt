@@ -19,6 +19,9 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
     private val requestGameData = 1101
@@ -39,7 +42,7 @@ class MainActivity : Activity() {
         get() = File(filesDir, "rr3_keys.txt")
 
     private val stageDir: File
-        get() = File(cacheDir, "rr3_save_work")
+        get() = File(filesDir, "rr3_save_work")
 
     private val stagedSave: File
         get() = File(stageDir, "character.2.dat")
@@ -398,6 +401,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun createPersistentBackups(treeUri: Uri) {
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val treeId = DocumentsContract.getTreeDocumentId(treeUri)
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId)
+
+        fun createBackup(source: File, originalName: String) {
+            val backupName = originalName + ".backup_" + stamp
+            val backupUri = DocumentsContract.createDocument(
+                contentResolver,
+                parentUri,
+                "application/octet-stream",
+                backupName
+            ) ?: throw IllegalStateException("Could not create backup file: $backupName")
+            copyFileToUri(source, backupUri)
+        }
+
+        createBackup(stagedSave, "character.2.dat")
+        if (stagedTempSave.exists()) createBackup(stagedTempSave, "TempSaveGame.dat")
+    }
+
     private fun renderHiddenFields(payload: JSONObject) {
         saveFieldsContainer.removeAllViews()
         val hidden = payload.optJSONArray("hidden") ?: return
@@ -477,6 +500,9 @@ class MainActivity : Activity() {
         val stored = preferences.getString("save_tree", null) ?: return
         saveStatus.text = "Updating save…"
         runBackground {
+            val treeUri = Uri.parse(stored)
+            createPersistentBackups(treeUri)
+
             val result = JSONObject(
                 NativeBridge.nativeSetRr3SaveField(
                     stagedSave.absolutePath,
@@ -489,7 +515,6 @@ class MainActivity : Activity() {
                 throw IllegalStateException(result.optString("error", "Could not update save."))
             }
 
-            val treeUri = Uri.parse(stored)
             val saveUri = findChildDocument(treeUri, "character.2.dat")
                 ?: throw IllegalStateException("The save file disappeared from the selected folder.")
             copyFileToUri(stagedSave, saveUri)
@@ -504,7 +529,7 @@ class MainActivity : Activity() {
                 NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
             )
             runOnUiThread {
-                saveStatus.text = "Save written and verified. A backup was created in the app's temporary working folder."
+                saveStatus.text = "Save written and verified. Original save copies were backed up in the selected folder."
                 renderHiddenFields(inspected)
             }
         }
