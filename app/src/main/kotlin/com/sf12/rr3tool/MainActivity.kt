@@ -331,7 +331,7 @@ class MainActivity : Activity() {
         )
         editorCard.addView(
             text(
-                "Open supported .sounddef, .evt, table and text files. The native engine converts them into an editable representation and rebuilds the original format when saved.",
+                "Open supported .sounddef, .evt, table and text files. RR3's large events.dat is routed to the Career Inspector instead of being expanded into a huge generic text buffer. Other supported files remain editable and can be rebuilt in their original format.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -378,7 +378,7 @@ class MainActivity : Activity() {
         )
         careerCard.addView(
             text(
-                "Open data/events.dat.nct to validate and inspect its RRCE career structure, including tracks, series, tiers and event counts. This first pass is read-only; it does not rewrite the career file.",
+                "Open data/events.dat.nct here, or select an already-decoded events.dat in Data Editor, to inspect its RRCE career structure, including tracks, series, tiers and event counts. This first pass is read-only; it does not rewrite the career file.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
