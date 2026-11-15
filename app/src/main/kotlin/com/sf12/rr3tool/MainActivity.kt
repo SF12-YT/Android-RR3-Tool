@@ -9,6 +9,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.InputType
@@ -814,7 +817,7 @@ class MainActivity : Activity() {
 
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
-        gameFilesStatus.text = "Requesting root and checking RR3 storage locations…"
+        gameFilesStatus.text = "Requesting root and searching Android/data/*/files/.depot…"
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
@@ -824,28 +827,8 @@ class MainActivity : Activity() {
                     )
                 }
 
-                // Keep known RR3 IDs, but also discover installed regional variants
-                // so a package suffix not listed here does not make detection fail.
-                val installedPackages = runCatching {
-                    runRootCommand("pm list packages")
-                }.getOrDefault("")
-                    .lineSequence()
-                    .map { it.trim().removePrefix("package:") }
-                    .filter {
-                        Regex("""com\.ea\.games\.r3_[a-z0-9_]+""").matches(it)
-                    }
-                    .toList()
-
-                val rr3Packages = (installedPackages + listOf(
-                    "com.ea.games.r3_row",
-                    "com.ea.games.r3_na",
-                    "com.ea.games.r3_cn"
-                )).distinct()
-
-                // Resolve the Android user/profile from this app's UID rather
-                // than assuming every installation belongs to user 0.
                 val userId = android.os.Process.myUid() / 100000
-                val ownExternalSuffix = "/Android/data/$packageName/files"
+                val ownExternalSuffix = "/Android/data/" + packageName + "/files"
                 val ownExternalRoots = getExternalFilesDirs(null)
                     .filterNotNull()
                     .mapNotNull { directory ->
@@ -857,29 +840,29 @@ class MainActivity : Activity() {
                         }
                     }
 
-                // /data/media is the backing storage path and can avoid
-                // Android's scoped-storage FUSE view when the caller is root.
+                // Search the exact path layout used by RR3, with wildcard
+                // package directories so this does not depend on a guessed ID.
                 val storageRoots = linkedSetOf<String>().apply {
-                    add("/data/media/$userId")
+                    add("/storage/emulated/0")
+                    add("/data/media/0")
+                    add("/storage/emulated/" + userId)
+                    add("/data/media/" + userId)
+                    add("/mnt/user/" + userId + "/primary")
                     addAll(ownExternalRoots)
-                    add("/storage/emulated/$userId")
-                    add("/mnt/user/$userId/primary")
                 }.toList()
 
-                val candidates = rr3Packages.flatMap { packageName ->
-                    storageRoots.map { root ->
-                        "$root/Android/data/$packageName/files/.depot"
-                    }
-                }.distinct()
-
-                val checks = candidates.joinToString("\n") { candidate ->
-                    val quoted = shellQuote(candidate)
-                    "if [ -d $quoted ]; then " +
-                        "first_file=\"\$(find $quoted -type f -print -quit 2>/dev/null)\"; " +
+                val checks = storageRoots.joinToString("\n") { root ->
+                    val androidData = shellQuote(root + "/Android/data")
+                    "data_root=$androidData; " +
+                        "if [ -d \"\$data_root\" ]; then " +
+                        "for package_dir in \"\$data_root\"/*; do " +
+                        "[ -d \"\$package_dir\" ] || continue; " +
+                        "depot=\"\$package_dir/files/.depot\"; " +
+                        "if [ -d \"\$depot\" ]; then " +
+                        "first_file=\$(find \"\$depot\" -type f -print -quit 2>/dev/null); " +
                         "if [ -n \"\$first_file\" ]; then " +
-                        "printf 'FOUND|%s\\n' $quoted; exit 0; " +
-                        "else printf 'EMPTY_OR_UNREADABLE|%s\\n' $quoted; fi; " +
-                        "else printf 'MISSING|%s\\n' $quoted; fi"
+                        "printf 'FOUND|%s\\n' \"\$depot\"; exit 0; " +
+                        "else printf 'EMPTY|%s\\n' \"\$depot\"; fi; fi; done; fi"
                 }
 
                 val scanOutput = runRootCommand("$checks\nexit 0")
@@ -890,21 +873,19 @@ class MainActivity : Activity() {
                     ?.takeIf { it.isNotEmpty() }
 
                 if (found.isNullOrBlank()) {
-                    val existingCandidates = scanOutput.lineSequence()
-                        .filter { it.startsWith("EMPTY_OR_UNREADABLE|") }
+                    val emptyPaths = scanOutput.lineSequence()
+                        .filter { it.startsWith("EMPTY|") }
                         .map { it.substringAfter('|') }
                         .toList()
-                    val detail = if (existingCandidates.isNotEmpty()) {
-                        " These candidate directories exist, but root could not find files inside them: " +
-                            existingCandidates.joinToString(", ") + "."
+                    val detail = if (emptyPaths.isNotEmpty()) {
+                        " .depot exists but contains no files: " + emptyPaths.joinToString(", ") + "."
                     } else {
-                        " None of the checked package paths exists."
+                        " No package directory contained files/.depot."
                     }
                     throw IllegalStateException(
-                        "Root access works, but no populated RR3 files/.depot directory was found. " +
-                            "Checked " + candidates.size + " paths for " +
-                            rr3Packages.joinToString(", ") + " under Android user " +
-                            userId + "." + detail
+                        "Root access works, but no populated files/.depot directory was found. " +
+                            "Searched " + storageRoots.joinToString(", ") +
+                            " for Android/data/[package]/files/.depot." + detail
                     )
                 }
 
@@ -915,7 +896,7 @@ class MainActivity : Activity() {
                     indexedGameFiles = emptyList()
                     gameFilesContainer.removeAllViews()
                     gameFilesStatus.text =
-                        "Found populated RR3 .depot: $found. Tap Index and browse RR3 files."
+                        "Found populated RR3 .depot: " + found + ". Tap Index and browse RR3 files."
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -1850,6 +1831,153 @@ class MainActivity : Activity() {
         }
     }
 
+    private data class PagedTextMatch(
+        val editor: EditText,
+        val start: Int,
+        val end: Int
+    )
+
+    /**
+     * Search every section currently materialised in the paged editor.
+     * Typing is debounced by one second, and Previous/Next navigate matches
+     * without rebuilding or altering the text.
+     */
+    private fun addPagedTextFindControls(
+        parent: LinearLayout,
+        pageEditors: MutableList<EditText>,
+        viewport: ScrollView
+    ): () -> Unit {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val queryInput = editBox("Find in file…", "", numeric = false)
+        controls.addView(
+            queryInput,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+
+        val matches = mutableListOf<PagedTextMatch>()
+        var selectedMatch = -1
+        val status = text(
+            "Enter text to find. Search runs 1 second after you stop typing.",
+            11,
+            0xFF8FA4BA.toInt()
+        )
+        val handler = Handler(Looper.getMainLooper())
+
+        fun updateStatus() {
+            if (matches.isEmpty()) {
+                status.text = if (queryInput.text.isNullOrBlank()) {
+                    "Enter text to find. Search runs 1 second after you stop typing."
+                } else {
+                    "No matches in the loaded sections."
+                }
+            } else {
+                status.text = "Match " + (selectedMatch + 1) + " of " + matches.size + " · loaded sections"
+            }
+        }
+
+        fun goToMatch(index: Int) {
+            if (matches.isEmpty()) return
+            selectedMatch = ((index % matches.size) + matches.size) % matches.size
+            val match = matches[selectedMatch]
+            match.editor.setSelection(match.start, match.end)
+            match.editor.post {
+                val layout = match.editor.layout
+                val line = layout?.getLineForOffset(match.start) ?: 0
+                val lineTop = layout?.getLineTop(line) ?: 0
+                val targetY = (match.editor.top + lineTop - viewport.height / 3).coerceAtLeast(0)
+                viewport.smoothScrollTo(0, targetY)
+            }
+            updateStatus()
+        }
+
+        fun rebuildMatches(preserveCurrent: Boolean) {
+            val previous = if (preserveCurrent) matches.getOrNull(selectedMatch) else null
+            val query = queryInput.text.toString()
+            matches.clear()
+            selectedMatch = -1
+
+            if (query.isNotEmpty()) {
+                for (editor in pageEditors) {
+                    val content = editor.text.toString()
+                    var from = 0
+                    while (from <= content.length - query.length) {
+                        val found = content.indexOf(query, startIndex = from, ignoreCase = true)
+                        if (found < 0) break
+                        matches.add(PagedTextMatch(editor, found, found + query.length))
+                        from = found + maxOf(1, query.length)
+                    }
+                }
+            }
+
+            if (matches.isEmpty()) {
+                updateStatus()
+                return
+            }
+
+            val previousIndex = previous?.let { old ->
+                matches.indexOfFirst { it.editor === old.editor && it.start == old.start && it.end == old.end }
+            } ?: -1
+            if (previousIndex >= 0) {
+                selectedMatch = previousIndex
+                updateStatus()
+            } else {
+                goToMatch(0)
+            }
+        }
+
+        lateinit var searchRunnable: Runnable
+        fun scheduleSearch() {
+            handler.removeCallbacks(searchRunnable)
+            handler.postDelayed(searchRunnable, 1000L)
+        }
+
+        searchRunnable = Runnable { rebuildMatches(preserveCurrent = false) }
+
+        queryInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                scheduleSearch()
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
+        val previousButton = actionButton("Prev") {
+            if (matches.isNotEmpty()) goToMatch(selectedMatch - 1)
+        }
+        controls.addView(
+            previousButton,
+            LinearLayout.LayoutParams(dp(64), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(5)
+            }
+        )
+        val nextButton = actionButton("Next") {
+            if (matches.isNotEmpty()) goToMatch(selectedMatch + 1)
+        }
+        controls.addView(
+            nextButton,
+            LinearLayout.LayoutParams(dp(64), LinearLayout.LayoutParams.WRAP_CONTENT)
+        )
+
+        panel.addView(controls, matchWrap())
+        panel.addView(status, matchWrap(top = 5))
+        parent.addView(panel, matchWrap(bottom = 5))
+
+        return {
+            if (queryInput.text.isNotBlank()) {
+                scheduleSearch()
+            }
+        }
+    }
+
     private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
@@ -1860,6 +1988,7 @@ class MainActivity : Activity() {
     ) {
         val encryptedSource = sourceName.lowercase(Locale.ROOT).endsWith(".nct")
         val pageEditors = mutableListOf<EditText>()
+        var refreshFindResults: (() -> Unit)? = null
         var isLoadingPage = false
         var reachedEnd = false
         var building = false
@@ -1886,6 +2015,9 @@ class MainActivity : Activity() {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setScrollBarSize(dp(12))
+            }
             addView(
                 pageContainer,
                 LinearLayout.LayoutParams(
@@ -1918,6 +2050,7 @@ class MainActivity : Activity() {
             attachVerticalSwipeScrolling(rowEditor, editorScroll)
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
+            refreshFindResults?.invoke()
         }
 
         fun closeEditor() {
@@ -2061,6 +2194,7 @@ class MainActivity : Activity() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
+            refreshFindResults = addPagedTextFindControls(this, pageEditors, editorScroll)
             addView(
                 editorScroll,
                 LinearLayout.LayoutParams(
@@ -2114,6 +2248,7 @@ class MainActivity : Activity() {
         encodeGameText: Boolean = false
     ) {
         val pageEditors = mutableListOf<EditText>()
+        var refreshFindResults: (() -> Unit)? = null
         var isLoadingPage = false
         var reachedEnd = false
         var building = false
@@ -2137,6 +2272,9 @@ class MainActivity : Activity() {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setScrollBarSize(dp(12))
+            }
             addView(
                 pageContainer,
                 LinearLayout.LayoutParams(
@@ -2169,6 +2307,7 @@ class MainActivity : Activity() {
             attachVerticalSwipeScrolling(rowEditor, editorScroll)
             pageEditors.add(rowEditor)
             pageContainer.addView(rowEditor, matchWrap())
+            refreshFindResults?.invoke()
         }
 
         fun closeEditor() {
@@ -2295,6 +2434,7 @@ class MainActivity : Activity() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
+            refreshFindResults = addPagedTextFindControls(this, pageEditors, editorScroll)
             addView(
                 editorScroll,
                 LinearLayout.LayoutParams(
@@ -2366,6 +2506,9 @@ class MainActivity : Activity() {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setScrollBarSize(dp(12))
+            }
             addView(
                 editor,
                 LinearLayout.LayoutParams(
