@@ -1,0 +1,13 @@
+# Android/Gradle
+.gradle/
+.idea/
+local.properties
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local test files and saves
+*.rr3save
+*.save
+*.dat
