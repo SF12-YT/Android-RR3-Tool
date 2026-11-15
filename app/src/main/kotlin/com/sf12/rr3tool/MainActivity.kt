@@ -1681,26 +1681,6 @@ class MainActivity : Activity() {
             return
         }
 
-        // RR3 stores strings inline in the encrypted record. Changing their
-        // byte length shifts later fields and may move them beyond known NCT
-        // pad bytes, so reject those edits before invoking the native writer.
-        val lengthSensitiveTextFields = setOf(
-            "year", "make", "model", "class", "drivetrain", "aspiration",
-            "layout", "handling", "unlock", "make_key", "name_key"
-        )
-        val resizedTextField = changedValues.keys.firstOrNull { key ->
-            key in lengthSensitiveTextFields &&
-                (currentCarOriginalFields[key] ?: "").toByteArray(Charsets.UTF_8).size !=
-                (editedValues[key] ?: "").toByteArray(Charsets.UTF_8).size
-        }
-        if (resizedTextField != null) {
-            val originalLength = (currentCarOriginalFields[resizedTextField] ?: "")
-                .toByteArray(Charsets.UTF_8).size
-            carEditorStatus.text =
-                "Cannot build: '$resizedTextField' must remain exactly $originalLength UTF-8 byte(s) long to preserve the RR3 .nct layout."
-            return
-        }
-
         carEditorStatus.text = "Rebuilding " + changedValues.size + " changed field(s)…"
         Thread {
             try {
