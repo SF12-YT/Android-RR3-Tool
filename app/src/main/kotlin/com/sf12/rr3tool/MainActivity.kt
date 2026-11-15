@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     private var currentSavePayload: JSONObject? = null
     private var pendingTransformedData: ByteArray? = null
     private var pendingTransformedName: String = "rr3-data.bin"
+    private var pendingOutputForDataEditor: Boolean = false
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -355,6 +356,7 @@ class MainActivity : Activity() {
                             ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
                         pendingTransformedData = output
                         pendingTransformedName = name
+                        pendingOutputForDataEditor = true
                         runOnUiThread {
                             dialog.dismiss()
                             dataEditorStatus.text =
@@ -432,6 +434,7 @@ class MainActivity : Activity() {
 
                 val baseName = name.substringBeforeLast('.', name)
                 pendingTransformedData = transformed
+                pendingOutputForDataEditor = false
                 pendingTransformedName = when (extension) {
                     "nct" -> baseName
                     "bin" -> baseName + ".nct"
@@ -475,6 +478,7 @@ class MainActivity : Activity() {
                         ?: throw IllegalStateException("The RR3 text transform failed.")
                 }
                 pendingTransformedData = output
+                pendingOutputForDataEditor = false
                 pendingTransformedName = name
                 runOnUiThread {
                     dataStatus.text = (if (encode) "Encoded " else "Decoded ") +
@@ -502,7 +506,7 @@ class MainActivity : Activity() {
             dataStatus.text = "There is no transformed data waiting to be saved."
             return
         }
-        dataStatus.text = "Writing transformed RR3 data…"
+        setPendingOutputStatus("Writing output file…")
         Thread {
             try {
                 val output = contentResolver.openOutputStream(uri, "wt")
@@ -510,14 +514,23 @@ class MainActivity : Activity() {
                 output.use { it.write(bytes) }
                 pendingTransformedData = null
                 runOnUiThread {
-                    dataStatus.text = "Saved " + bytes.size + " bytes. The transform is reversible for encoding the file again."
+                    setPendingOutputStatus("Saved " + bytes.size + " bytes.")
+                    pendingOutputForDataEditor = false
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    dataStatus.text = e.message ?: "Could not save transformed data."
+                    setPendingOutputStatus(e.message ?: "Could not save output data.")
                 }
             }
         }.start()
+    }
+
+    private fun setPendingOutputStatus(message: String) {
+        if (pendingOutputForDataEditor && ::dataEditorStatus.isInitialized) {
+            dataEditorStatus.text = message
+        } else if (::dataStatus.isInitialized) {
+            dataStatus.text = message
+        }
     }
 
     private fun addSection(parent: LinearLayout, title: String) {
@@ -952,7 +965,7 @@ class MainActivity : Activity() {
             if (stagedTempSave.exists()) {
                 val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
                     ?: throw IllegalStateException("TempSaveGame.dat is missing; the main save was written, but the secondary copy could not be updated.")
-                copyFileToUri(stagedTempSave, tempUri)
+                copyFileToUri(stagedSave, tempUri)
             }
 
             val inspected = JSONObject(
