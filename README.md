@@ -44,7 +44,7 @@ gradle assembleDebug
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
-For a private preview release, open **Actions → Android build → Run workflow**, set `publish_preview` to `true`, and run it. The workflow creates a prerelease containing the APK. Normal pushes only compile the APK; they do not publish a release.
+For a private preview release, open **Actions → Android build → Run workflow**, set `publish_preview` to `true`, and run it. The workflow attaches the APK to a prerelease. Normal pushes only compile the APK; they do not publish a release. A one-off push commit whose message contains `[publish-apk]` also publishes that build as a prerelease, without using GitHub Actions artifact storage.
 
 ## Upstream and licences
 
