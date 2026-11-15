@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
@@ -28,16 +29,21 @@ import java.util.Locale
 class MainActivity : Activity() {
     private val requestGameData = 1101
     private val requestSaveFolder = 1102
+    private val requestRr3TransformInput = 1103
+    private val requestRr3TransformOutput = 1104
 
     private lateinit var gameDataValue: TextView
     private lateinit var saveFolderValue: TextView
     private lateinit var engineValue: TextView
     private lateinit var saveStatus: TextView
+    private lateinit var dataStatus: TextView
     private lateinit var saveFieldsContainer: LinearLayout
     private lateinit var advancedFieldsContainer: LinearLayout
     private lateinit var advancedSearch: EditText
     private lateinit var loadSaveButton: TextView
     private var currentSavePayload: JSONObject? = null
+    private var pendingTransformedData: ByteArray? = null
+    private var pendingTransformedName: String = "rr3-data.bin"
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -155,6 +161,27 @@ class MainActivity : Activity() {
             override fun afterTextChanged(s: Editable?) = Unit
         })
 
+        addSection(page, "RR3 DATA TRANSFORM")
+        val dataCard = card(page)
+        dataCard.addView(
+            text("Decode or re-encode .nct / .gui data", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        dataCard.addView(
+            text(
+                "The upstream RR3 RC4 transform is built into the native engine. It is reversible, so the same operation decodes encrypted data or re-encodes edited data.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        dataCard.addView(
+            actionButton("Choose .nct / .gui file") { chooseRr3DataFile() },
+            matchWrap(top = 12)
+        )
+        dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
+        dataCard.addView(dataStatus, matchWrap(top = 10))
+
         addSection(page, "NATIVE ENGINE")
         val engineCard = card(page)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -195,6 +222,94 @@ class MainActivity : Activity() {
         restoreSelection(gameDataValue, "game_data_tree")
         restoreSelection(saveFolderValue, "save_tree")
         updateEngineStatus()
+    }
+
+
+    private fun chooseRr3DataFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestRr3TransformInput)
+    }
+
+    private fun displayName(uri: Uri): String {
+        val cursor = contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        ) ?: return uri.lastPathSegment ?: "rr3-data.bin"
+        cursor.use {
+            val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && it.moveToFirst()) return it.getString(index)
+        }
+        return uri.lastPathSegment ?: "rr3-data.bin"
+    }
+
+    private fun transformRr3File(uri: Uri) {
+        dataStatus.text = "Reading RR3 data file…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                val lower = name.lowercase()
+                if (!lower.endsWith(".nct") && !lower.endsWith(".gui")) {
+                    throw IllegalArgumentException("Choose an RR3 .nct or .gui file.")
+                }
+
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file.")
+                val bytes = input.use { it.readBytes() }
+                val transformed = NativeBridge.nativeTransformRr3Data(bytes)
+                    ?: throw IllegalStateException("The RR3 transform failed.")
+                pendingTransformedData = transformed
+                pendingTransformedName = if (lower.endsWith(".nct")) {
+                    name.dropLast(4).ifBlank { "rr3-data.bin" }
+                } else {
+                    name + ".transformed"
+                }
+
+                runOnUiThread {
+                    dataStatus.text = "Transformed " + transformed.size + " bytes. Choose where to save the output."
+                    val outputIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "application/octet-stream"
+                        putExtra(Intent.EXTRA_TITLE, pendingTransformedName)
+                    }
+                    startActivityForResult(outputIntent, requestRr3TransformOutput)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dataStatus.text = e.message ?: "RR3 data transform failed."
+                }
+            }
+        }.start()
+    }
+
+    private fun writeTransformedRr3File(uri: Uri) {
+        val bytes = pendingTransformedData
+        if (bytes == null) {
+            dataStatus.text = "There is no transformed data waiting to be saved."
+            return
+        }
+        dataStatus.text = "Writing transformed RR3 data…"
+        Thread {
+            try {
+                val output = contentResolver.openOutputStream(uri, "wt")
+                    ?: throw IllegalStateException("Could not open the output file.")
+                output.use { it.write(bytes) }
+                pendingTransformedData = null
+                runOnUiThread {
+                    dataStatus.text = "Saved " + bytes.size + " bytes. The transform is reversible for encoding the file again."
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dataStatus.text = e.message ?: "Could not save transformed data."
+                }
+            }
+        }.start()
     }
 
     private fun addSection(parent: LinearLayout, title: String) {
@@ -296,6 +411,14 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK || data?.data == null) return
 
         val uri = data.data ?: return
+        if (requestCode == requestRr3TransformInput) {
+            transformRr3File(uri)
+            return
+        }
+        if (requestCode == requestRr3TransformOutput) {
+            writeTransformedRr3File(uri)
+            return
+        }
         val accessFlags = data.flags and (
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
