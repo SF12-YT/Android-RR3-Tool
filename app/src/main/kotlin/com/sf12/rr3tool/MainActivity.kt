@@ -924,7 +924,7 @@ class MainActivity : Activity() {
             gameFilesStatus.text = "Shizuku is not running. Start it through Wireless Debugging, then retry."
             return
         }
-        if (Shizuku.getVersion() < 10) {
+        if (Shizuku.isPreV11()) {
             pendingShizukuAction = null
             gameFilesStatus.text = "This Shizuku version is too old. Update Shizuku and retry."
             return
@@ -2054,6 +2054,7 @@ class MainActivity : Activity() {
         var matchAnchor: PagedTextMatch? = null
         var searchPending = false
         var preserveAnchorOnNextSearch = false
+        var jumpToFirstOnNextSearch = true
         val status = text(
             "Enter text to find. Search runs 1 second after you stop typing. Only loaded sections are searched.",
             11, 0xFF8FA4BA.toInt()
@@ -2092,7 +2093,7 @@ class MainActivity : Activity() {
             updateStatus()
         }
 
-        fun rebuildMatches(preserveCurrent: Boolean) {
+        fun rebuildMatches(preserveCurrent: Boolean, jumpToFirst: Boolean) {
             val previous = if (preserveCurrent) matchAnchor else null
             matchAnchor = null
             val query = queryInput.text.toString()
@@ -2121,13 +2122,17 @@ class MainActivity : Activity() {
             if (previousIndex >= 0) {
                 selectedMatch = previousIndex
                 updateStatus()
-            } else goToMatch(0)
+            } else {
+                selectedMatch = 0
+                if (jumpToFirst) goToMatch(0) else updateStatus()
+            }
         }
 
-        fun scheduleSearch(preserveCurrent: Boolean = false) {
+        fun scheduleSearch(preserveCurrent: Boolean = false, jumpToFirst: Boolean = true) {
             if (preserveCurrent && selectedMatch in matches.indices) matchAnchor = matches[selectedMatch]
             else if (!preserveCurrent) matchAnchor = null
             preserveAnchorOnNextSearch = preserveCurrent
+            jumpToFirstOnNextSearch = jumpToFirst
             matches.clear()
             selectedMatch = -1
             searchPending = queryInput.text.isNotBlank()
@@ -2142,8 +2147,9 @@ class MainActivity : Activity() {
 
         searchRunnable = Runnable {
             val preserve = preserveAnchorOnNextSearch
+            val jump = jumpToFirstOnNextSearch
             preserveAnchorOnNextSearch = false
-            rebuildMatches(preserve)
+            rebuildMatches(preserve, jump)
         }
 
         fun watchNewEditors() {
@@ -2152,7 +2158,7 @@ class MainActivity : Activity() {
                 editor.addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        if (queryInput.text.isNotBlank()) scheduleSearch(false)
+                        if (queryInput.text.isNotBlank()) scheduleSearch(preserveCurrent = false, jumpToFirst = false)
                     }
                     override fun afterTextChanged(s: Editable?) = Unit
                 })
