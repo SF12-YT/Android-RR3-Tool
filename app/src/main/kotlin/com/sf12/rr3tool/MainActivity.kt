@@ -542,7 +542,7 @@ class MainActivity : Activity() {
         )
         carCard.addView(
             text(
-                "Open a vehicles/data/<id>_<car>.bin.nct file. The app reads the actual car fields and lets you change supported values without editing encrypted bytes by hand. Output is saved as a separate file.",
+                "Open a vehicles/data/<id>_<car>.bin.nct file. The app reads the actual car fields and lets you change supported values without editing encrypted bytes by hand. Keep edited text fields the same UTF-8 byte length; RR3's encrypted record layout cannot safely shift later fields. Output is saved as a separate file.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -2131,6 +2131,7 @@ class MainActivity : Activity() {
                     }
                 } catch (e: OutOfMemoryError) {
                     outputFile.delete()
+                    encodedFile?.delete()
                     runOnUiThread {
                         building = false
                         buildButton?.isEnabled = true
