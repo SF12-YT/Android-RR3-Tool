@@ -831,32 +831,35 @@ class MainActivity : Activity() {
         saveStatus.text = "Reading RR3 save…"
         loadSaveButton.isEnabled = false
         runBackground {
-            stageDir.mkdirs()
-            if (!rootDir.isNullOrBlank()) {
-                copyFromRootPath("$rootDir/character.2.dat", stagedSave)
-                val tempPath = "$rootDir/TempSaveGame.dat"
-                if (rootFileExists(tempPath)) copyFromRootPath(tempPath, stagedTempSave)
-                else stagedTempSave.delete()
-            } else {
-                val treeUri = Uri.parse(stored!!)
-                val saveUri = findChildDocument(treeUri, "character.2.dat")
-                    ?: throw IllegalStateException("character.2.dat was not found in the selected folder.")
-                copyUriToFile(saveUri, stagedSave)
+            try {
+                stageDir.mkdirs()
+                if (!rootDir.isNullOrBlank()) {
+                    copyFromRootPath("$rootDir/character.2.dat", stagedSave)
+                    val tempPath = "$rootDir/TempSaveGame.dat"
+                    if (rootFileExists(tempPath)) copyFromRootPath(tempPath, stagedTempSave)
+                    else stagedTempSave.delete()
+                } else {
+                    val treeUri = Uri.parse(stored!!)
+                    val saveUri = findChildDocument(treeUri, "character.2.dat")
+                        ?: throw IllegalStateException("character.2.dat was not found in the selected folder.")
+                    copyUriToFile(saveUri, stagedSave)
 
-                val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
-                if (tempUri != null) copyUriToFile(tempUri, stagedTempSave) else stagedTempSave.delete()
-            }
+                    val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
+                    if (tempUri != null) copyUriToFile(tempUri, stagedTempSave) else stagedTempSave.delete()
+                }
 
-            val result = NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
-            val json = JSONObject(result)
-            if (!json.optBoolean("ok")) {
-                throw IllegalStateException(json.optString("error", "Could not read the RR3 save."))
-            }
+                val result = NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
+                val json = JSONObject(result)
+                if (!json.optBoolean("ok")) {
+                    throw IllegalStateException(json.optString("error", "Could not read the RR3 save."))
+                }
 
-            runOnUiThread {
-                loadSaveButton.isEnabled = true
-                saveStatus.text = "Save loaded. Calibrate hidden values once using the values shown in-game."
-                renderSavePayload(json)
+                runOnUiThread {
+                    saveStatus.text = "Save loaded. Calibrate hidden values once using the values shown in-game."
+                    renderSavePayload(json)
+                }
+            } finally {
+                runOnUiThread { loadSaveButton.isEnabled = true }
             }
         }
     }
@@ -1039,7 +1042,9 @@ class MainActivity : Activity() {
     }
 
     private fun calibrateHiddenField(index: Int, shownValue: String) {
-        val stored = preferences.getString("save_tree", null) ?: return
+        val rootDir = preferences.getString("save_root_dir", null)
+        val stored = preferences.getString("save_tree", null)
+        if (rootDir.isNullOrBlank() && stored.isNullOrBlank()) return
         saveStatus.text = "Calibrating…"
         runBackground {
             val result = JSONObject(
