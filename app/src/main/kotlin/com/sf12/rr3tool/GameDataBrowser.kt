@@ -12,7 +12,9 @@ internal data class GameDataFile(
     val relativePath: String,
     val uri: Uri?,
     val sizeBytes: Long,
-    val rootPath: String? = null
+    val rootPath: String? = null,
+    val depotRootPath: String? = null,
+    val isShizuku: Boolean = false
 )
 
 internal object GameDataBrowser {
@@ -45,7 +47,11 @@ internal object GameDataBrowser {
         "png", "jpg", "jpeg", "bmp", "tga", "points", "banim"
     )
 
-    fun fromRootListing(rootPath: String, listing: String): List<GameDataFile> {
+    fun fromRootListing(
+        rootPath: String,
+        listing: String,
+        useShizuku: Boolean = false
+    ): List<GameDataFile> {
         val root = rootPath.trimEnd('/')
         val result = ArrayList<GameDataFile>()
         for (rawLine in listing.lineSequence()) {
@@ -64,7 +70,9 @@ internal object GameDataBrowser {
                     relativePath = relativePath,
                     uri = null,
                     sizeBytes = -1L,
-                    rootPath = absolutePath
+                    rootPath = absolutePath,
+                    depotRootPath = root,
+                    isShizuku = useShizuku
                 )
             )
             if (result.size >= MAX_FILES) {
