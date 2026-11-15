@@ -9,7 +9,12 @@ The first Android releases focus on Real Racing 3. The initial port deliberately
 - 3D model viewing and conversion.
 - Texture extraction, conversion and editing (handled by a separate app).
 
-The remaining RR3 workflows are being ported in stages: game-data browsing and decoding, data-file editing, save inspection/editing, and supported car/mod data workflows where they do not depend on the omitted 3D or texture features.
+The current Android foundation includes:
+- RR3 save inspection, a searchable advanced field view, calibration for hidden currency/level values, and guarded save writes.
+- A reversible .nct / .gui transform using the upstream embedded RR3 RC4 table and key material.
+- Storage Access Framework file/folder selection, local calibration-key storage, and pre-write save backups.
+
+The remaining RR3 workflows are being ported in stages: game-data browsing, structured car/career editing, and supported mod workflows where they do not depend on the omitted 3D or texture features.
 
 ## Engine and keys
 
@@ -35,6 +40,8 @@ gradle assembleDebug
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+
+For a private preview release, open **Actions → Android build → Run workflow**, set `publish_preview` to `true`, and run it. The workflow creates a prerelease containing the APK. Normal pushes only compile the APK; they do not publish a release.
 
 ## Upstream and licences
 
