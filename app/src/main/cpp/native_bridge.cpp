@@ -267,3 +267,64 @@ Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextIsPlain(
     if (env->ExceptionCheck()) return JNI_FALSE;
     return nfsnl::rr3TextIsPlain(source.data(), source.size()) ? JNI_TRUE : JNI_FALSE;
 }
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeOpenDataAsText(
+    JNIEnv* env, jobject /* thiz */, jstring fileName, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+
+    const std::string path = fromJava(env, fileName);
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::string text;
+    std::string error;
+    if (!nfsnl::dataEditableText(path, source.data(), source.size(), text, error))
+        return nullptr;
+    return toJava(env, text);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeBuildEditedData(
+    JNIEnv* env, jobject /* thiz */, jstring fileName, jstring editedText,
+    jbyteArray original) {
+    if (!original) return nullptr;
+    const jsize length = env->GetArrayLength(original);
+    if (length <= 0) return nullptr;
+
+    const std::string path = fromJava(env, fileName);
+    const std::string text = fromJava(env, editedText);
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        original, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bytes output;
+    std::string error;
+    if (!nfsnl::dataFromEditedText(
+            path, text, source.data(), source.size(), output, error))
+        return nullptr;
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(output.size()),
+        reinterpret_cast<const jbyte*>(output.data()));
+    return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetDataEditHelp(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(
+        env,
+        "Supported RR3 data files are converted by the upstream data editor. "
+        "The editor preserves the original file as a reference while building a new output file.");
+}
