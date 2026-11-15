@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.sf12.rr3tool"
-    compileSdk = 37
+    compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
