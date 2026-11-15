@@ -15,7 +15,9 @@ import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -255,6 +257,7 @@ class MainActivity : Activity() {
     private lateinit var dataStatus: TextView
     private lateinit var dataEditorStatus: TextView
     private lateinit var dataEditorWorkspace: LinearLayout
+    private lateinit var rootScrollView: ScrollView
     private var closeDataEditorAction: (() -> Unit)? = null
     private lateinit var carEditorStatus: TextView
     private lateinit var careerInspectorStatus: TextView
@@ -306,6 +309,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(9, 17, 29))
             isFillViewport = true
         }
+        rootScrollView = scroll
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(24), dp(22), dp(30))
@@ -1729,6 +1733,66 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /**
+     * EditText asks its ancestors not to intercept touch events so cursor
+     * selection works. In this paged editor that also prevents the containing
+     * ScrollView from receiving vertical drags. Hand vertical gestures to the
+     * editor ScrollView, while keeping the Activity's outer page from stealing
+     * the gesture.
+     */
+    private fun handVerticalScrollFromEditTextTo(
+        editor: EditText,
+        editorScroll: ScrollView
+    ) {
+        var downY = 0f
+        var handedToScroll = false
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+
+        editor.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = event.rawY
+                    handedToScroll = false
+                    rootScrollView.requestDisallowInterceptTouchEvent(true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (handedToScroll || kotlin.math.abs(event.rawY - downY) > touchSlop) {
+                        handedToScroll = true
+                        view.parent?.requestDisallowInterceptTouchEvent(false)
+                        rootScrollView.requestDisallowInterceptTouchEvent(true)
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!handedToScroll) rootScrollView.requestDisallowInterceptTouchEvent(false)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (!handedToScroll) rootScrollView.requestDisallowInterceptTouchEvent(false)
+                }
+            }
+            false
+        }
+
+        editorScroll.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL
+            ) {
+                rootScrollView.requestDisallowInterceptTouchEvent(false)
+            }
+            false
+        }
+    }
+
+    private fun keepOuterPageFromStealingEditorTouch(editor: EditText) {
+        editor.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> rootScrollView.requestDisallowInterceptTouchEvent(true)
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> rootScrollView.requestDisallowInterceptTouchEvent(false)
+            }
+            false
+        }
+    }
+
     private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
@@ -1795,6 +1859,7 @@ class MainActivity : Activity() {
                 maxLines = 100_000
             }
             pageEditors.add(rowEditor)
+            handVerticalScrollFromEditTextTo(rowEditor, editorScroll)
             pageContainer.addView(rowEditor, matchWrap())
         }
 
@@ -2045,6 +2110,7 @@ class MainActivity : Activity() {
                 maxLines = 100_000
             }
             pageEditors.add(rowEditor)
+            handVerticalScrollFromEditTextTo(rowEditor, editorScroll)
             pageContainer.addView(rowEditor, matchWrap())
         }
 
@@ -2251,6 +2317,7 @@ class MainActivity : Activity() {
                 )
             )
         }
+        keepOuterPageFromStealingEditorTouch(editor)
         val status = text(
             "Edit the decoded representation. The original remains unchanged until you choose a separate output.",
             12,
