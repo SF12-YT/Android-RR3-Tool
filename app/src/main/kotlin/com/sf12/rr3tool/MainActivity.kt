@@ -1788,7 +1788,7 @@ class MainActivity : Activity() {
                     InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                 setHorizontallyScrolling(false)
                 isVerticalScrollBarEnabled = false
-                setPadding(dp(10), dp(8), dp(10), dp(8))
+                setPadding(dp(10), dp(2), dp(10), dp(2))
                 background = rounded(0xFF0B1725.toInt(), 0f)
                 val lineCount = maxOf(1, page.text.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
@@ -2038,7 +2038,7 @@ class MainActivity : Activity() {
                     InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                 setHorizontallyScrolling(false)
                 isVerticalScrollBarEnabled = false
-                setPadding(dp(10), dp(8), dp(10), dp(8))
+                setPadding(dp(10), dp(2), dp(10), dp(2))
                 background = rounded(0xFF0B1725.toInt(), 0f)
                 val lineCount = maxOf(1, value.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
