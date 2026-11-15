@@ -1162,7 +1162,7 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
                 runOnUiThread {
                     gameFilesStatus.text = "Opened ${entry.relativePath}."
-                    showEditableDataDialog(name, bytes, editable)
+                    showEditableDataEditor(name, bytes, editable)
                 }
             } catch (e: Exception) {
                 runOnUiThread { gameFilesStatus.text = e.message ?: "Could not open this RR3 data file." }
@@ -1595,7 +1595,7 @@ class MainActivity : Activity() {
                             summary.optInt("series") + " series, " +
                             summary.optInt("tiers") + " tiers, " +
                             summary.optInt("events") + " events."
-                        showCareerEditableDialog(name, careerFile, careerTextFile, pager, firstPage, summary)
+                        showCareerEditableEditor(name, careerFile, careerTextFile, pager, firstPage, summary)
                     }
                     return@Thread
                 }
@@ -1612,10 +1612,13 @@ class MainActivity : Activity() {
 
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
-                    if (isGameText && !NativeBridge.nativeRr3TextIsPlain(plainTextFile.readBytes())) {
-                        throw IllegalArgumentException(
-                            "This RR3 game-text file is still encoded. Decode it in the Transform tab first, then open the decoded .txt file here."
-                        )
+                    if (isGameText) {
+                        val existingText = plainTextFile.readBytes()
+                        if (!NativeBridge.nativeRr3TextIsPlain(existingText)) {
+                            val decodedText = NativeBridge.nativeTransformRr3Text(existingText)
+                                ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
+                            plainTextFile.writeBytes(decodedText)
+                        }
                     }
 
                     val pager = PlainTextPager(plainTextFile)
@@ -1624,7 +1627,7 @@ class MainActivity : Activity() {
                     plainTextHandedToEditor = true
                     runOnUiThread {
                         dataEditorStatus.text = "Opened $name as a continuous, section-loaded text file."
-                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage)
+                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage, encodeGameText = isGameText)
                     }
                     return@Thread
                 }
@@ -1921,7 +1924,8 @@ class MainActivity : Activity() {
         sourceName: String,
         sourceFile: File,
         pager: PlainTextPager,
-        firstPage: String
+        firstPage: String,
+        encodeGameText: Boolean = false
     ) {
         val pageEditors = mutableListOf<EditText>()
         var isLoadingPage = false
@@ -2044,12 +2048,23 @@ class MainActivity : Activity() {
             dataEditorStatus.text = "Building " + sourceName + "…"
             Thread {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
+                var encodedFile: File? = null
                 try {
                     pager.writeMerged(editedPages, outputFile)
+                    var readyFile = outputFile
+                    if (encodeGameText) {
+                        val editedBytes = outputFile.readBytes()
+                        val encodedBytes = NativeBridge.nativeTransformRr3Text(editedBytes)
+                            ?: throw IllegalStateException("Could not encode the edited RR3 game text.")
+                        encodedFile = newCacheFile("rr3-text-encoded", ".txt")
+                        FileOutputStream(encodedFile!!).use { it.write(encodedBytes) }
+                        outputFile.delete()
+                        readyFile = encodedFile!!
+                    }
                     pendingTransformedData = null
                     pendingTransformedFile?.delete()
-                    pendingTransformedFile = outputFile
-                    pendingTransformedSize = outputFile.length()
+                    pendingTransformedFile = readyFile
+                    pendingTransformedSize = readyFile.length()
                     pendingTransformedName = sourceName
                     pendingOutputForDataEditor = true
                     pendingOutputForBrowser = false
@@ -2058,11 +2073,14 @@ class MainActivity : Activity() {
                         building = false
                         closeEditor()
                         dataEditorStatus.text =
-                            "Built " + outputFile.length() + " bytes. Choose where to save the edited text."
+                            "Built " + readyFile.length() + " bytes" +
+                                (if (encodeGameText) " with RR3 game-text encoding." else ".") +
+                                " Choose where to save the edited text."
                         launchRr3OutputPicker()
                     }
                 } catch (e: Exception) {
                     outputFile.delete()
+                    encodedFile?.delete()
                     runOnUiThread {
                         building = false
                         buildButton?.isEnabled = true
