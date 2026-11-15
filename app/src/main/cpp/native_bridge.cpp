@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <new>
 #include <sstream>
 #include <string>
@@ -13,6 +14,56 @@
 #include "nfsnl_save.h"
 
 namespace {
+
+namespace android_nct {
+#include "nct_rc4.inc"
+
+struct Stream {
+    uint8_t state[256];
+    unsigned i = 0;
+    unsigned j = 0;
+
+    Stream() {
+        std::memcpy(state, kNctRc4Init, 256);
+        for (unsigned k = 0; k < 256; ++k) {
+            uint8_t t = state[k];
+            j = (j + t + kNctRc4Key[k & 7]) & 255;
+            state[k] = state[j];
+            state[j] = t;
+        }
+        j = 0;
+        for (unsigned k = 0; k < kNctRc4Drop; ++k) next();
+    }
+
+    uint8_t next() {
+        i = (i + 1) & 255;
+        j = (j + state[i]) & 255;
+        std::swap(state[i], state[j]);
+        return state[(state[i] + state[j]) & 255];
+    }
+};
+
+bool verifyAgainstUpstream() {
+    nfsnl::Bytes sample(8193);
+    for (size_t i = 0; i < sample.size(); ++i)
+        sample[i] = static_cast<uint8_t>((i * 37 + 11) & 0xff);
+
+    nfsnl::Bytes expected;
+    if (!nfsnl::nctTransform(sample.data(), sample.size(), expected))
+        return false;
+
+    Stream stream;
+    const size_t chunks[] = { 1, 17, 1024, 4093, 257 };
+    size_t offset = 0, turn = 0;
+    while (offset < sample.size()) {
+        const size_t count = std::min(chunks[turn++ % 5], sample.size() - offset);
+        for (size_t i = 0; i < count; ++i)
+            sample[offset + i] ^= stream.next();
+        offset += count;
+    }
+    return sample == expected;
+}
+} // namespace android_nct
 
 thread_local std::string gDataEditError;
 thread_local std::string gRr3AudioError;
@@ -89,6 +140,8 @@ Java_com_sf12_rr3tool_NativeBridge_nativeStatus(JNIEnv* env, jobject /* thiz */)
     std::string status =
         "C++17 engine loaded; profile: " + rr3Profile +
         "; hidden save fields: " + std::to_string(hiddenFields.size()) + ".";
+    status += "; streaming NCT self-test: " +
+        (android_nct::verifyAgainstUpstream() ? "passed" : "FAILED");
     return toJava(env, status);
 }
 
@@ -209,6 +262,48 @@ Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3SaveField(
                          jsonString(backupDir) + "}");
 }
 
+
+
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3TransformStream(
+    JNIEnv* /* env */, jobject /* thiz */) {
+    if (!android_nct::verifyAgainstUpstream()) return 0;
+    try {
+        return static_cast<jlong>(
+            reinterpret_cast<intptr_t>(new android_nct::Stream()));
+    } catch (const std::bad_alloc&) {
+        return 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3Chunk(
+    JNIEnv* env, jobject /* thiz */, jlong handle, jbyteArray chunk, jint length) {
+    auto* stream = reinterpret_cast<android_nct::Stream*>(
+        static_cast<intptr_t>(handle));
+    if (!stream || !chunk || length < 0 || length > env->GetArrayLength(chunk))
+        return JNI_FALSE;
+    if (length == 0) return JNI_TRUE;
+
+    jbyte* data = env->GetByteArrayElements(chunk, nullptr);
+    if (!data) return JNI_FALSE;
+    uint8_t* bytes = reinterpret_cast<uint8_t*>(data);
+    for (jint k = 0; k < length; ++k)
+        bytes[k] ^= stream->next();
+    env->ReleaseByteArrayElements(chunk, data, 0);
+    return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeFreeRr3TransformStream(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
+    auto* stream = reinterpret_cast<android_nct::Stream*>(
+        static_cast<intptr_t>(handle));
+    delete stream;
+}
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3Data(
@@ -629,3 +724,110 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Career(
     out << "]}";
     return toJava(env, out.str());
 }
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3CareerFile(
+    JNIEnv* env, jobject /* thiz */, jstring plainPath) {
+    gRr3CareerError.clear();
+    const std::string path = fromJava(env, plainPath);
+    nfsnl::Bytes plain;
+    if (path.empty() || !nfsnl::readFile(path, plain) || plain.empty())
+        return toJava(env, errorJson("Could not read the decoded career file from temporary storage."));
+
+    nfsnl::Rr3Career career;
+    std::string why;
+    bool parsed = false;
+    try {
+        parsed = nfsnl::rr3CareerRead(plain.data(), plain.size(), career, why);
+    } catch (const std::bad_alloc&) {
+        gRr3CareerError = "Not enough native memory to inspect the career database.";
+    } catch (...) {
+        gRr3CareerError = "The career parser failed unexpectedly.";
+    }
+    if (!parsed) {
+        if (gRr3CareerError.empty()) gRr3CareerError = why.empty()
+            ? "This file does not match the supported RR3 career format." : why;
+        return toJava(env, errorJson(gRr3CareerError));
+    }
+
+    size_t eventCount = 0;
+    for (const auto& tier : career.tiers) eventCount += tier.events.size();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"version\":" << career.version
+        << ",\"tracks\":" << career.tracks.size()
+        << ",\"seriesCount\":" << career.series.size()
+        << ",\"tiersCount\":" << career.tiers.size()
+        << ",\"superGroups\":" << career.superGroups.size()
+        << ",\"eventsCount\":" << eventCount
+        << ",\"series\":[";
+    const size_t limit = std::min<size_t>(career.series.size(), 160);
+    for (size_t i = 0; i < limit; ++i) {
+        const auto& series = career.series[i];
+        if (i) out << ',';
+        out << "{\"id\":" << series.id()
+            << ",\"type\":" << series.type()
+            << ",\"titleKey\":" << jsonString(series.titleKey())
+            << ",\"descriptionKey\":" << jsonString(series.descKey()) << '}';
+    }
+    out << "],\"tiers\":[";
+    const size_t tierLimit = std::min<size_t>(career.tiers.size(), 240);
+    for (size_t i = 0; i < tierLimit; ++i) {
+        const auto& tier = career.tiers[i];
+        if (i) out << ',';
+        out << "{\"id\":" << tier.id()
+            << ",\"seriesId\":" << tier.seriesId()
+            << ",\"index\":" << tier.indexInSeries()
+            << ",\"cars\":" << tier.cars.size()
+            << ",\"events\":" << tier.events.size() << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Track(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return toJava(env, errorJson("No track data was supplied."));
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return toJava(env, errorJson("The track data file is empty."));
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return toJava(env, errorJson("Could not read the track data buffer."));
+
+    const std::vector<std::string> assets = {
+        "Tracks/data/rr3tool-track-circuit-day-1.bin.nct"
+    };
+    const nfsnl::Bytes source(
+        reinterpret_cast<const uint8_t*>(bytes),
+        reinterpret_cast<const uint8_t*>(bytes) + length);
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+
+    auto read = [&](const std::string& path, nfsnl::Bytes& output) -> bool {
+        if (path != assets[0]) return false;
+        output = source;
+        return true;
+    };
+
+    std::vector<nfsnl::Rr3TrackInfo> tracks;
+    try {
+        tracks = nfsnl::rr3ListTracks(assets, read);
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough memory to inspect this track data file."));
+    } catch (...) {
+        return toJava(env, errorJson("The native track parser failed unexpectedly."));
+    }
+    if (tracks.empty())
+        return toJava(env, errorJson("This file does not match the RR3 track-data format."));
+
+    const auto& track = tracks.front();
+    std::ostringstream out;
+    out << "{\"ok\":true,\"id\":" << track.id
+        << ",\"file\":" << jsonString(track.file)
+        << ",\"name\":" << jsonString(track.name)
+        << ",\"folder\":" << jsonString(track.folder)
+        << ",\"time\":" << jsonString(track.time)
+        << ",\"layout\":" << jsonString(track.layout)
+        << ",\"country\":" << jsonString(track.country) << '}';
+    return toJava(env, out.str());
+}
+

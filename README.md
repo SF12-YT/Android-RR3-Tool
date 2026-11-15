@@ -51,3 +51,11 @@ For a private preview release, open **Actions → Android build → Run workflow
 Monkey Tool is Copyright (c) 2026 GM25 and is distributed under the MIT License. See [LICENSE-MONKEYTOOL](LICENSE-MONKEYTOOL) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Third-party code retains its original licence terms.
 
 This is an unofficial community tool. It is not affiliated with or endorsed by Electronic Arts or Firemonkeys. Use it only with game files and saves you are entitled to access. Editing online-game data may violate the game's terms or risk account/save integrity.
+
+
+### Latest Android preview work
+
+- Large `.nct` files are decoded through a persistent native RC4 stream in 512 KiB chunks and written to a cache file, avoiding a full-size Java input/output array.
+- The Career Inspector uses the same streaming decode path and passes a decoded temporary file to the native career reader.
+- A Track Inspector reads RR3 `Tracks/data/*.bin.nct` records, including track ID, display name, folder, layout, time and country.
+- The native startup status checks that the chunked RC4 implementation matches the upstream full-buffer NCT decoder across varied chunk boundaries.

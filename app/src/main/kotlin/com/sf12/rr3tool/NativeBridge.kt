@@ -13,6 +13,12 @@ internal object NativeBridge {
 
     external fun nativeGetDataEditError(): String
 
+    external fun nativeCreateRr3TransformStream(): Long
+
+    external fun nativeTransformRr3Chunk(handle: Long, chunk: ByteArray, length: Int): Boolean
+
+    external fun nativeFreeRr3TransformStream(handle: Long)
+
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
     external fun nativeGetRr3TransformError(): String
@@ -24,6 +30,10 @@ internal object NativeBridge {
     external fun nativeGetRr3CarError(): String
 
     external fun nativeInspectRr3Career(input: ByteArray): String
+
+    external fun nativeInspectRr3CareerFile(plainPath: String): String
+
+    external fun nativeInspectRr3Track(input: ByteArray): String
 
     external fun nativeUnwrapRr3Asset(fileName: String, input: ByteArray): ByteArray?
 

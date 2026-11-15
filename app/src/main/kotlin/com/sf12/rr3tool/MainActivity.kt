@@ -24,6 +24,8 @@ import android.widget.TextView
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -37,6 +39,7 @@ class MainActivity : Activity() {
     private val requestEditableDataInput = 1105
     private val requestCarEditorInput = 1106
     private val requestCareerInspectorInput = 1107
+    private val requestTrackInspectorInput = 1108
 
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
@@ -53,14 +56,18 @@ class MainActivity : Activity() {
     private lateinit var dataEditorStatus: TextView
     private lateinit var carEditorStatus: TextView
     private lateinit var careerInspectorStatus: TextView
+    private lateinit var trackInspectorStatus: TextView
     private lateinit var carFieldsContainer: LinearLayout
     private lateinit var careerDetailsContainer: LinearLayout
+    private lateinit var trackDetailsContainer: LinearLayout
     private lateinit var saveFieldsContainer: LinearLayout
     private lateinit var advancedFieldsContainer: LinearLayout
     private lateinit var advancedSearch: EditText
     private lateinit var loadSaveButton: TextView
     private var currentSavePayload: JSONObject? = null
     private var pendingTransformedData: ByteArray? = null
+    private var pendingTransformedFile: File? = null
+    private var pendingTransformedSize: Long = 0L
     private var pendingTransformedName: String = "rr3-data.bin"
     private var pendingOutputForDataEditor: Boolean = false
     private var pendingOutputForBrowser: Boolean = false
@@ -125,7 +132,7 @@ class MainActivity : Activity() {
 
         val tabNames = listOf(
             "Game Data", "Save Editor", "Transform", "Data Editor",
-            "Car Editor", "Career", "About"
+            "Car Editor", "Career", "Track Inspector", "About"
         )
         val tabPages = linkedMapOf<String, LinearLayout>()
         for (name in tabNames) {
@@ -193,6 +200,7 @@ class MainActivity : Activity() {
         val editorPage = tabPages.getValue("Data Editor")
         val carPage = tabPages.getValue("Car Editor")
         val careerPage = tabPages.getValue("Career")
+        val trackPage = tabPages.getValue("Track Inspector")
         val aboutPage = tabPages.getValue("About")
 
         addSection(gameDataPage, "GAME DATA")
@@ -387,6 +395,32 @@ class MainActivity : Activity() {
         }
         careerCard.addView(careerDetailsContainer, matchWrap(top = 12))
 
+
+        addSection(trackPage, "RR3 TRACK INSPECTOR")
+        val trackCard = card(trackPage)
+        trackCard.addView(
+            text("Inspect a track's data record", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        trackCard.addView(
+            text(
+                "Open a Tracks/data/*.bin.nct file to read its track ID, display name, track folder, layout, time of day and country. This is a read-only inspection tool.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        trackCard.addView(
+            actionButton("Choose track data (.bin.nct)") { chooseTrackInspectorFile() },
+            matchWrap(top = 12)
+        )
+        trackInspectorStatus = text("No track data file opened.", 12, 0xFF9BAFC5.toInt())
+        trackCard.addView(trackInspectorStatus, matchWrap(top = 10))
+        trackDetailsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        trackCard.addView(trackDetailsContainer, matchWrap(top = 12))
+
         addSection(aboutPage, "NATIVE ENGINE")
         val engineCard = card(aboutPage)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -435,6 +469,99 @@ class MainActivity : Activity() {
     }
 
 
+
+
+    private fun transformNctStream(input: InputStream, output: OutputStream): Long {
+        val handle = NativeBridge.nativeCreateRr3TransformStream()
+        if (handle == 0L) {
+            throw IllegalStateException("Could not initialise the RR3 NCT decoder.")
+        }
+
+        val buffer = ByteArray(512 * 1024)
+        var total = 0L
+        try {
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                if (!NativeBridge.nativeTransformRr3Chunk(handle, buffer, count)) {
+                    throw IllegalStateException("The streaming RR3 NCT decoder failed at byte $total.")
+                }
+                output.write(buffer, 0, count)
+                total += count.toLong()
+            }
+            output.flush()
+        } finally {
+            NativeBridge.nativeFreeRr3TransformStream(handle)
+        }
+        if (total == 0L) throw IllegalStateException("The selected RR3 NCT file is empty.")
+        return total
+    }
+
+    private fun newCacheFile(prefix: String): File =
+        File(cacheDir, prefix + "_" + System.nanoTime() + ".tmp")
+
+    private fun copyGameFileToFile(entry: GameDataFile, target: File) {
+        target.parentFile?.mkdirs()
+        val rootPath = entry.rootPath
+        if (!rootPath.isNullOrBlank()) {
+            val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(rootPath)}").start()
+            try {
+                process.inputStream.use { source ->
+                    FileOutputStream(target).use { destination ->
+                        source.copyTo(destination, 512 * 1024)
+                    }
+                }
+                val error = process.errorStream.bufferedReader().use { it.readText() }
+                val exitCode = process.waitFor()
+                if (exitCode != 0) {
+                    target.delete()
+                    throw IllegalStateException(error.trim().ifBlank {
+                        "Could not read ${entry.relativePath} with root."
+                    })
+                }
+            } catch (e: Exception) {
+                process.destroy()
+                target.delete()
+                throw e
+            }
+            return
+        }
+
+        val uri = entry.uri
+            ?: throw IllegalStateException("No readable location was stored for ${entry.relativePath}.")
+        val source = contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Could not open ${entry.relativePath}.")
+        source.use { input ->
+            FileOutputStream(target).use { output ->
+                input.copyTo(output, 512 * 1024)
+            }
+        }
+    }
+
+    private fun transformGameFileToCache(entry: GameDataFile, target: File): Long {
+        val sourceFile = newCacheFile("rr3-encrypted")
+        try {
+            copyGameFileToFile(entry, sourceFile)
+            FileInputStream(sourceFile).use { input ->
+                FileOutputStream(target).use { output ->
+                    return transformNctStream(input, output)
+                }
+            }
+        } finally {
+            sourceFile.delete()
+        }
+    }
+
+    private fun transformUriToCache(uri: Uri, target: File): Long {
+        val input = contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Could not open the selected RR3 file.")
+        input.use { source ->
+            FileOutputStream(target).use { output ->
+                return transformNctStream(source, output)
+            }
+        }
+    }
 
     private fun indexGameDataFiles() {
         val rootPath = preferences.getString("game_data_root_dir", null)
@@ -579,6 +706,7 @@ class MainActivity : Activity() {
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
         if (lower == "events.dat.nct") actions.add("Inspect RR3 career data")
+        if (entry.relativePath.replace('\\', '/').lowercase().startsWith("tracks/data/") && lower.endsWith(".bin.nct")) actions.add("Inspect RR3 track data")
         if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
         if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
             effectiveName.endsWith(".gui") || effectiveName.endsWith(".xml")) {
@@ -604,6 +732,7 @@ class MainActivity : Activity() {
                     "Unwrap RR3 container and export" -> exportGameFile(entry, unwrapOnly = true)
                     "Decode / encode RR3 data" -> decodeGameDataFile(entry)
                     "Inspect RR3 career data" -> inspectCareerGameFile(entry)
+                    "Inspect RR3 track data" -> inspectTrackGameFile(entry)
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
                     "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
@@ -666,6 +795,8 @@ class MainActivity : Activity() {
                 } else {
                     entry.name to source
                 }
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = bytes
                 pendingTransformedName = name
                 pendingOutputForDataEditor = false
@@ -685,6 +816,34 @@ class MainActivity : Activity() {
 
     private fun decodeGameDataFile(entry: GameDataFile) {
         gameFilesStatus.text = "Decoding ${entry.relativePath}…"
+        val fileExtension = entry.name.substringAfterLast('.', "").lowercase()
+        if (fileExtension == "nct") {
+            Thread {
+                val outputFile = newCacheFile("rr3-decoded")
+                try {
+                    val size = transformGameFileToCache(entry, outputFile)
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = outputFile
+                    pendingTransformedSize = size
+                    pendingTransformedName = entry.name.substringBeforeLast('.', entry.name)
+                    pendingOutputForDataEditor = false
+                    pendingOutputForBrowser = true
+                    pendingOutputForCarEditor = false
+                    runOnUiThread {
+                        gameFilesStatus.text = "Decoded $size bytes using streaming NCT. Choose an output file."
+                        launchRr3OutputPicker()
+                    }
+                } catch (e: Exception) {
+                    outputFile.delete()
+                    runOnUiThread { gameFilesStatus.text = e.message ?: "RR3 data decoding failed." }
+                } catch (e: OutOfMemoryError) {
+                    outputFile.delete()
+                    runOnUiThread { gameFilesStatus.text = "Android ran out of memory while decoding this file." }
+                }
+            }.start()
+            return
+        }
         Thread {
             try {
                 val source = readGameFile(entry)
@@ -709,6 +868,8 @@ class MainActivity : Activity() {
                     "nct" -> name.substringBeforeLast('.', name)
                     else -> name
                 }
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = output
                 pendingTransformedName = outputName
                 pendingOutputForDataEditor = false
@@ -736,6 +897,8 @@ class MainActivity : Activity() {
                 val output = if (alreadyPlain) unpacked else
                     NativeBridge.nativeTransformRr3Text(unpacked)
                         ?: throw IllegalStateException("The RR3 game-text transform failed.")
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = output
                 pendingTransformedName = name
                 pendingOutputForDataEditor = false
@@ -759,6 +922,8 @@ class MainActivity : Activity() {
                 val (name, unpacked) = unwrappedGameFile(entry, source)
                 val wav = NativeBridge.nativeConvertRr3Audio(name, unpacked)
                     ?: throw IllegalStateException(NativeBridge.nativeGetRr3AudioError())
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = wav
                 pendingTransformedName = name.substringBeforeLast('.', name) + ".wav"
                 pendingOutputForDataEditor = false
@@ -797,6 +962,85 @@ class MainActivity : Activity() {
     private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
         if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
 
+
+
+    private fun chooseTrackInspectorFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestTrackInspectorInput)
+    }
+
+    private fun inspectTrackGameFile(entry: GameDataFile) {
+        trackInspectorStatus.text = "Reading ${entry.relativePath}…"
+        Thread {
+            try {
+                val bytes = readGameFile(entry)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Track(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this track file."))
+                }
+                runOnUiThread {
+                    renderTrackDetails(entry.name, bytes.size, payload)
+                    trackInspectorStatus.text = "Inspected ${entry.relativePath} (${bytes.size} bytes)."
+                    selectTabFromView("Track Inspector")
+                }
+            } catch (e: Exception) {
+                runOnUiThread { trackInspectorStatus.text = e.message ?: "Could not inspect this track file." }
+            }
+        }.start()
+    }
+
+    private fun openTrackInspectorFile(uri: Uri) {
+        trackInspectorStatus.text = "Reading track data file…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                if (!name.lowercase().endsWith(".bin.nct")) {
+                    throw IllegalArgumentException("Choose an RR3 track-data file ending in .bin.nct.")
+                }
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected track file.")
+                val bytes = input.use { it.readBytes() }
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Track(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not parse this track file."))
+                }
+                runOnUiThread {
+                    renderTrackDetails(name, bytes.size, payload)
+                    trackInspectorStatus.text = "Inspected $name (${bytes.size} bytes)."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { trackInspectorStatus.text = e.message ?: "Could not inspect this track file." }
+            }
+        }.start()
+    }
+
+    private fun renderTrackDetails(name: String, size: Int, payload: JSONObject) {
+        trackDetailsContainer.removeAllViews()
+        val values = listOf(
+            "Track ID" to payload.optInt("id").toString(),
+            "Display name" to payload.optString("name"),
+            "Track folder" to payload.optString("folder"),
+            "Layout" to payload.optString("layout"),
+            "Time of day" to payload.optString("time"),
+            "Country" to payload.optString("country"),
+            "Data file" to name,
+            "File size" to "$size bytes"
+        )
+        for ((label, value) in values) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(11), dp(9), dp(11), dp(9))
+                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+            }
+            trackDetailsContainer.addView(row, matchWrap(bottom = 6))
+            row.addView(text(label, 11, 0xFF8FA4BA.toInt(), bold = true), matchWrap())
+            row.addView(text(value.ifBlank { "—" }, 14, Color.WHITE), matchWrap(top = 3))
+        }
+    }
 
     private fun chooseCarEditorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -841,23 +1085,26 @@ class MainActivity : Activity() {
     }
 
     private fun inspectCareerGameFile(entry: GameDataFile) {
-        careerInspectorStatus.text = "Reading ${entry.relativePath}…"
+        careerInspectorStatus.text = "Streaming and inspecting ${entry.relativePath}…"
         Thread {
+            val plainFile = newCacheFile("rr3-career-plain")
             try {
-                val bytes = readGameFile(entry)
-                val payload = JSONObject(NativeBridge.nativeInspectRr3Career(bytes))
+                val size = transformGameFileToCache(entry, plainFile)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3CareerFile(plainFile.absolutePath))
                 if (!payload.optBoolean("ok")) {
                     throw IllegalStateException(payload.optString("error", "Could not parse this career file."))
                 }
                 runOnUiThread {
-                    renderCareerDetails(entry.name, bytes.size, payload)
-                    careerInspectorStatus.text = "Inspected ${entry.relativePath} (${bytes.size} bytes)."
+                    renderCareerDetails(entry.name, size.toInt(), payload)
+                    careerInspectorStatus.text = "Inspected ${entry.relativePath} (${size} bytes)."
                     selectTabFromView("Career")
                 }
             } catch (e: Exception) {
                 runOnUiThread { careerInspectorStatus.text = e.message ?: "Could not inspect this career file." }
             } catch (e: OutOfMemoryError) {
-                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while reading this career file." }
+                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while inspecting this career file." }
+            } finally {
+                plainFile.delete()
             }
         }.start()
     }
@@ -940,6 +1187,8 @@ class MainActivity : Activity() {
                     output = NativeBridge.nativeSetRr3CarField(output, key, value)
                         ?: throw IllegalStateException(NativeBridge.nativeGetRr3CarError())
                 }
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = output
                 pendingTransformedName = currentCarName
                 pendingOutputForDataEditor = false
@@ -958,28 +1207,29 @@ class MainActivity : Activity() {
     }
 
     private fun openCareerInspectorFile(uri: Uri) {
-        careerInspectorStatus.text = "Reading career file…"
+        careerInspectorStatus.text = "Streaming and inspecting career file…"
         Thread {
+            val plainFile = newCacheFile("rr3-career-plain")
             try {
                 val name = displayName(uri)
                 if (!name.equals("events.dat.nct", ignoreCase = true)) {
                     throw IllegalArgumentException("Choose the RR3 data/events.dat.nct file.")
                 }
-                val input = contentResolver.openInputStream(uri)
-                    ?: throw IllegalStateException("Could not open the selected career file.")
-                val bytes = input.use { it.readBytes() }
-                val payload = JSONObject(NativeBridge.nativeInspectRr3Career(bytes))
+                val size = transformUriToCache(uri, plainFile)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3CareerFile(plainFile.absolutePath))
                 if (!payload.optBoolean("ok")) {
                     throw IllegalStateException(payload.optString("error", "Could not parse this career file."))
                 }
                 runOnUiThread {
-                    renderCareerDetails(name, bytes.size, payload)
-                    careerInspectorStatus.text = "Inspected $name (${bytes.size} bytes)."
+                    renderCareerDetails(name, size.toInt(), payload)
+                    careerInspectorStatus.text = "Inspected $name (${size} bytes)."
                 }
             } catch (e: Exception) {
                 runOnUiThread { careerInspectorStatus.text = e.message ?: "Could not inspect this career file." }
             } catch (e: OutOfMemoryError) {
-                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while reading this career file." }
+                runOnUiThread { careerInspectorStatus.text = "Android ran out of memory while inspecting this career file." }
+            } finally {
+                plainFile.delete()
             }
         }.start()
     }
@@ -1147,6 +1397,8 @@ class MainActivity : Activity() {
                     try {
                         val output = NativeBridge.nativeBuildEditedData(name, edited, original)
                             ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                        pendingTransformedFile?.delete()
+                        pendingTransformedFile = null
                         pendingTransformedData = output
                         pendingTransformedName = name
                         pendingOutputForDataEditor = true
@@ -1208,14 +1460,41 @@ class MainActivity : Activity() {
                     throw IllegalArgumentException("Choose .nct/.bin/.gui/.xml or RR3 gametext/text_<language>.txt.")
                 }
 
-                val input = contentResolver.openInputStream(uri)
-                    ?: throw IllegalStateException("Could not open the selected file.")
-                val bytes = input.use { it.readBytes() }
-
                 if (isGameText) {
+                    val input = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Could not open the selected file.")
+                    val bytes = input.use { it.readBytes() }
                     runOnUiThread { showRr3TextMode(name, bytes) }
                     return@Thread
                 }
+
+
+                if (extension == "nct") {
+                    val outputFile = newCacheFile("rr3-decoded")
+                    try {
+                        val size = transformUriToCache(uri, outputFile)
+                        pendingTransformedData = null
+                        pendingTransformedFile?.delete()
+                        pendingTransformedFile = outputFile
+                        pendingTransformedSize = size
+                        pendingOutputForDataEditor = false
+                        pendingOutputForBrowser = false
+                        pendingOutputForCarEditor = false
+                        pendingTransformedName = name.substringBeforeLast('.', name)
+                        runOnUiThread {
+                            dataStatus.text = "Decoded $size bytes using streaming NCT. Choose where to save the output."
+                            launchRr3OutputPicker()
+                        }
+                    } catch (e: Exception) {
+                        outputFile.delete()
+                        throw e
+                    }
+                    return@Thread
+                }
+
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file.")
+                val bytes = input.use { it.readBytes() }
 
                 val alreadyPlainGui = extension == "gui" &&
                     bytes.size >= 5 &&
@@ -1228,6 +1507,8 @@ class MainActivity : Activity() {
                 }
 
                 val baseName = name.substringBeforeLast('.', name)
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = transformed
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = false
@@ -1276,6 +1557,8 @@ class MainActivity : Activity() {
                     NativeBridge.nativeTransformRr3Text(source)
                         ?: throw IllegalStateException("The RR3 text transform failed.")
                 }
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
                 pendingTransformedData = output
                 pendingOutputForDataEditor = false
                 pendingOutputForBrowser = false
@@ -1303,19 +1586,29 @@ class MainActivity : Activity() {
 
     private fun writeTransformedRr3File(uri: Uri) {
         val bytes = pendingTransformedData
-        if (bytes == null) {
+        val file = pendingTransformedFile
+        if (bytes == null && file == null) {
             setPendingOutputStatus("There is no transformed data waiting to be saved.")
             return
         }
+        val size = file?.length() ?: (bytes?.size?.toLong() ?: 0L)
         setPendingOutputStatus("Writing output file…")
         Thread {
             try {
                 val output = contentResolver.openOutputStream(uri, "wt")
                     ?: throw IllegalStateException("Could not open the output file.")
-                output.use { it.write(bytes) }
+                output.use { destination ->
+                    if (file != null) {
+                        FileInputStream(file).use { source -> source.copyTo(destination, 512 * 1024) }
+                    } else {
+                        destination.write(bytes!!)
+                    }
+                }
                 pendingTransformedData = null
+                pendingTransformedFile = null
+                file?.delete()
                 runOnUiThread {
-                    setPendingOutputStatus("Saved " + bytes.size + " bytes.")
+                    setPendingOutputStatus("Saved $size bytes.")
                     pendingOutputForDataEditor = false
                     pendingOutputForBrowser = false
                     pendingOutputForCarEditor = false
@@ -1556,6 +1849,10 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestCareerInspectorInput) {
             openCareerInspectorFile(uri)
+            return
+        }
+        if (requestCode == requestTrackInspectorInput) {
+            openTrackInspectorFile(uri)
             return
         }
         val accessFlags = data.flags and (
