@@ -379,7 +379,7 @@ class MainActivity : Activity() {
     private fun showGameFileActions(entry: GameDataFile) {
         val actions = arrayListOf("Export original file")
         val lower = entry.name.lowercase()
-        val effectiveName = lower.removeSuffix(".z").removeSuffix(".bin")
+        val effectiveName = lower.removeSuffix(".bin").removeSuffix(".z")
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
         if (effectiveName.endsWith(".nct") || effectiveName.endsWith(".gui") ||
@@ -1047,6 +1047,10 @@ class MainActivity : Activity() {
             requestGameData -> {
                 preferences.edit().putString("game_data_tree", uri.toString()).apply()
                 gameDataValue.text = displayFolder(uri)
+                indexedGameFiles = emptyList()
+                gameFilesSearch.setText("")
+                gameFilesStatus.text = "Folder selected. Index the RR3 .depot files to browse them."
+                gameFilesContainer.removeAllViews()
             }
             requestSaveFolder -> {
                 preferences.edit().putString("save_tree", uri.toString()).remove("save_root_dir").apply()
