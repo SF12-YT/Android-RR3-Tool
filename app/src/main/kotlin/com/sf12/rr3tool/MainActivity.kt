@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -32,7 +34,10 @@ class MainActivity : Activity() {
     private lateinit var engineValue: TextView
     private lateinit var saveStatus: TextView
     private lateinit var saveFieldsContainer: LinearLayout
+    private lateinit var advancedFieldsContainer: LinearLayout
+    private lateinit var advancedSearch: EditText
     private lateinit var loadSaveButton: TextView
+    private var currentSavePayload: JSONObject? = null
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -134,6 +139,22 @@ class MainActivity : Activity() {
         }
         saveCard.addView(saveFieldsContainer, matchWrap(top = 12))
 
+        saveCard.addView(
+            text("ALL FIELDS (ADVANCED)", 11, 0xFF75B9F1.toInt(), bold = true),
+            matchWrap(top = 18, bottom = 8)
+        )
+        advancedSearch = editBox("Search save field names", "", numeric = false)
+        saveCard.addView(advancedSearch, matchWrap(bottom = 10))
+        advancedFieldsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        saveCard.addView(advancedFieldsContainer, matchWrap())
+        advancedSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderAdvancedFields()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
         addSection(page, "NATIVE ENGINE")
         val engineCard = card(page)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -218,14 +239,19 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun editBox(hintText: String, value: String): EditText {
+    private fun editBox(hintText: String, value: String, numeric: Boolean = true): EditText {
         return EditText(this).apply {
             setSingleLine(true)
             textSize = 15f
             setTextColor(Color.WHITE)
             setHintTextColor(0xFF6F849B.toInt())
             hint = hintText
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            inputType = if (numeric) {
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED or
+                    InputType.TYPE_NUMBER_FLAG_DECIMAL
+            } else {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            }
             setPadding(dp(12), dp(9), dp(12), dp(9))
             background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
             setText(value)
@@ -358,7 +384,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 loadSaveButton.isEnabled = true
                 saveStatus.text = "Save loaded. Calibrate hidden values once using the values shown in-game."
-                renderHiddenFields(json)
+                renderSavePayload(json)
             }
         }
     }
@@ -419,6 +445,75 @@ class MainActivity : Activity() {
 
         createBackup(stagedSave, "character.2.dat")
         if (stagedTempSave.exists()) createBackup(stagedTempSave, "TempSaveGame.dat")
+    }
+
+    private fun renderSavePayload(payload: JSONObject) {
+        currentSavePayload = payload
+        renderHiddenFields(payload)
+        renderAdvancedFields()
+    }
+
+    private fun renderAdvancedFields() {
+        if (!::advancedFieldsContainer.isInitialized) return
+        advancedFieldsContainer.removeAllViews()
+        val payload = currentSavePayload ?: return
+        val fields = payload.optJSONArray("fields") ?: return
+        val query = if (::advancedSearch.isInitialized) advancedSearch.text.toString().trim().lowercase() else ""
+        if (query.isEmpty()) {
+            advancedFieldsContainer.addView(
+                text("Search by field name to inspect or edit individual save values.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+            return
+        }
+
+        var shown = 0
+        for (i in 0 until fields.length()) {
+            val item = fields.optJSONObject(i) ?: continue
+            val name = item.optString("name")
+            if (name.isBlank() || !name.lowercase().contains(query)) continue
+            val value = item.optString("value")
+            val editable = item.optBoolean("editable")
+            val type = item.optInt("type", -1)
+
+            val fieldCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+            }
+            advancedFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
+            fieldCard.addView(text(name, 13, Color.WHITE, bold = true), matchWrap())
+
+            if (editable) {
+                val numeric = type == 1 || type == 2 || type == 5
+                val input = editBox("Value", value, numeric)
+                fieldCard.addView(input, matchWrap(top = 8, bottom = 8))
+                fieldCard.addView(
+                    actionButton("Save field") { updateHiddenField(name, input.text.toString()) },
+                    matchWrap()
+                )
+            } else {
+                fieldCard.addView(
+                    text(value, 12, 0xFF9BAFC5.toInt()),
+                    matchWrap(top = 5)
+                )
+            }
+
+            shown++
+            if (shown >= 25) break
+        }
+
+        if (shown == 0) {
+            advancedFieldsContainer.addView(
+                text("No matching fields.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+        } else if (shown == 25) {
+            advancedFieldsContainer.addView(
+                text("Showing the first 25 matches. Refine the search to narrow the list.", 11, 0xFF7F93A9.toInt()),
+                matchWrap(top = 4)
+            )
+        }
     }
 
     private fun renderHiddenFields(payload: JSONObject) {
@@ -491,7 +586,7 @@ class MainActivity : Activity() {
             )
             runOnUiThread {
                 saveStatus.text = "Calibration saved privately on this device."
-                renderHiddenFields(inspected)
+                renderSavePayload(inspected)
             }
         }
     }
@@ -530,7 +625,7 @@ class MainActivity : Activity() {
             )
             runOnUiThread {
                 saveStatus.text = "Save written and verified. Original save copies were backed up in the selected folder."
-                renderHiddenFields(inspected)
+                renderSavePayload(inspected)
             }
         }
     }
