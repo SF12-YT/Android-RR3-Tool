@@ -67,8 +67,8 @@ internal object GameDataBrowser {
                     continue
                 }
 
-                val effectiveName = child.name.removeSuffixIgnoreCase(".z")
-                    .removeSuffixIgnoreCase(".bin")
+                val effectiveName = child.name.removeSuffixIgnoreCase(".bin")
+                    .removeSuffixIgnoreCase(".z")
                 val extension = effectiveName.substringAfterLast('.', "").lowercase()
                 if (extension in excludedExtensions) continue
 
