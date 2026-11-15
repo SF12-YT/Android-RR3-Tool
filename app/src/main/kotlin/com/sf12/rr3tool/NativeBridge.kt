@@ -15,6 +15,8 @@ internal object NativeBridge {
 
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
+    external fun nativeUnwrapRr3Asset(fileName: String, input: ByteArray): ByteArray?
+
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?
 
     external fun nativeRr3TextIsPlain(input: ByteArray): Boolean
