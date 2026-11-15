@@ -27,11 +27,133 @@ import java.io.FileInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.io.FileOutputStream
+import java.io.BufferedReader
+import java.io.Closeable
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class MainActivity : Activity() {
+    private data class CareerTextPage(val label: String, val text: String)
+
+    /**
+     * Reads the editable career text file in small record groups. The original
+     * text remains on disk; only sections requested by the scroll view are
+     * turned into EditTexts. Any sections the user never scrolls to are copied
+     * straight from the source file when building the output.
+     */
+    private class CareerTextPager(file: File, private val pageSize: Int = 70) : Closeable {
+        private val reader: BufferedReader = file.bufferedReader(Charsets.UTF_8)
+        private val header = StringBuilder()
+        private var pendingLine: String? = null
+        private var reachedEof = false
+        private val counts = mutableMapOf<String, Int>()
+
+        init {
+            while (true) {
+                val line = reader.readLine()
+                if (line == null) {
+                    reachedEof = true
+                    break
+                }
+                if (line.isBlank() || line.startsWith("#")) {
+                    header.append(line).append('\n')
+                } else {
+                    pendingLine = line
+                    break
+                }
+            }
+        }
+
+        @Synchronized
+        fun readNextPage(): CareerTextPage? {
+            val first = takeNextRecord() ?: return null
+            val type = first.substringBefore('\t')
+            val rows = ArrayList<String>(pageSize)
+            rows.add(first)
+
+            while (rows.size < pageSize) {
+                val next = takeNextRecord() ?: break
+                if (next.substringBefore('\t') != type) {
+                    pendingLine = next
+                    break
+                }
+                rows.add(next)
+            }
+
+            val priorCount = counts[type] ?: 0
+            counts[type] = priorCount + rows.size
+            val firstIndex = if (type == "EVENT") priorCount + 1
+                else first.split('\t').getOrNull(1)?.toIntOrNull()?.plus(1) ?: priorCount + 1
+            val lastIndex = if (type == "EVENT") priorCount + rows.size
+                else rows.last().split('\t').getOrNull(1)?.toIntOrNull()?.plus(1)
+                    ?: priorCount + rows.size
+
+            val sectionName = when (type) {
+                "SERIES" -> "SERIES"
+                "TIER" -> "TIERS"
+                "EVENT" -> "EVENTS"
+                else -> type
+            }
+            return CareerTextPage(
+                "$sectionName  ·  $firstIndex–$lastIndex",
+                rows.joinToString("\n")
+            )
+        }
+
+        private fun takeNextRecord(): String? {
+            pendingLine?.let {
+                pendingLine = null
+                return it
+            }
+            if (reachedEof) return null
+            while (true) {
+                val line = reader.readLine()
+                if (line == null) {
+                    reachedEof = true
+                    return null
+                }
+                if (line.isNotBlank() && !line.startsWith("#")) return line
+            }
+        }
+
+        @Synchronized
+        fun writeMerged(pageTexts: List<String>, output: File) {
+            output.bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.write(header.toString())
+                if (header.isNotEmpty() && !header.endsWith("\n")) writer.newLine()
+
+                for (page in pageTexts) {
+                    val content = page.trimEnd('\r', '\n')
+                    if (content.isNotEmpty()) {
+                        writer.write(content)
+                        writer.newLine()
+                    }
+                }
+
+                pendingLine?.let {
+                    writer.write(it)
+                    writer.newLine()
+                    pendingLine = null
+                }
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isNotBlank()) {
+                        writer.write(line)
+                        writer.newLine()
+                    }
+                }
+                reachedEof = true
+            }
+        }
+
+        override fun close() {
+            try {
+                reader.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
     private val requestGameData = 1101
     private val requestSaveFolder = 1102
     private val requestRr3TransformInput = 1103
@@ -1309,6 +1431,7 @@ class MainActivity : Activity() {
             val careerFile = newCacheFile("rr3-career-source")
             val careerTextFile = newCacheFile("rr3-career-edit", ".txt")
             var careerFilesHandedToEditor = false
+            var careerPager: CareerTextPager? = null
             try {
                 val name = displayName(uri)
                 val lowerName = name.lowercase(Locale.ROOT)
@@ -1333,16 +1456,18 @@ class MainActivity : Activity() {
                             summary.optString("error", "Could not create the editable career text.")
                         )
                     }
-                    val editableText = careerTextFile.readText(Charsets.UTF_8)
-                    if (editableText.isBlank()) throw IllegalStateException("The editable career text file is empty.")
+                    val pager = CareerTextPager(careerTextFile)
+                    careerPager = pager
+                    val firstPage = pager.readNextPage()
+                        ?: throw IllegalStateException("The editable career text file contains no records.")
                     careerFilesHandedToEditor = true
                     runOnUiThread {
                         dataEditorStatus.text =
-                            "Loaded events.dat (" + decodedSize + " bytes) as editable text. " +
+                            "Loaded events.dat (" + decodedSize + " bytes) as a sectioned editor. " +
                             summary.optInt("series") + " series, " +
                             summary.optInt("tiers") + " tiers, " +
                             summary.optInt("events") + " events."
-                        showCareerEditableDialog(name, careerFile, careerTextFile, editableText, summary)
+                        showCareerEditableDialog(name, careerFile, careerTextFile, pager, firstPage, summary)
                     }
                     return@Thread
                 }
@@ -1369,6 +1494,7 @@ class MainActivity : Activity() {
                 }
             } finally {
                 if (!careerFilesHandedToEditor) {
+                    careerPager?.close()
                     careerFile.delete()
                     careerTextFile.delete()
                 }
@@ -1380,74 +1506,180 @@ class MainActivity : Activity() {
         sourceName: String,
         sourcePlainFile: File,
         workingTextFile: File,
-        editableText: String,
+        pager: CareerTextPager,
+        firstPage: CareerTextPage,
         summary: JSONObject
     ) {
         val encryptedSource = sourceName.lowercase(Locale.ROOT).endsWith(".nct")
-        val editor = EditText(this).apply {
-            setText(editableText)
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF6F849B.toInt())
-            textSize = 12.5f
-            typeface = Typeface.MONOSPACE
-            gravity = Gravity.TOP or Gravity.START
-            inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setHorizontallyScrolling(false)
-            isVerticalScrollBarEnabled = true
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
-            minLines = 18
+        val pageEditors = mutableListOf<EditText>()
+        var isLoadingPage = false
+        var reachedEnd = false
+        var building = false
+        var dismissed = false
+
+        val help = text(
+            "Sectioned career editor · " +
+                summary.optInt("series") + " series · " +
+                summary.optInt("tiers") + " tiers · " +
+                summary.optInt("events") + " events. " +
+                "Scroll down to load more sections. Edit values after the fixed ID/index columns; untouched sections stay on disk.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+
+        val pageContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
-        val help = "Editable RR3 career text: " +
-            summary.optInt("series") + " series, " +
-            summary.optInt("tiers") + " tiers, " +
-            summary.optInt("events") + " events. " +
-            "Edit values after the ID/index columns. Keep all SERIES, TIER and EVENT rows; unknown binary fields are preserved."
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = false
+            isSmoothScrollingEnabled = true
+            addView(pageContainer, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        val loadStatus = text("Scroll to load the next section…", 11, 0xFF75B9F1.toInt())
+
+        fun addPage(page: CareerTextPage) {
+            val section = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = rounded(0xFF101F30.toInt(), dp(12).toFloat())
+            }
+            section.addView(
+                text(page.label, 11, 0xFF75B9F1.toInt(), bold = true),
+                matchWrap(bottom = 8)
+            )
+            val rowEditor = EditText(this).apply {
+                setText(page.text)
+                setTextColor(Color.WHITE)
+                setHintTextColor(0xFF6F849B.toInt())
+                textSize = 11.5f
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                setHorizontallyScrolling(false)
+                isVerticalScrollBarEnabled = false
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                val lineCount = page.text.count { it == '\n' } + 1
+                minLines = minOf(lineCount, 4)
+                maxLines = lineCount.coerceAtLeast(1)
+            }
+            pageEditors.add(rowEditor)
+            section.addView(rowEditor, matchWrap())
+            pageContainer.addView(section, matchWrap(bottom = 9))
+        }
+
+        addPage(firstPage)
+
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(8), dp(14), dp(4))
-            addView(text(help, 12, 0xFF9BAFC5.toInt()), matchWrap(bottom = 10))
-            val editorScroll = ScrollView(this@MainActivity).apply {
-                addView(
-                    editor,
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(460))
-                )
-            }
+            addView(help, matchWrap(bottom = 10))
             addView(
                 editorScroll,
-                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(480))
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(470)
+                )
             )
+            addView(loadStatus, matchWrap(top = 8))
         }
+
+        fun loadNextSection() {
+            if (isLoadingPage || reachedEnd || building || dismissed) return
+            isLoadingPage = true
+            loadStatus.text = "Loading the next section…"
+            Thread {
+                var nextPage: CareerTextPage? = null
+                var failure: String? = null
+                try {
+                    nextPage = pager.readNextPage()
+                } catch (e: Exception) {
+                    failure = e.message ?: "Could not read the next section."
+                }
+                runOnUiThread {
+                    isLoadingPage = false
+                    if (dismissed) return@runOnUiThread
+                    if (failure != null) {
+                        reachedEnd = true
+                        loadStatus.text = failure
+                    } else if (nextPage == null) {
+                        reachedEnd = true
+                        loadStatus.text = "End of career text · all sections loaded."
+                    } else {
+                        addPage(nextPage!!)
+                        loadStatus.text = "Keep scrolling to load the next section…"
+                        editorScroll.post {
+                            val child = editorScroll.getChildAt(0)
+                            if (child != null &&
+                                editorScroll.scrollY + editorScroll.height >= child.height - dp(360)
+                            ) {
+                                loadNextSection()
+                            }
+                        }
+                    }
+                }
+            }.start()
+        }
+
+        editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
+            val child = (view as ScrollView).getChildAt(0)
+            if (child != null && scrollY + view.height >= child.height - dp(360)) {
+                loadNextSection()
+            }
+        }
+        editorScroll.post {
+            val child = editorScroll.getChildAt(0)
+            if (child != null && child.height <= editorScroll.height + dp(120)) {
+                loadNextSection()
+            }
+        }
+
         val dialog = AlertDialog.Builder(this)
-            .setTitle(sourceName + " — editable")
+            .setTitle(sourceName + " — section editor")
             .setView(content)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Build and export", null)
             .create()
+
         dialog.setOnDismissListener {
+            dismissed = true
+            pager.close()
             sourcePlainFile.delete()
             workingTextFile.delete()
         }
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val edited = editor.text.toString()
+                if (isLoadingPage || building) {
+                    loadStatus.text = "A section is still loading or saving. Try again in a moment."
+                    return@setOnClickListener
+                }
+
+                building = true
+                val editedPages = pageEditors.map { it.text.toString() }
                 val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 saveButton.isEnabled = false
-                dataEditorStatus.text = "Rebuilding events.dat from the edited text…"
+                loadStatus.text = "Merging edited sections and rebuilding events.dat…"
+                dataEditorStatus.text = "Rebuilding events.dat from the edited sections…"
+
                 Thread {
+                    val mergedTextFile = newCacheFile("rr3-career-merged", ".txt")
                     val rebuiltPlain = newCacheFile("rr3-career-built")
                     var outputFile: File? = null
                     try {
-                        workingTextFile.writeText(edited, Charsets.UTF_8)
+                        pager.writeMerged(editedPages, mergedTextFile)
                         val build = JSONObject(
                             NativeBridge.nativeBuildRr3CareerText(
                                 sourcePlainFile.absolutePath,
-                                workingTextFile.absolutePath,
+                                mergedTextFile.absolutePath,
                                 rebuiltPlain.absolutePath
                             )
                         )
+                        mergedTextFile.delete()
                         if (!build.optBoolean("ok")) {
                             throw IllegalStateException(
                                 build.optString("error", "Could not rebuild events.dat.")
@@ -1483,17 +1715,21 @@ class MainActivity : Activity() {
                         }
                     } catch (e: Exception) {
                         rebuiltPlain.delete()
+                        mergedTextFile.delete()
                         outputFile?.delete()
                         runOnUiThread {
+                            building = false
                             saveButton.isEnabled = true
-                            dataEditorStatus.text = e.message ?: "Could not rebuild events.dat."
+                            loadStatus.text = e.message ?: "Could not rebuild events.dat."
                         }
                     } catch (e: OutOfMemoryError) {
                         rebuiltPlain.delete()
+                        mergedTextFile.delete()
                         outputFile?.delete()
                         runOnUiThread {
+                            building = false
                             saveButton.isEnabled = true
-                            dataEditorStatus.text =
+                            loadStatus.text =
                                 "Android ran out of memory while rebuilding the career file. Your source file is unchanged."
                         }
                     }
@@ -1502,7 +1738,6 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
-
     private fun showEditableDataDialog(
         name: String,
         original: ByteArray,
