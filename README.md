@@ -57,5 +57,6 @@ This is an unofficial community tool. It is not affiliated with or endorsed by E
 
 - Large `.nct` files are decoded through a persistent native RC4 stream in 512 KiB chunks and written to a cache file, avoiding a full-size Java input/output array.
 - The Career Inspector uses the same streaming decode path and passes a decoded temporary file to the native career reader.
+- `events.dat` has a disk-backed editable text workflow: series, tier and event fields are exported to a temporary `.txt`, then rebuilt with the native RRCE writer while opaque original data remains intact; `.dat.nct` inputs are re-encoded on export.
 - A Track Inspector reads RR3 `Tracks/data/*.bin.nct` records, including track ID, display name, folder, layout, time and country.
 - The native startup status checks that the chunked RC4 implementation matches the upstream full-buffer NCT decoder across varied chunk boundaries.

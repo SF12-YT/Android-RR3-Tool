@@ -33,6 +33,10 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3CareerFile(plainPath: String): String
 
+    external fun nativeExportRr3CareerText(plainPath: String, textPath: String): String
+
+    external fun nativeBuildRr3CareerText(plainPath: String, textPath: String, outputPath: String): String
+
     external fun nativeInspectRr3Track(input: ByteArray): String
 
     external fun nativeUnwrapRr3Asset(fileName: String, input: ByteArray): ByteArray?

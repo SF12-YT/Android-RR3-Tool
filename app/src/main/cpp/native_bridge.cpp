@@ -124,6 +124,237 @@ std::string stampNow() {
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+
+std::string careerTextEscape(const std::string& value) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char c : value) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '\t': out += "\\t"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            default:
+                if (c < 0x20 || c == 0x7f) {
+                    out += "\\x";
+                    out += hex[(c >> 4) & 0xf];
+                    out += hex[c & 0xf];
+                } else out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+int careerHexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+bool careerTextUnescape(const std::string& value, std::string& out) {
+    out.clear();
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] != '\\') { out.push_back(value[i]); continue; }
+        if (++i >= value.size()) return false;
+        switch (value[i]) {
+            case '\\': out.push_back('\\'); break;
+            case 't': out.push_back('\t'); break;
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 'x': {
+                if (i + 2 >= value.size()) return false;
+                int hi = careerHexDigit(value[i + 1]), lo = careerHexDigit(value[i + 2]);
+                if (hi < 0 || lo < 0) return false;
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                break;
+            }
+            default: return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::string> careerSplitTabs(const std::string& line) {
+    std::vector<std::string> fields;
+    size_t start = 0;
+    while (true) {
+        size_t end = line.find('\t', start);
+        if (end == std::string::npos) { fields.push_back(line.substr(start)); break; }
+        fields.push_back(line.substr(start, end - start));
+        start = end + 1;
+    }
+    return fields;
+}
+
+bool careerParseI32(const std::string& value, int32_t& out) {
+    try {
+        size_t used = 0;
+        long long parsed = std::stoll(value, &used, 10);
+        if (used != value.size() || parsed < std::numeric_limits<int32_t>::min() ||
+            parsed > std::numeric_limits<int32_t>::max()) return false;
+        out = static_cast<int32_t>(parsed);
+        return true;
+    } catch (...) { return false; }
+}
+
+bool careerParseIndex(const std::string& value, size_t& out) {
+    int32_t parsed = 0;
+    if (!careerParseI32(value, parsed) || parsed < 0) return false;
+    out = static_cast<size_t>(parsed);
+    return true;
+}
+
+bool careerToEditableText(const nfsnl::Rr3Career& career,
+                          std::string& text, std::string& why) {
+    std::ostringstream out;
+    out << "# RR3_CAREER_TEXT_V1\n"
+        << "# Editable working copy for data/events.dat.\n"
+        << "# Keep every SERIES, TIER and EVENT row. Do not change index or ID columns.\n"
+        << "# SERIES: index, id, type, title_key, description_key, completion_reward\n"
+        << "# TIER: index, id, series_id, index_in_series, name_key, display_key\n"
+        << "# EVENT: tier_index, event_index, id, type, track, laps, fame, reward\n"
+        << "# Strings support \\\\, \\t, \\n, \\r and \\xHH escapes.\n\n";
+    for (size_t i = 0; i < career.series.size(); ++i) {
+        const auto& s = career.series[i];
+        if (s.head.size() < 4 || s.tail.size() < 5) {
+            why = "A series record is missing fields required by the editor."; return false;
+        }
+        out << "SERIES\t" << i << '\t' << static_cast<int32_t>(s.head[0].u) << '\t'
+            << static_cast<int32_t>(s.head[2].u) << '\t'
+            << careerTextEscape(s.head[1].s) << '\t'
+            << careerTextEscape(s.head[3].s) << '\t'
+            << careerTextEscape(s.tail[3].s) << '\n';
+    }
+    out << '\n';
+    size_t eventCount = 0;
+    for (size_t i = 0; i < career.tiers.size(); ++i) {
+        const auto& t = career.tiers[i];
+        if (t.head.size() < 8) {
+            why = "A tier record is missing fields required by the editor."; return false;
+        }
+        out << "TIER\t" << i << '\t' << static_cast<int32_t>(t.head[3].u) << '\t'
+            << static_cast<int32_t>(t.head[4].u) << '\t'
+            << static_cast<int32_t>(t.head[2].u) << '\t'
+            << careerTextEscape(t.head[0].s) << '\t'
+            << careerTextEscape(t.head[1].s) << '\n';
+        eventCount += t.events.size();
+    }
+    out << '\n';
+    for (size_t ti = 0; ti < career.tiers.size(); ++ti) {
+        const auto& t = career.tiers[ti];
+        for (size_t ei = 0; ei < t.events.size(); ++ei) {
+            const auto& e = t.events[ei];
+            if (e.a.size() < 9) {
+                why = "An event record is missing fields required by the editor."; return false;
+            }
+            out << "EVENT\t" << ti << '\t' << ei << '\t'
+                << static_cast<int32_t>(e.a[1].u) << '\t'
+                << static_cast<int32_t>(e.a[0].u) << '\t'
+                << careerTextEscape(e.a[2].s) << '\t'
+                << static_cast<int32_t>(e.a[3].u) << '\t'
+                << static_cast<int32_t>(e.a[7].u) << '\t'
+                << static_cast<int32_t>(e.a[8].u) << '\n';
+        }
+    }
+    text = out.str();
+    return true;
+}
+
+bool careerApplyEditableText(nfsnl::Rr3Career& career,
+                             const std::string& text, std::string& why) {
+    std::vector<bool> seenSeries(career.series.size(), false);
+    std::vector<bool> seenTiers(career.tiers.size(), false);
+    std::vector<std::vector<bool>> seenEvents;
+    for (const auto& tier : career.tiers) seenEvents.emplace_back(tier.events.size(), false);
+
+    std::istringstream input(text);
+    std::string line;
+    size_t lineNumber = 0, seriesCount = 0, tierCount = 0, eventCount = 0;
+    while (std::getline(input, line)) {
+        ++lineNumber;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        auto f = careerSplitTabs(line);
+        auto bad = [&](const std::string& message) {
+            why = "Line " + std::to_string(lineNumber) + ": " + message; return false;
+        };
+        if (f[0] == "SERIES") {
+            if (f.size() != 7) return bad("SERIES rows need 6 tab-separated values.");
+            size_t i = 0; int32_t id = 0, type = 0;
+            std::string title, desc, reward;
+            if (!careerParseIndex(f[1], i) || i >= career.series.size()) return bad("invalid series index.");
+            if (seenSeries[i]) return bad("duplicate series row.");
+            auto& s = career.series[i];
+            if (!careerParseI32(f[2], id) || !careerParseI32(f[3], type) ||
+                id != s.id() || type != s.type()) return bad("series ID and type columns are fixed.");
+            if (!careerTextUnescape(f[4], title) || !careerTextUnescape(f[5], desc) ||
+                !careerTextUnescape(f[6], reward)) return bad("invalid string escape.");
+            if (s.head.size() < 4 || s.tail.size() < 5) return bad("source series record is incomplete.");
+            s.head[1].s = std::move(title); s.head[3].s = std::move(desc);
+            s.tail[3].s = std::move(reward);
+            seenSeries[i] = true; ++seriesCount;
+        } else if (f[0] == "TIER") {
+            if (f.size() != 7) return bad("TIER rows need 6 tab-separated values.");
+            size_t i = 0; int32_t id = 0, seriesId = 0, pos = 0;
+            std::string name, display;
+            if (!careerParseIndex(f[1], i) || i >= career.tiers.size()) return bad("invalid tier index.");
+            if (seenTiers[i]) return bad("duplicate tier row.");
+            auto& t = career.tiers[i];
+            if (!careerParseI32(f[2], id) || id != t.id() ||
+                !careerParseI32(f[4], pos) || pos != t.indexInSeries())
+                return bad("tier ID and index columns are fixed.");
+            if (!careerParseI32(f[3], seriesId)) return bad("invalid series ID.");
+            if (!careerTextUnescape(f[5], name) || !careerTextUnescape(f[6], display))
+                return bad("invalid string escape.");
+            if (t.head.size() < 8) return bad("source tier record is incomplete.");
+            t.head[4].u = static_cast<uint32_t>(seriesId);
+            t.head[0].s = std::move(name); t.head[1].s = std::move(display);
+            seenTiers[i] = true; ++tierCount;
+        } else if (f[0] == "EVENT") {
+            if (f.size() != 9) return bad("EVENT rows need 8 tab-separated values.");
+            size_t ti = 0, ei = 0;
+            int32_t id = 0, type = 0, laps = 0, fame = 0, reward = 0;
+            std::string track;
+            if (!careerParseIndex(f[1], ti) || ti >= career.tiers.size()) return bad("invalid event tier index.");
+            if (!careerParseIndex(f[2], ei) || ei >= career.tiers[ti].events.size())
+                return bad("invalid event index.");
+            if (seenEvents[ti][ei]) return bad("duplicate event row.");
+            auto& e = career.tiers[ti].events[ei];
+            if (!careerParseI32(f[3], id) || id != e.id()) return bad("event ID column is fixed.");
+            if (!careerParseI32(f[4], type) || !careerTextUnescape(f[5], track) ||
+                !careerParseI32(f[6], laps) || !careerParseI32(f[7], fame) ||
+                !careerParseI32(f[8], reward)) return bad("invalid event value or string escape.");
+            if (e.a.size() < 9) return bad("source event record is incomplete.");
+            e.a[0].u = static_cast<uint32_t>(type); e.a[2].s = std::move(track);
+            e.a[3].u = static_cast<uint32_t>(laps); e.a[7].u = static_cast<uint32_t>(fame);
+            e.a[8].u = static_cast<uint32_t>(reward);
+            seenEvents[ti][ei] = true; ++eventCount;
+        } else return bad("unknown record type. Only SERIES, TIER and EVENT rows are supported.");
+    }
+
+    if (seriesCount != career.series.size()) {
+        why = "The text copy is missing one or more SERIES rows; keep every row in the file."; return false;
+    }
+    if (tierCount != career.tiers.size()) {
+        why = "The text copy is missing one or more TIER rows; keep every row in the file."; return false;
+    }
+    size_t expectedEvents = 0;
+    for (size_t i = 0; i < career.tiers.size(); ++i) {
+        expectedEvents += career.tiers[i].events.size();
+        if (std::find(seenEvents[i].begin(), seenEvents[i].end(), false) != seenEvents[i].end()) {
+            why = "The text copy is missing one or more EVENT rows; keep every row in the file.";
+            return false;
+        }
+    }
+    if (eventCount != expectedEvents) {
+        why = "The text copy does not contain the expected number of EVENT rows."; return false;
+    }
+    return true;
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -783,6 +1014,86 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3CareerFile(
     out << "]}";
     return toJava(env, out.str());
 }
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeExportRr3CareerText(
+    JNIEnv* env, jobject /* thiz */, jstring plainPath, jstring textPath) {
+    gRr3CareerError.clear();
+    const std::string sourcePath = fromJava(env, plainPath);
+    const std::string outputPath = fromJava(env, textPath);
+    if (sourcePath.empty() || outputPath.empty())
+        return toJava(env, errorJson("The career cache paths are missing."));
+    try {
+        nfsnl::Bytes plain;
+        if (!nfsnl::readFile(sourcePath, plain) || plain.empty())
+            return toJava(env, errorJson("Could not read the decoded events.dat cache file."));
+        nfsnl::Rr3Career career;
+        std::string why;
+        if (!nfsnl::rr3CareerRead(plain.data(), plain.size(), career, why))
+            return toJava(env, errorJson(why.empty() ? "This is not a supported RR3 career database." : why));
+        std::string editable;
+        if (!careerToEditableText(career, editable, why))
+            return toJava(env, errorJson(why));
+        if (!nfsnl::writeFile(outputPath,
+                reinterpret_cast<const uint8_t*>(editable.data()), editable.size()))
+            return toJava(env, errorJson("Could not write the editable career .txt file to cache."));
+        size_t events = 0;
+        for (const auto& tier : career.tiers) events += tier.events.size();
+        std::ostringstream result;
+        result << "{\"ok\":true,\"series\":" << career.series.size()
+               << ",\"tiers\":" << career.tiers.size()
+               << ",\"events\":" << events << ",\"textBytes\":" << editable.size() << '}';
+        return toJava(env, result.str());
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough native memory to create the editable career text. The source file is unchanged."));
+    } catch (...) {
+        return toJava(env, errorJson("The career text export failed unexpectedly. The source file is unchanged."));
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3CareerText(
+    JNIEnv* env, jobject /* thiz */, jstring plainPath, jstring textPath, jstring outputPath) {
+    gRr3CareerError.clear();
+    const std::string sourcePath = fromJava(env, plainPath);
+    const std::string editablePath = fromJava(env, textPath);
+    const std::string rebuiltPath = fromJava(env, outputPath);
+    if (sourcePath.empty() || editablePath.empty() || rebuiltPath.empty())
+        return toJava(env, errorJson("One or more career editor cache paths are missing."));
+    try {
+        nfsnl::Bytes plain, textBytes;
+        if (!nfsnl::readFile(sourcePath, plain) || plain.empty())
+            return toJava(env, errorJson("The original decoded events.dat cache file is missing."));
+        if (!nfsnl::readFile(editablePath, textBytes) || textBytes.empty())
+            return toJava(env, errorJson("The editable career .txt file is empty or missing."));
+        nfsnl::Rr3Career career;
+        std::string why;
+        if (!nfsnl::rr3CareerRead(plain.data(), plain.size(), career, why))
+            return toJava(env, errorJson(why.empty() ? "The original events.dat could not be parsed." : why));
+        const std::string editable(textBytes.begin(), textBytes.end());
+        if (!careerApplyEditableText(career, editable, why))
+            return toJava(env, errorJson(why.empty() ? "The editable career text is invalid." : why));
+        nfsnl::Bytes rebuilt = nfsnl::rr3CareerWrite(career);
+        if (rebuilt.empty()) return toJava(env, errorJson("The RR3 career writer produced an empty file."));
+        nfsnl::Rr3Career verify;
+        std::string verifyWhy;
+        if (!nfsnl::rr3CareerRead(rebuilt.data(), rebuilt.size(), verify, verifyWhy) ||
+            verify.series.size() != career.series.size() ||
+            verify.tiers.size() != career.tiers.size())
+            return toJava(env, errorJson("The rebuilt career database failed validation: " + verifyWhy));
+        if (!nfsnl::writeFile(rebuiltPath, rebuilt))
+            return toJava(env, errorJson("Could not write the rebuilt events.dat file to cache."));
+        std::ostringstream result;
+        result << "{\"ok\":true,\"bytes\":" << rebuilt.size() << '}';
+        return toJava(env, result.str());
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough native memory to rebuild events.dat. The original and editable text are unchanged."));
+    } catch (...) {
+        return toJava(env, errorJson("The RR3 career writer failed unexpectedly. The original and editable text are unchanged."));
+    }
+}
+
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Track(

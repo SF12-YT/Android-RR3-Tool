@@ -331,7 +331,7 @@ class MainActivity : Activity() {
         )
         editorCard.addView(
             text(
-                "Open supported .sounddef, .evt, table and text files. RR3's large events.dat is routed to the Career Inspector instead of being expanded into a huge generic text buffer. Other supported files remain editable and can be rebuilt in their original format.",
+                "Open supported .sounddef, .evt, table and text files. events.dat gets a compact, disk-backed text view of its series, tiers and events; saving rebuilds the RR3 binary and restores NCT encryption when the source was .dat.nct.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -378,7 +378,7 @@ class MainActivity : Activity() {
         )
         careerCard.addView(
             text(
-                "Open data/events.dat.nct here, or select an already-decoded events.dat in Data Editor, to inspect its RRCE career structure, including tracks, series, tiers and event counts. This first pass is read-only; it does not rewrite the career file.",
+                "Open data/events.dat.nct here to inspect its RRCE career structure, including tracks, series, tiers and event counts. Use Data Editor to edit the supported career fields and rebuild the file.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -498,8 +498,8 @@ class MainActivity : Activity() {
         return total
     }
 
-    private fun newCacheFile(prefix: String): File =
-        File(cacheDir, prefix + "_" + System.nanoTime() + ".tmp")
+    private fun newCacheFile(prefix: String, suffix: String = ".tmp"): File =
+        File(cacheDir, prefix + "_" + System.nanoTime() + suffix)
 
     private fun copyGameFileToFile(entry: GameDataFile, target: File) {
         target.parentFile?.mkdirs()
@@ -1306,15 +1306,16 @@ class MainActivity : Activity() {
     private fun openEditableDataFile(uri: Uri) {
         dataEditorStatus.text = "Reading data file…"
         Thread {
-            val careerFile = newCacheFile("rr3-career-editor")
+            val careerFile = newCacheFile("rr3-career-source")
+            val careerTextFile = newCacheFile("rr3-career-edit", ".txt")
+            var careerFilesHandedToEditor = false
             try {
                 val name = displayName(uri)
                 val lowerName = name.lowercase(Locale.ROOT)
-
-                // events.dat is a structured career database, not a generic binary
-                // table. Converting all ~14 MB into editable pseudo-text creates a
-                // huge expanded string and can exhaust the phone's heap/layout memory.
-                // Decode/read it on disk and send it through the dedicated parser.
+                // events.dat is binary RRCE data, not raw UTF-8. Decode/copy it to
+                // disk, then export its editable fields to a compact .txt working
+                // file. The native writer merges edits into the original structure,
+                // preserving unknown fields and opaque binary data.
                 if (lowerName == "events.dat" || lowerName == "events.dat.nct") {
                     val decodedSize = if (lowerName.endsWith(".nct")) {
                         transformUriToCache(uri, careerFile)
@@ -1322,19 +1323,26 @@ class MainActivity : Activity() {
                         copyUriToFile(uri, careerFile)
                         careerFile.length()
                     }
-                    val payload = JSONObject(
-                        NativeBridge.nativeInspectRr3CareerFile(careerFile.absolutePath)
+                    val summary = JSONObject(
+                        NativeBridge.nativeExportRr3CareerText(
+                            careerFile.absolutePath, careerTextFile.absolutePath
+                        )
                     )
-                    if (!payload.optBoolean("ok")) {
+                    if (!summary.optBoolean("ok")) {
                         throw IllegalStateException(
-                            payload.optString("error", "Could not parse this RR3 career database.")
+                            summary.optString("error", "Could not create the editable career text.")
                         )
                     }
+                    val editableText = careerTextFile.readText(Charsets.UTF_8)
+                    if (editableText.isBlank()) throw IllegalStateException("The editable career text file is empty.")
+                    careerFilesHandedToEditor = true
                     runOnUiThread {
-                        renderCareerDetails("events.dat", decodedSize.toInt(), payload)
-                        careerInspectorStatus.text = "Inspected events.dat ($decodedSize bytes) from Data Editor."
-                        dataEditorStatus.text = "events.dat opened in the Career Inspector."
-                        selectTabFromView("Career")
+                        dataEditorStatus.text =
+                            "Loaded events.dat (" + decodedSize + " bytes) as editable text. " +
+                            summary.optInt("series") + " series, " +
+                            summary.optInt("tiers") + " tiers, " +
+                            summary.optInt("events") + " events."
+                        showCareerEditableDialog(name, careerFile, careerTextFile, editableText, summary)
                     }
                     return@Thread
                 }
@@ -1348,23 +1356,151 @@ class MainActivity : Activity() {
                 val original = input.use { it.readBytes() }
                 val editable = NativeBridge.nativeOpenDataAsText(name, original)
                     ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
-
                 runOnUiThread {
                     dataEditorStatus.text = "Opened " + name + " (" + original.size + " bytes)."
                     showEditableDataDialog(name, original, editable)
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    dataEditorStatus.text = e.message ?: "Could not open this data file."
-                }
+                runOnUiThread { dataEditorStatus.text = e.message ?: "Could not open this data file." }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread {
-                    dataEditorStatus.text = "Not enough memory to open this file as editable text. Try the dedicated RR3 inspector for structured game data."
+                    dataEditorStatus.text =
+                        "Android ran out of memory while preparing the editable file. The original remains unchanged."
                 }
             } finally {
-                careerFile.delete()
+                if (!careerFilesHandedToEditor) {
+                    careerFile.delete()
+                    careerTextFile.delete()
+                }
             }
         }.start()
+    }
+
+    private fun showCareerEditableDialog(
+        sourceName: String,
+        sourcePlainFile: File,
+        workingTextFile: File,
+        editableText: String,
+        summary: JSONObject
+    ) {
+        val encryptedSource = sourceName.lowercase(Locale.ROOT).endsWith(".nct")
+        val editor = EditText(this).apply {
+            setText(editableText)
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF6F849B.toInt())
+            textSize = 12.5f
+            typeface = Typeface.MONOSPACE
+            gravity = Gravity.TOP or Gravity.START
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setHorizontallyScrolling(false)
+            isVerticalScrollBarEnabled = true
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+            minLines = 18
+        }
+        val help = "Editable RR3 career text: " +
+            summary.optInt("series") + " series, " +
+            summary.optInt("tiers") + " tiers, " +
+            summary.optInt("events") + " events. " +
+            "Edit values after the ID/index columns. Keep all SERIES, TIER and EVENT rows; unknown binary fields are preserved."
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(4))
+            addView(text(help, 12, 0xFF9BAFC5.toInt()), matchWrap(bottom = 10))
+            val editorScroll = ScrollView(this@MainActivity).apply {
+                addView(
+                    editor,
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(460))
+                )
+            }
+            addView(
+                editorScroll,
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(480))
+            )
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(sourceName + " — editable")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Build and export", null)
+            .create()
+        dialog.setOnDismissListener {
+            sourcePlainFile.delete()
+            workingTextFile.delete()
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val edited = editor.text.toString()
+                val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                saveButton.isEnabled = false
+                dataEditorStatus.text = "Rebuilding events.dat from the edited text…"
+                Thread {
+                    val rebuiltPlain = newCacheFile("rr3-career-built")
+                    var outputFile: File? = null
+                    try {
+                        workingTextFile.writeText(edited, Charsets.UTF_8)
+                        val build = JSONObject(
+                            NativeBridge.nativeBuildRr3CareerText(
+                                sourcePlainFile.absolutePath,
+                                workingTextFile.absolutePath,
+                                rebuiltPlain.absolutePath
+                            )
+                        )
+                        if (!build.optBoolean("ok")) {
+                            throw IllegalStateException(
+                                build.optString("error", "Could not rebuild events.dat.")
+                            )
+                        }
+                        if (encryptedSource) {
+                            outputFile = newCacheFile("rr3-career-encoded")
+                            FileInputStream(rebuiltPlain).use { input ->
+                                FileOutputStream(outputFile!!).use { output ->
+                                    transformNctStream(input, output)
+                                }
+                            }
+                            rebuiltPlain.delete()
+                        } else {
+                            outputFile = rebuiltPlain
+                        }
+                        val readyFile = outputFile
+                            ?: throw IllegalStateException("The rebuilt career file was not created.")
+                        pendingTransformedData = null
+                        pendingTransformedFile?.delete()
+                        pendingTransformedFile = readyFile
+                        pendingTransformedSize = readyFile.length()
+                        pendingTransformedName = sourceName
+                        pendingOutputForDataEditor = true
+                        pendingOutputForBrowser = false
+                        pendingOutputForCarEditor = false
+                        runOnUiThread {
+                            dialog.dismiss()
+                            val outputKind = if (encryptedSource) "re-encoded .dat.nct" else "rebuilt .dat"
+                            dataEditorStatus.text =
+                                "Built " + outputKind + " (" + readyFile.length() + " bytes). Choose where to save it."
+                            launchRr3OutputPicker()
+                        }
+                    } catch (e: Exception) {
+                        rebuiltPlain.delete()
+                        outputFile?.delete()
+                        runOnUiThread {
+                            saveButton.isEnabled = true
+                            dataEditorStatus.text = e.message ?: "Could not rebuild events.dat."
+                        }
+                    } catch (e: OutOfMemoryError) {
+                        rebuiltPlain.delete()
+                        outputFile?.delete()
+                        runOnUiThread {
+                            saveButton.isEnabled = true
+                            dataEditorStatus.text =
+                                "Android ran out of memory while rebuilding the career file. Your source file is unchanged."
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
     }
 
     private fun showEditableDataDialog(
