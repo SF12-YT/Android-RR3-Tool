@@ -1153,19 +1153,61 @@ class MainActivity : Activity() {
     }
 
     private fun editGameDataFile(entry: GameDataFile) {
-        gameFilesStatus.text = "Opening ${entry.relativePath}…"
+        closeDataEditorAction?.invoke()
+        gameFilesStatus.text = "Opening " + entry.relativePath + "…"
         Thread {
+            var textFile: File? = null
+            var textPager: PlainTextPager? = null
+            var handedToEditor = false
             try {
                 val source = readGameFile(entry)
                 val (name, bytes) = unwrappedGameFile(entry, source)
+                val lowerName = name.lowercase(Locale.ROOT)
+                val isGameText = lowerName == "gametext.txt" ||
+                    (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
+                if (name.substringAfterLast('.', "").equals("txt", ignoreCase = true)) {
+                    val editableBytes = if (isGameText && !NativeBridge.nativeRr3TextIsPlain(bytes)) {
+                        NativeBridge.nativeTransformRr3Text(bytes)
+                            ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
+                    } else {
+                        bytes
+                    }
+                    textFile = newCacheFile("rr3-browser-text-source", ".txt")
+                    textFile!!.writeBytes(editableBytes)
+                    val pager = PlainTextPager(textFile!!)
+                    textPager = pager
+                    val firstPage = pager.readNextPage() ?: ""
+                    handedToEditor = true
+                    runOnUiThread {
+                        gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
+                        dataEditorStatus.text = "Opened " + name + " as a continuous text file."
+                        selectTabFromView("Data Editor")
+                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = isGameText)
+                    }
+                    return@Thread
+                }
+
                 val editable = NativeBridge.nativeOpenDataAsText(name, bytes)
                     ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
                 runOnUiThread {
-                    gameFilesStatus.text = "Opened ${entry.relativePath}."
+                    gameFilesStatus.text = "Opened " + entry.relativePath + "."
+                    dataEditorStatus.text = "Opened " + name + "."
+                    selectTabFromView("Data Editor")
                     showEditableDataEditor(name, bytes, editable)
                 }
             } catch (e: Exception) {
-                runOnUiThread { gameFilesStatus.text = e.message ?: "Could not open this RR3 data file." }
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Could not open this RR3 data file."
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    gameFilesStatus.text = "Android ran out of memory while preparing this file. The original remains unchanged."
+                }
+            } finally {
+                if (!handedToEditor) {
+                    textPager?.close()
+                    textFile?.delete()
+                }
             }
         }.start()
     }
