@@ -11,8 +11,10 @@ The first Android releases focus on Real Racing 3. The initial port deliberately
 
 The current Android foundation includes:
 - RR3 save inspection, a searchable advanced field view, calibration for hidden currency/level values, and guarded save writes.
-- A reversible .nct / .gui transform using the upstream embedded RR3 RC4 table and key material.
-- Storage Access Framework file/folder selection, local calibration-key storage, and pre-write save backups.
+- Reversible .nct / .gui and .bin / .xml conversion using the upstream embedded RR3 RC4 table and key material.
+- The separate RR3 game-text cipher for `gametext.txt` and `text_<language>.txt`.
+- An editable-text data editor for supported RR3 `.sounddef`, `.evt`, table and text files, rebuilt by the upstream C++ serializer.
+- Storage Access Framework file/folder selection, private calibration-key storage, and persistent pre-write save backups.
 
 The remaining RR3 workflows are being ported in stages: game-data browsing, structured car/career editing, and supported mod workflows where they do not depend on the omitted 3D or texture features.
 
@@ -31,7 +33,7 @@ The upstream RR3 NCT/GUI decoder includes its RC4 initialization table and key m
 
 ## Build
 
-Open this repository in Android Studio (JDK 17, Android SDK 35, NDK 27.2.12479018 and CMake 3.22.1), or run:
+Open this repository in Android Studio (JDK 17, Android SDK 36, NDK 28.2.13676358 and CMake 3.22.1), or run:
 
 ```sh
 git clone --recurse-submodules https://github.com/SF12-YT/Android-RR3-Tool.git
