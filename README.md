@@ -15,7 +15,7 @@ The remaining RR3 workflows are being ported in stages: game-data browsing and d
 
 The upstream C++17 engine is kept as a Git submodule at `third_party/Monkey-Tool`, so the Android app can reuse its format readers instead of maintaining a divergent copy.
 
-The upstream RR3 NCT/G​​UI decoder includes its RC4 initialization table and key material in `src/nct_rc4.inc`. This is separate from the Save Editor's calibration values: hidden save fields such as R$ and Gold are calibrated against values currently displayed by the game and stored locally on the device.
+The upstream RR3 NCT/GUI decoder includes its RC4 initialization table and key material in `src/nct_rc4.inc`. This is separate from the Save Editor's calibration values: hidden save fields such as R$ and Gold are calibrated against values currently displayed by the game and stored locally on the device.
 
 ## Android approach
 
