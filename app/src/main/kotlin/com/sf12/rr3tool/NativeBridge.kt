@@ -9,6 +9,10 @@ internal object NativeBridge {
 
     external fun nativeTransformRr3Data(input: ByteArray): ByteArray?
 
+    external fun nativeTransformRr3Text(input: ByteArray): ByteArray?
+
+    external fun nativeRr3TextIsPlain(input: ByteArray): Boolean
+
     external fun nativeInspectRr3Save(savePath: String, keysPath: String): String
 
     external fun nativeCalibrateRr3Save(
