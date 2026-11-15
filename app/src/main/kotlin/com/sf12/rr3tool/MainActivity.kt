@@ -379,11 +379,11 @@ class MainActivity : Activity() {
     private fun showGameFileActions(entry: GameDataFile) {
         val actions = arrayListOf("Export original file")
         val lower = entry.name.lowercase()
-        val effectiveName = lower.removeSuffix(".bin").removeSuffix(".z")
+        val effectiveName = lower.removeSuffix(".z")
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
-        if (effectiveName.endsWith(".nct") || effectiveName.endsWith(".gui") ||
-            effectiveName.endsWith(".xml") || effectiveName.endsWith(".bin")) {
+        if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
+            effectiveName.endsWith(".gui") || effectiveName.endsWith(".xml")) {
             actions.add("Decode / encode RR3 data")
         }
         if (effectiveName == "gametext.txt" ||
@@ -416,13 +416,24 @@ class MainActivity : Activity() {
         return input.use { it.readBytes() }
     }
 
-    private fun unwrappedGameFile(entry: GameDataFile, source: ByteArray): Pair<String, ByteArray> {
+    private fun unwrappedGameFile(
+        entry: GameDataFile,
+        source: ByteArray,
+        requireContainer: Boolean = false
+    ): Pair<String, ByteArray> {
         val lower = entry.name.lowercase()
         if (!lower.endsWith(".z") && !lower.endsWith(".bin")) {
+            if (requireContainer) throw IllegalStateException("This file is not an RR3 .z/.bin container.")
             return entry.name to source
         }
         val output = NativeBridge.nativeUnwrapRr3Asset(entry.name, source)
-            ?: throw IllegalStateException("The RR3 .z/.bin container could not be unpacked.")
+        if (output == null) {
+            if (lower.endsWith(".z") || requireContainer) {
+                throw IllegalStateException("The RR3 .z/.bin container could not be unpacked.")
+            }
+            // Some RR3 .bin files are data files rather than frame containers.
+            return entry.name to source
+        }
         val name = entry.name.removeSuffixIgnoreCaseLocal(".bin")
             .removeSuffixIgnoreCaseLocal(".z")
         return name to output
@@ -433,7 +444,11 @@ class MainActivity : Activity() {
         Thread {
             try {
                 val source = readGameFile(entry)
-                val (name, bytes) = if (unwrapOnly) unwrappedGameFile(entry, source) else entry.name to source
+                val (name, bytes) = if (unwrapOnly) {
+                    unwrappedGameFile(entry, source, requireContainer = true)
+                } else {
+                    entry.name to source
+                }
                 pendingTransformedData = bytes
                 pendingTransformedName = name
                 pendingOutputForDataEditor = false
