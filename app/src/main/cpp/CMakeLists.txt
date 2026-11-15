@@ -34,7 +34,7 @@ set(MONKEY_TOOL_CORE_SOURCES
     "${MT_SRC}/nfsnl_library.cpp"
     "${MT_SRC}/nfsnl_profiles.cpp"
     "${MT_SRC}/nfsnl_rr3.cpp"
-    "${MT_SRC}/nfsnl_rr3car.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/car_editor/nfsnl_rr3car.cpp"
     "${MT_SRC}/nfsnl_rr3add.cpp"
     "${MT_SRC}/nfsnl_rr3career.cpp"
     "${MT_SRC}/nfsnl_gltf.cpp"
