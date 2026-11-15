@@ -159,6 +159,57 @@ class MainActivity : Activity() {
             }
         }
     }
+    /**
+     * Reads ordinary UTF-8 text in fixed-size line windows. Each window is an
+     * editable block in one continuous document; untouched tail lines remain
+     * on disk and are copied directly when the user builds the output.
+     */
+    private class PlainTextPager(private val sourceFile: File, private val pageSize: Int = 240) : Closeable {
+        private val reader: BufferedReader = sourceFile.bufferedReader(Charsets.UTF_8)
+        private var loadedLineCount = 0
+
+        @Synchronized
+        fun readNextPage(): String? {
+            val page = StringBuilder()
+            var count = 0
+            while (count < pageSize) {
+                val line = reader.readLine() ?: break
+                page.append(line).append('\n')
+                count++
+            }
+            if (count == 0) return null
+            loadedLineCount += count
+            return page.toString()
+        }
+
+        @Synchronized
+        fun writeMerged(pageTexts: List<String>, output: File) {
+            output.bufferedWriter(Charsets.UTF_8).use { writer ->
+                for (page in pageTexts) {
+                    if (page.isEmpty()) continue
+                    writer.write(page)
+                    if (!page.endsWith('\n')) writer.newLine()
+                }
+                sourceFile.bufferedReader(Charsets.UTF_8).use { sourceReader ->
+                    var lineNumber = 0
+                    while (true) {
+                        val line = sourceReader.readLine() ?: break
+                        if (lineNumber++ < loadedLineCount) continue
+                        writer.write(line)
+                        writer.newLine()
+                    }
+                }
+            }
+        }
+
+        override fun close() {
+            try {
+                reader.close()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private val requestGameData = 1101
     private val requestSaveFolder = 1102
     private val requestRr3TransformInput = 1103
@@ -181,6 +232,8 @@ class MainActivity : Activity() {
     private lateinit var saveStatus: TextView
     private lateinit var dataStatus: TextView
     private lateinit var dataEditorStatus: TextView
+    private lateinit var dataEditorWorkspace: LinearLayout
+    private var closeDataEditorAction: (() -> Unit)? = null
     private lateinit var carEditorStatus: TextView
     private lateinit var careerInspectorStatus: TextView
     private lateinit var trackInspectorStatus: TextView
@@ -335,7 +388,7 @@ class MainActivity : Activity() {
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "Choose the game-data folder containing the RR3 .depot files.",
+                "Locate the RR3 package under Android/data without root, or choose files/.depot manually. The scan checks for the actual .depot folder before indexing.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
@@ -344,8 +397,12 @@ class MainActivity : Activity() {
         gameDataValue = text("No folder selected", 12, 0xFFB7C8D9.toInt())
         gameCard.addView(gameDataValue, matchWrap(top = 12))
         gameCard.addView(
-            actionButton("Choose game-data folder") { chooseFolder(requestGameData) },
+            actionButton("Find RR3 folder without root") { locateGameDataWithoutRoot() },
             matchWrap(top = 12)
+        )
+        gameCard.addView(
+            actionButton("Choose game-data folder manually") { chooseFolder(requestGameData) },
+            matchWrap(top = 8)
         )
         gameFilesStatus = text(
             "Choose the RR3 files/.depot folder, then index its non-texture game files.",
@@ -470,6 +527,11 @@ class MainActivity : Activity() {
         )
         dataEditorStatus = text("No data file opened.", 12, 0xFF9BAFC5.toInt())
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
+        dataEditorWorkspace = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        editorCard.addView(dataEditorWorkspace, matchWrap(top = 12))
 
 
         addSection(carPage, "RR3 CAR EDITOR")
