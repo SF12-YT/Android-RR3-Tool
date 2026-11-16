@@ -169,7 +169,8 @@ internal object GameDataBrowser {
             val child = children(resolver, treeUri, current.documentId)
                 .firstOrNull { it.isDirectory && it.name.equals(segment, ignoreCase = true) }
                 ?: throw IllegalStateException("Could not find vehicles/$carFolder in the selected depot.")
-            current = Folder(child.documentId, segment, current.depth + 1)
+            val path = if (current.path.isEmpty()) segment else current.path + "/" + segment
+            current = Folder(child.documentId, path, current.depth + 1)
         }
 
         val result = ArrayList<GameDataFile>()
