@@ -1292,7 +1292,7 @@ class MainActivity : Activity() {
                             if (sourcePair.first == liveryEntry.relativePath) {
                                 cached.writeBytes(liveryBytes)
                             } else {
-                                cached.writeBytes(readGameFile(sourcePair.second))
+                                copyGameFileToFile(sourcePair.second, cached)
                             }
                             cachedPathByAsset[sourcePair.first] = cached.absolutePath
                         }
@@ -2894,16 +2894,17 @@ class MainActivity : Activity() {
 
             searchStatus.text = "Searching the entire file…"
             Thread {
-                val result = try {
-                    pager.findMatch(query, startPage, startOffset, forward)
+                val outcome = try {
+                    pager.findMatch(query, startPage, startOffset, forward) to null
                 } catch (error: Exception) {
-                    null
+                    null to (error.message ?: "Could not search this text file.")
                 }
                 runOnUiThread {
                     if (closed || generation != searchGeneration) return@runOnUiThread
+                    val result = outcome.first
                     if (result == null) {
                         activeHit = null
-                        searchStatus.text = "No match found in the entire file."
+                        searchStatus.text = outcome.second ?: "No match found in the entire file."
                         return@runOnUiThread
                     }
 
@@ -2943,6 +2944,9 @@ class MainActivity : Activity() {
 
         fun scheduleSearch() {
             pendingSearch?.let(searchHandler::removeCallbacks)
+            // Invalidate a search already running on the worker thread as soon
+            // as the query changes, not when the next debounce fires.
+            searchGeneration++
             activeHit = null
             val query = queryInput.text.toString()
             if (query.isBlank()) {
