@@ -2863,21 +2863,21 @@ class MainActivity : Activity() {
 
                     layoutManager.scrollToPositionWithOffset(result.pageIndex, dp(18))
                     fun selectVisibleMatch(attempt: Int) {
-                        editorList.post {
-                            if (closed || generation != searchGeneration) return@post
+                        editorList.post selectPost@{
+                            if (closed || generation != searchGeneration) return@selectPost
                             val holder = editorList.findViewHolderForAdapterPosition(result.pageIndex) as? PageHolder
                             if (holder == null) {
                                 if (attempt < 12) {
                                     editorList.postDelayed({ selectVisibleMatch(attempt + 1) }, 24L)
                                 }
-                                return@post
+                                return@selectPost
                             }
                             holder.editor.requestFocus()
                             val safeStart = result.start.coerceIn(0, holder.editor.text.length)
                             val safeEnd = result.end.coerceIn(safeStart, holder.editor.text.length)
                             holder.editor.setSelection(safeStart, safeEnd)
-                            holder.editor.post {
-                                val layout = holder.editor.layout ?: return@post
+                            holder.editor.post centerPost@{
+                                val layout = holder.editor.layout ?: return@centerPost
                                 val lineTop = layout.getLineTop(layout.getLineForOffset(safeStart))
                                 editorList.smoothScrollBy(
                                     0,
@@ -2956,6 +2956,8 @@ class MainActivity : Activity() {
             sourceFile.delete()
             closeDataEditorScreen()
         }
+
+        val closeButton = actionButton("Close editor") { closeEditor() }
 
         val buildButton = actionButton("Build and export") {
             if (building || closed) return@actionButton
@@ -3038,7 +3040,6 @@ class MainActivity : Activity() {
             }.start()
         }
 
-        val closeButton = actionButton("Close editor") { closeEditor() }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
