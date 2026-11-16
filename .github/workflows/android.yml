@@ -2,7 +2,7 @@ name: Android build
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/continuous-text-editor]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -50,7 +50,7 @@ jobs:
         run: gradle assembleDebug
 
       - name: Publish preview APK
-        if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'feature/continuous-text-editor')
+        if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
