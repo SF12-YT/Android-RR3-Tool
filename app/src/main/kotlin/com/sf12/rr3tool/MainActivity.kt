@@ -1595,7 +1595,6 @@ class MainActivity : Activity() {
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
         if (lower == "events.dat.nct") actions.add("Inspect RR3 career data")
-        val normalisedPath = entry.relativePath.replace('\\', '/').lowercase(Locale.ROOT)
         if (entry.relativePath.replace('\\', '/').lowercase().startsWith("tracks/data/") && lower.endsWith(".bin.nct")) actions.add("Inspect RR3 track data")
         if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
         if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
