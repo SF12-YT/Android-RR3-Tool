@@ -1142,6 +1142,285 @@ class MainActivity : Activity() {
         }
     }
 
+
+    private fun scanLiveryCarAssets(liveryEntry: GameDataFile, carFolder: String): List<GameDataFile> {
+        val rootPath = liveryEntry.depotRootPath
+        if (!rootPath.isNullOrBlank()) {
+            val carRoot = File(rootPath, "vehicles/$carFolder").absolutePath
+            val listing = if (liveryEntry.isShizuku) {
+                val service = shizukuStorageService
+                    ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                val pipe = service.listFiles(carRoot)
+                    ?: throw IllegalStateException("Shizuku could not list this car's texture files.")
+                ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } else {
+                runRootCommand("find \${shellQuote(carRoot)} -type f -print")
+            }
+            return GameDataBrowser.fromRootListing(
+                carRoot, listing, useShizuku = liveryEntry.isShizuku, includeTextures = true
+            ).map { it.copy(relativePath = "vehicles/$carFolder/" + it.relativePath) }
+        }
+
+        val storedTree = preferences.getString("game_data_tree", null)
+            ?: throw IllegalStateException("The selected RR3 depot folder is no longer available. Re-index the game files.")
+        return GameDataBrowser.scanLiveryCarAssets(
+            contentResolver, Uri.parse(storedTree), carFolder
+        )
+    }
+
+    private fun prepareAddLiverySlot(entry: GameDataFile) {
+        val marker = "vehicles/data/liveries/"
+        val path = entry.relativePath.replace('\\', '/')
+        if (!path.startsWith(marker, ignoreCase = true) ||
+            !path.endsWith(".liveries.bin.nct", ignoreCase = true)) {
+            gameFilesStatus.text = "Choose an existing car's .liveries.bin.nct file."
+            return
+        }
+        val carFolder = path.substring(marker.length)
+            .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+            .trim()
+        if (carFolder.isBlank() || carFolder.contains('/') || carFolder.contains("..")) {
+            gameFilesStatus.text = "Could not identify the car folder from this livery list."
+            return
+        }
+
+        gameFilesStatus.text = "Inspecting the livery slots for $carFolder…"
+        Thread {
+            try {
+                val liveryBytes = readGameFile(entry)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Liveries(liveryBytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "Could not read this car's livery list."))
+                }
+                val liveryArray = payload.optJSONArray("liveries")
+                    ?: throw IllegalStateException("The livery list contains no readable entries.")
+                if (liveryArray.length() == 0) throw IllegalStateException("This car has no existing livery to copy.")
+                val carAssets = scanLiveryCarAssets(entry, carFolder)
+                val assetList = indexedGameFiles.firstOrNull {
+                    it.relativePath.substringAfterLast('/').equals("asset_list_base.txtCache.txt", ignoreCase = true)
+                } ?: throw IllegalStateException(
+                    "The depot's asset_list_base.txtCache.txt was not indexed. Re-index the RR3 depot before adding a livery."
+                )
+                runOnUiThread {
+                    gameFilesStatus.text = "Ready to add a livery slot to $carFolder."
+                    showAddLiverySlotDialog(entry, carFolder, liveryBytes, liveryArray, carAssets, assetList)
+                }
+            } catch (e: Exception) {
+                runOnUiThread { gameFilesStatus.text = e.message ?: "Could not prepare the livery editor." }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread { gameFilesStatus.text = "Android ran out of memory while preparing the livery files." }
+            }
+        }.start()
+    }
+
+    private fun showAddLiverySlotDialog(
+        liveryEntry: GameDataFile,
+        carFolder: String,
+        liveryBytes: ByteArray,
+        liveryArray: org.json.JSONArray,
+        carAssets: List<GameDataFile>,
+        assetListEntry: GameDataFile
+    ) {
+        val labels = ArrayList<String>()
+        val templateIndices = ArrayList<Int>()
+        for (i in 0 until liveryArray.length()) {
+            val item = liveryArray.optJSONObject(i) ?: continue
+            val display = item.optString("display").ifBlank { item.optString("file", "Livery \${i + 1}") }
+            labels.add("\${i + 1}. $display")
+            templateIndices.add(i)
+        }
+        if (labels.isEmpty()) {
+            gameFilesStatus.text = "No usable template livery records were found."
+            return
+        }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        content.addView(text(
+            "Append a new slot to $carFolder. The selected livery is copied as the template and its body texture is recoloured. Existing slots are preserved.",
+            12, 0xFF9BAFC5.toInt()
+        ), matchWrap(bottom = 10))
+        content.addView(text("Template livery", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        val templateSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, labels).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            setSelection(0)
+        }
+        content.addView(templateSpinner, matchWrap(bottom = 10))
+        val nameInput = editBox("Livery display name", "", numeric = false)
+        content.addView(text("Display name", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        content.addView(nameInput, matchWrap(bottom = 10))
+
+        content.addView(text("Button colour · RGB (0–255)", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        val rgbRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val redInput = editBox("R", "200", numeric = true)
+        val greenInput = editBox("G", "200", numeric = true)
+        val blueInput = editBox("B", "200", numeric = true)
+        for (input in listOf(redInput, greenInput, blueInput)) {
+            rgbRow.addView(input, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(6)
+            })
+        }
+        content.addView(rgbRow, matchWrap())
+        content.addView(text(
+            "The update is exported as a ZIP containing the new texture, updated livery list and refreshed asset-cache file. Apply it to a backup of the depot and test it in-game.",
+            11, 0xFF8499AF.toInt()
+        ), matchWrap(top = 10))
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Add livery slot")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Build ZIP", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val liveryName = nameInput.text.toString().trim()
+                if (liveryName.isBlank()) {
+                    nameInput.error = "Enter a display name"
+                    return@setOnClickListener
+                }
+                val red = redInput.text.toString().toIntOrNull()
+                val green = greenInput.text.toString().toIntOrNull()
+                val blue = blueInput.text.toString().toIntOrNull()
+                if (red == null || green == null || blue == null ||
+                    red !in 0..255 || green !in 0..255 || blue !in 0..255) {
+                    gameFilesStatus.text = "Each RGB value must be a whole number from 0 to 255."
+                    return@setOnClickListener
+                }
+                val templateIndex = templateIndices[templateSpinner.selectedItemPosition]
+                val selected = liveryArray.optJSONObject(templateIndex)
+                if (selected == null) {
+                    gameFilesStatus.text = "The selected template livery is invalid."
+                    return@setOnClickListener
+                }
+                val textureOverride = selected.optString("texture")
+                val requestedStem = textureOverride.substringAfterLast('/').substringBefore('.')
+                val donorAsset = carAssets.firstOrNull {
+                    requestedStem.isNotBlank() &&
+                        it.relativePath.substringAfterLast('/').lowercase(Locale.ROOT)
+                            .startsWith(requestedStem.lowercase(Locale.ROOT) + ".")
+                } ?: carAssets.firstOrNull {
+                    it.relativePath.replace('\\', '/').contains("/livery/", ignoreCase = true)
+                }
+                if (donorAsset == null) {
+                    gameFilesStatus.text = "Could not find the selected template's body texture. Re-index the car's depot files."
+                    return@setOnClickListener
+                }
+
+                val sourcePairs = listOf(
+                    liveryEntry.relativePath to liveryEntry,
+                    donorAsset.relativePath to donorAsset,
+                    assetListEntry.relativePath to assetListEntry
+                )
+                if (sourcePairs.map { it.first }.distinct().size != 3) {
+                    gameFilesStatus.text = "The source asset paths are not unique; cannot safely stage this livery."
+                    return@setOnClickListener
+                }
+                val sourceEntryByPath = sourcePairs.associate { it.first to it.second }
+                val assetPaths = (carAssets.map { it.relativePath } + sourcePairs.map { it.first })
+                    .distinct()
+                    .toTypedArray()
+
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                gameFilesStatus.text = "Repainting the donor texture and building the new livery slot…"
+                Thread {
+                    val workDir = File(cacheDir, "rr3-livery-\${System.currentTimeMillis()}")
+                    val sourceDir = File(workDir, "source")
+                    val outputDir = File(workDir, "output")
+                    var zipFile: File? = null
+                    try {
+                        if (!sourceDir.mkdirs() || !outputDir.mkdirs()) {
+                            throw IllegalStateException("Could not create the temporary livery workspace.")
+                        }
+                        val cachedPathByAsset = HashMap<String, String>()
+                        for ((index, sourcePair) in sourcePairs.withIndex()) {
+                            val cached = File(sourceDir, "source_$index.bin")
+                            if (sourcePair.first == liveryEntry.relativePath) {
+                                cached.writeBytes(liveryBytes)
+                            } else {
+                                cached.writeBytes(readGameFile(sourcePair.second))
+                            }
+                            cachedPathByAsset[sourcePair.first] = cached.absolutePath
+                        }
+                        val sourcePaths = assetPaths.map { cachedPathByAsset[it].orEmpty() }.toTypedArray()
+                        val result = JSONObject(
+                            NativeBridge.nativeAddRr3Livery(
+                                carFolder,
+                                assetPaths,
+                                sourcePaths,
+                                outputDir.absolutePath,
+                                liveryName,
+                                templateIndex,
+                                red,
+                                green,
+                                blue
+                            )
+                        )
+                        if (!result.optBoolean("ok")) {
+                            throw IllegalStateException(result.optString("error", "The RR3 livery writer failed."))
+                        }
+                        val outputFiles = result.optJSONArray("files")
+                            ?: throw IllegalStateException("The livery writer returned no output files.")
+                        if (outputFiles.length() < 2) {
+                            throw IllegalStateException("The livery writer did not return the expected livery and texture files.")
+                        }
+                        zipFile = newCacheFile("rr3-livery-update", ".zip")
+                        ZipOutputStream(FileOutputStream(zipFile).buffered()).use { zip ->
+                            outputDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                                val relative = file.relativeTo(outputDir).invariantSeparatorsPath
+                                zip.putNextEntry(ZipEntry(relative))
+                                FileInputStream(file).use { it.copyTo(zip, 64 * 1024) }
+                                zip.closeEntry()
+                            }
+                        }
+                        if (zipFile.length() <= 0L) throw IllegalStateException("The livery update ZIP is empty.")
+                        val report = result.optString("report")
+                        pendingTransformedData = null
+                        pendingTransformedFile?.delete()
+                        pendingTransformedFile = zipFile
+                        pendingTransformedName = "RR3-\${carFolder}-livery-update.zip"
+                        pendingOutputForDataEditor = false
+                        pendingOutputForBrowser = true
+                        pendingOutputForCarEditor = false
+                        runOnUiThread {
+                            dialog.dismiss()
+                            gameFilesStatus.text =
+                                "Built livery update ZIP (\${zipFile.length()} bytes). " +
+                                report.lines().firstOrNull { it.contains("now.") }.orEmpty() +
+                                " Choose where to save it."
+                            launchRr3OutputPicker()
+                        }
+                    } catch (e: Exception) {
+                        zipFile?.delete()
+                        runOnUiThread {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                            gameFilesStatus.text = e.message ?: "Could not add the livery slot."
+                        }
+                    } catch (e: OutOfMemoryError) {
+                        zipFile?.delete()
+                        runOnUiThread {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                            gameFilesStatus.text = "Android ran out of memory while building the livery update. Original assets remain unchanged."
+                        }
+                    } finally {
+                        workDir.deleteRecursively()
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
+
+
     private fun showGameFileActions(entry: GameDataFile) {
         val actions = arrayListOf("Export original file")
         val lower = entry.name.lowercase()
@@ -1149,6 +1428,10 @@ class MainActivity : Activity() {
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
         if (lower == "events.dat.nct") actions.add("Inspect RR3 career data")
+        val normalisedPath = entry.relativePath.replace('\\', '/').lowercase(Locale.ROOT)
+        val isLiveryList = normalisedPath.startsWith("vehicles/data/liveries/") &&
+            lower.endsWith(".liveries.bin.nct")
+        if (isLiveryList) actions.add("Add livery slot to this car")
         if (entry.relativePath.replace('\\', '/').lowercase().startsWith("tracks/data/") && lower.endsWith(".bin.nct")) actions.add("Inspect RR3 track data")
         if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
         if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
@@ -1177,6 +1460,7 @@ class MainActivity : Activity() {
                     "Inspect RR3 career data" -> inspectCareerGameFile(entry)
                     "Inspect RR3 track data" -> inspectTrackGameFile(entry)
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
+                    "Add livery slot to this car" -> prepareAddLiverySlot(entry)
                     "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
                     "Convert audio to WAV" -> convertGameAudio(entry)
