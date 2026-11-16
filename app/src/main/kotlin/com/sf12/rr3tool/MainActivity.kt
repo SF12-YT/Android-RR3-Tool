@@ -3088,7 +3088,7 @@ class MainActivity : Activity() {
                     encodedFile?.delete()
                     runOnUiThread {
                         building = false
-                        buildButton.isEnabled = true
+                        buildButton?.isEnabled = true
                         closeButton.isEnabled = true
                         findButton.isEnabled = true
                         previousButton.isEnabled = true
