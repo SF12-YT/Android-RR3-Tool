@@ -941,75 +941,107 @@ class MainActivity : Activity() {
 
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
-        gameFilesStatus.text = "Requesting root and searching Android/data/*/files/.depot…"
+        gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
                 if (uid != "0") {
                     throw IllegalStateException(
-                        "Root access was not granted. Android 12 blocks normal apps from reading another app's Android/data folder. Grant this app Superuser access, then retry."
+                        "Root access was not granted. Grant this app Superuser access, then retry."
                     )
                 }
 
                 val userId = android.os.Process.myUid() / 100000
-                val ownExternalSuffix = "/Android/data/" + packageName + "/files"
-                val ownExternalRoots = getExternalFilesDirs(null)
-                    .filterNotNull()
-                    .mapNotNull { directory ->
-                        val absolutePath = directory.absolutePath
-                        if (absolutePath.endsWith(ownExternalSuffix)) {
-                            absolutePath.removeSuffix(ownExternalSuffix)
-                        } else {
-                            null
+                val packageNames = listOf(
+                    "com.ea.games.r3_row",
+                    "com.ea.games.r3_na",
+                    "com.ea.games.r3_cn"
+                )
+
+                // Restore the first detector's strongest clue: the RR3 save
+                // folder and depot are siblings under the same files/ folder.
+                val saveRoot = preferences.getString("save_root_dir", null)
+                val inferredDepot = saveRoot
+                    ?.trimEnd('/')
+                    ?.substringBeforeLast('/', missingDelimiterValue = "")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { "$it/.depot" }
+
+                // RR3 has used both the private app-data location and the
+                // external Android/data location. Root can inspect either.
+                // Keep the private paths first because the earlier working
+                // detector relied on these on devices with private depots.
+                val candidates = buildList {
+                    inferredDepot?.let { add(it) }
+                    for (packageName in packageNames) {
+                        add("/data/user/$userId/$packageName/files/.depot")
+                        add("/data/user/0/$packageName/files/.depot")
+                        add("/data/data/$packageName/files/.depot")
+                        add("/data/user_de/$userId/$packageName/files/.depot")
+                        add("/storage/emulated/$userId/Android/data/$packageName/files/.depot")
+                        add("/data/media/$userId/Android/data/$packageName/files/.depot")
+                        add("/storage/emulated/0/Android/data/$packageName/files/.depot")
+                        add("/data/media/0/Android/data/$packageName/files/.depot")
+                    }
+                }.distinct()
+
+                fun isPopulatedDepot(candidate: String): Boolean {
+                    val output = runRootCommand(
+                        "if [ -d ${shellQuote(candidate)} ]; then " +
+                            "first_file=\$(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
+                            "if [ -n \"\$first_file\" ]; then printf yes; fi; fi"
+                    )
+                    return output.substringAfterLast('\n').trim() == "yes"
+                }
+
+                var found = candidates.firstOrNull { candidate ->
+                    isPopulatedDepot(candidate)
+                }
+
+                // Final fallback for non-standard RR3 package IDs and storage
+                // layouts. Search the usual external roots without assuming
+                // the application ID.
+                if (found == null) {
+                    val storageRoots = linkedSetOf<String>().apply {
+                        add("/storage/emulated/0")
+                        add("/data/media/0")
+                        add("/storage/emulated/$userId")
+                        add("/data/media/$userId")
+                        add("/mnt/user/$userId/primary")
+                        val ownExternalSuffix = "/Android/data/" + packageName + "/files"
+                        getExternalFilesDirs(null).filterNotNull().forEach { directory ->
+                            val absolutePath = directory.absolutePath
+                            if (absolutePath.endsWith(ownExternalSuffix)) {
+                                add(absolutePath.removeSuffix(ownExternalSuffix))
+                            }
                         }
                     }
 
-                // Search the exact path layout used by RR3, with wildcard
-                // package directories so this does not depend on a guessed ID.
-                val storageRoots = linkedSetOf<String>().apply {
-                    add("/storage/emulated/0")
-                    add("/data/media/0")
-                    add("/storage/emulated/" + userId)
-                    add("/data/media/" + userId)
-                    add("/mnt/user/" + userId + "/primary")
-                    addAll(ownExternalRoots)
-                }.toList()
-
-                val checks = storageRoots.joinToString("\n") { root ->
-                    val androidData = shellQuote(root + "/Android/data")
-                    "data_root=$androidData; " +
-                        "if [ -d \"\$data_root\" ]; then " +
-                        "for package_dir in \"\$data_root\"/*; do " +
-                        "[ -d \"\$package_dir\" ] || continue; " +
-                        "depot=\"\$package_dir/files/.depot\"; " +
-                        "if [ -d \"\$depot\" ]; then " +
-                        "first_file=\$(find \"\$depot\" -type f -print -quit 2>/dev/null); " +
-                        "if [ -n \"\$first_file\" ]; then " +
-                        "printf 'FOUND|%s\\n' \"\$depot\"; exit 0; " +
-                        "else printf 'EMPTY|%s\\n' \"\$depot\"; fi; fi; done; fi"
+                    val checks = storageRoots.joinToString("\n") { root ->
+                        val dataRoot = shellQuote(root.trimEnd('/') + "/Android/data")
+                        "data_root=$dataRoot; " +
+                            "if [ -d \"\$data_root\" ]; then " +
+                            "for package_dir in \"\$data_root\"/*; do " +
+                            "[ -d \"\$package_dir\" ] || continue; " +
+                            "depot=\"\$package_dir/files/.depot\"; " +
+                            "if [ -d \"\$depot\" ]; then " +
+                            "first_file=\$(find \"\$depot\" -type f -print -quit 2>/dev/null); " +
+                            "if [ -n \"\$first_file\" ]; then " +
+                            "printf 'FOUND|%s\\n' \"\$depot\"; exit 0; fi; fi; done; fi"
+                    }
+                    val scanOutput = runRootCommand("$checks\nexit 0")
+                    found = scanOutput.lineSequence()
+                        .firstOrNull { it.startsWith("FOUND|") }
+                        ?.substringAfter("FOUND|")
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
                 }
 
-                val scanOutput = runRootCommand("$checks\nexit 0")
-                val found = scanOutput.lineSequence()
-                    .firstOrNull { it.startsWith("FOUND|") }
-                    ?.substringAfter("FOUND|")
-                    ?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-
                 if (found.isNullOrBlank()) {
-                    val emptyPaths = scanOutput.lineSequence()
-                        .filter { it.startsWith("EMPTY|") }
-                        .map { it.substringAfter('|') }
-                        .toList()
-                    val detail = if (emptyPaths.isNotEmpty()) {
-                        " .depot exists but contains no files: " + emptyPaths.joinToString(", ") + "."
-                    } else {
-                        " No package directory contained files/.depot."
-                    }
                     throw IllegalStateException(
-                        "Root access works, but no populated files/.depot directory was found. " +
-                            "Searched " + storageRoots.joinToString(", ") +
-                            " for Android/data/[package]/files/.depot." + detail
+                        "Root access works, but no populated RR3 .depot folder was found. " +
+                            "Checked the saved RR3 location, private /data/user and /data/data paths, " +
+                            "and external Android/data package folders."
                     )
                 }
 
@@ -1028,7 +1060,7 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     gameFilesStatus.text = e.message
-                        ?: "Could not detect RR3 Android/data files/.depot."
+                        ?: "Could not detect RR3 .depot with root."
                 }
             } finally {
                 runOnUiThread { locateRootGameDataButton.isEnabled = true }
