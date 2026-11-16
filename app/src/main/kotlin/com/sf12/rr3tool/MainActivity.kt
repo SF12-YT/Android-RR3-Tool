@@ -737,6 +737,20 @@ class MainActivity : Activity() {
         target.parentFile?.mkdirs()
         val rootPath = entry.rootPath
         if (!rootPath.isNullOrBlank()) {
+            if (entry.isShizuku) {
+                val depotPath = entry.depotRootPath
+                    ?: throw IllegalStateException("The Shizuku RR3 folder path was lost. Re-detect the game folder.")
+                val service = shizukuStorageService
+                    ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                val pipe = service.openFile(depotPath, rootPath)
+                    ?: throw IllegalStateException("Shizuku could not open ${entry.relativePath}.")
+                ParcelFileDescriptor.AutoCloseInputStream(pipe).use { source ->
+                    FileOutputStream(target).use { destination ->
+                        source.copyTo(destination, 512 * 1024)
+                    }
+                }
+                return
+            }
             val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(rootPath)}").start()
             try {
                 process.inputStream.use { source ->
@@ -1620,6 +1634,41 @@ class MainActivity : Activity() {
             var textPager: DiskBackedTextDocument? = null
             var handedToEditor = false
             try {
+                // Plain UTF-8 .txt assets can be copied directly to disk. Avoid
+                // readGameFile() + another full ByteArray just to create the
+                // paging source. Wrapped .txt.z/.txt.bin assets still use the
+                // normal RR3 unpacker below.
+                val isDirectTextFile = entry.name.endsWith(".txt", ignoreCase = true)
+                if (isDirectTextFile) {
+                    val name = entry.name
+                    val lowerName = name.lowercase(Locale.ROOT)
+                    val isGameText = lowerName == "gametext.txt" ||
+                        (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
+
+                    textFile = newCacheFile("rr3-browser-text-source", ".txt")
+                    copyGameFileToFile(entry, textFile!!)
+                    if (isGameText) {
+                        val encodedOrPlain = textFile!!.readBytes()
+                        if (!NativeBridge.nativeRr3TextIsPlain(encodedOrPlain)) {
+                            val decoded = NativeBridge.nativeTransformRr3Text(encodedOrPlain)
+                                ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
+                            FileOutputStream(textFile!!).use { it.write(decoded) }
+                        }
+                    }
+
+                    val pager = DiskBackedTextDocument(textFile!!)
+                    textPager = pager
+                    val firstPage = pager.readNextPage() ?: ""
+                    handedToEditor = true
+                    runOnUiThread {
+                        gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
+                        dataEditorStatus.text = "Opened " + name + " as a continuous text file."
+                        selectTabFromView("Data Editor")
+                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = isGameText)
+                    }
+                    return@Thread
+                }
+
                 val source = readGameFile(entry)
                 val (name, bytes) = unwrappedGameFile(entry, source)
                 val lowerName = name.lowercase(Locale.ROOT)
@@ -1633,7 +1682,7 @@ class MainActivity : Activity() {
                         bytes
                     }
                     textFile = newCacheFile("rr3-browser-text-source", ".txt")
-                    textFile!!.writeBytes(editableBytes)
+                    FileOutputStream(textFile!!).use { it.write(editableBytes) }
                     val pager = DiskBackedTextDocument(textFile!!)
                     textPager = pager
                     val firstPage = pager.readNextPage() ?: ""
@@ -1666,6 +1715,7 @@ class MainActivity : Activity() {
             } finally {
                 if (!handedToEditor) {
                     textPager?.close()
+                    textPager?.deleteEditedPages()
                     textFile?.delete()
                 }
             }
