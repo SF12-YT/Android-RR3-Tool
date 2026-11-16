@@ -912,7 +912,7 @@ bool makeParentDirectories(const std::string& filePath) {
     const size_t last = filePath.find_last_of('/');
     if (last == std::string::npos) return true;
     const std::string parent = filePath.substr(0, last);
-    size_t start = parent.starts_with("/") ? 1 : 0;
+    size_t start = !parent.empty() && parent[0] == '/' ? 1 : 0;
     for (size_t i = start; i <= parent.size(); ++i) {
         if (i != parent.size() && parent[i] != '/') continue;
         const std::string part = parent.substr(0, i);
