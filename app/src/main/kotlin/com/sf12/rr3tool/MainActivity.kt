@@ -985,17 +985,13 @@ class MainActivity : Activity() {
                     }
                 }.distinct()
 
-                fun isPopulatedDepot(candidate: String): Boolean {
-                    val output = runRootCommand(
-                        "if [ -d ${shellQuote(candidate)} ]; then " +
-                            "first_file=\$(find ${shellQuote(candidate)} -type f -print -quit 2>/dev/null); " +
-                            "if [ -n \"\$first_file\" ]; then printf yes; fi; fi"
-                    )
-                    return output.substringAfterLast('\n').trim() == "yes"
-                }
-
+                // Match the first working version's behaviour for known
+                // RR3 paths: the directory check itself is enough. Some game
+                // versions have a delayed/partially populated depot at startup.
                 var found = candidates.firstOrNull { candidate ->
-                    isPopulatedDepot(candidate)
+                    runRootCommand(
+                        "if [ -d ${shellQuote(candidate)} ]; then printf yes; fi"
+                    ).substringAfterLast('\n').trim() == "yes"
                 }
 
                 // Final fallback for non-standard RR3 package IDs and storage
