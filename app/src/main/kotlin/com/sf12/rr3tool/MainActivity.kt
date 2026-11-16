@@ -3018,7 +3018,8 @@ class MainActivity : Activity() {
 
         val closeButton = actionButton("Close editor") { closeEditor() }
 
-        val buildButton = actionButton("Build and export") {
+        var buildButton: TextView? = null
+        buildButton = actionButton("Build and export") {
             if (building || closed) return@actionButton
             try {
                 flushAttachedEditors()
@@ -3028,7 +3029,7 @@ class MainActivity : Activity() {
             }
 
             building = true
-            buildButton.isEnabled = false
+            buildButton?.isEnabled = false
             closeButton.isEnabled = false
             findButton.isEnabled = false
             previousButton.isEnabled = false
@@ -3074,7 +3075,7 @@ class MainActivity : Activity() {
                     encodedFile?.delete()
                     runOnUiThread {
                         building = false
-                        buildButton.isEnabled = true
+                        buildButton?.isEnabled = true
                         closeButton.isEnabled = true
                         findButton.isEnabled = true
                         previousButton.isEnabled = true
@@ -3115,7 +3116,7 @@ class MainActivity : Activity() {
             val actions = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                addView(buildButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                addView(buildButton!!, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginEnd = dp(6)
                 })
                 addView(closeButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
