@@ -50,7 +50,8 @@ internal object GameDataBrowser {
     fun fromRootListing(
         rootPath: String,
         listing: String,
-        useShizuku: Boolean = false
+        useShizuku: Boolean = false,
+        includeTextures: Boolean = false
     ): List<GameDataFile> {
         val root = rootPath.trimEnd('/')
         val result = ArrayList<GameDataFile>()
@@ -63,7 +64,7 @@ internal object GameDataBrowser {
             val effectiveName = name.removeSuffixIgnoreCase(".bin")
                 .removeSuffixIgnoreCase(".z")
             val extension = effectiveName.substringAfterLast('.', "").lowercase()
-            if (extension in excludedExtensions) continue
+            if (!includeTextures && extension in excludedExtensions) continue
             result.add(
                 GameDataFile(
                     name = name,
@@ -138,6 +139,62 @@ internal object GameDataBrowser {
             }
         }
 
+        return result.sortedBy { it.relativePath.lowercase() }
+    }
+
+
+    /**
+     * Lists every asset below one car's vehicles/<folder>/ directory, including
+     * body textures. This is deliberately scoped to a single car instead of
+     * indexing the entire depot's texture tree.
+     */
+    fun scanLiveryCarAssets(
+        resolver: ContentResolver,
+        treeUri: Uri,
+        carFolder: String
+    ): List<GameDataFile> {
+        require(carFolder.isNotBlank() && '/' !in carFolder && '\\' !in carFolder) {
+            "Invalid car folder."
+        }
+        val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+        val rootName = rootId.substringAfterLast('/').substringAfterLast(':')
+        val depot = if (rootName.equals(".depot", ignoreCase = true)) {
+            Folder(rootId, "", 0)
+        } else {
+            findDepotFolder(resolver, treeUri, rootId)
+        } ?: throw IllegalStateException("The selected folder does not contain an RR3 .depot.")
+
+        var current = depot
+        for (segment in listOf("vehicles", carFolder)) {
+            val child = children(resolver, treeUri, current.documentId)
+                .firstOrNull { it.isDirectory && it.name.equals(segment, ignoreCase = true) }
+                ?: throw IllegalStateException("Could not find vehicles/$carFolder in the selected depot.")
+            current = Folder(child.documentId, segment, current.depth + 1)
+        }
+
+        val result = ArrayList<GameDataFile>()
+        val queue = ArrayDeque<Folder>()
+        val visited = HashSet<String>()
+        queue.add(current)
+        while (queue.isNotEmpty()) {
+            val folder = queue.removeFirst()
+            if (!visited.add(folder.documentId)) continue
+            for (child in children(resolver, treeUri, folder.documentId)) {
+                val path = if (folder.path.isEmpty()) child.name else folder.path + "/" + child.name
+                if (child.isDirectory) {
+                    queue.add(Folder(child.documentId, path, folder.depth + 1))
+                } else {
+                    result.add(
+                        GameDataFile(
+                            name = child.name,
+                            relativePath = path,
+                            uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.documentId),
+                            sizeBytes = child.sizeBytes
+                        )
+                    )
+                }
+            }
+        }
         return result.sortedBy { it.relativePath.lowercase() }
     }
 
