@@ -1106,7 +1106,12 @@ class MainActivity : Activity() {
             }
             return GameDataBrowser.fromRootListing(
                 carRoot, listing, useShizuku = liveryEntry.isShizuku, includeTextures = true
-            ).map { it.copy(relativePath = "vehicles/$carFolder/" + it.relativePath) }
+            ).map {
+                it.copy(
+                    relativePath = "vehicles/$carFolder/" + it.relativePath,
+                    depotRootPath = liveryEntry.depotRootPath
+                )
+            }
         }
 
         val storedTree = preferences.getString("game_data_tree", null)
