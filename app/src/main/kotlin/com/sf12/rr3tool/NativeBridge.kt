@@ -29,6 +29,20 @@ internal object NativeBridge {
 
     external fun nativeGetRr3CarError(): String
 
+    external fun nativeInspectRr3Liveries(input: ByteArray): String
+
+    external fun nativeAddRr3Livery(
+        carFolder: String,
+        assetPaths: Array<String>,
+        sourcePaths: Array<String>,
+        outputDirectory: String,
+        liveryName: String,
+        templateIndex: Int,
+        red: Int,
+        green: Int,
+        blue: Int
+    ): String
+
     external fun nativeInspectRr3Career(input: ByteArray): String
 
     external fun nativeInspectRr3CareerFile(plainPath: String): String
