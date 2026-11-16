@@ -9,6 +9,9 @@
 #include <new>
 #include <sstream>
 #include <string>
+#include <set>
+#include <cerrno>
+#include <sys/stat.h>
 
 #include "nfsnl.h"
 #include "nfsnl_save.h"
@@ -888,6 +891,182 @@ Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3CarError(
     JNIEnv* env, jobject /* thiz */) {
     return toJava(env, gRr3CarError.empty() ? "The RR3 car operation failed." : gRr3CarError);
 }
+
+
+
+namespace {
+std::vector<std::string> stringsFromJava(JNIEnv* env, jobjectArray array) {
+    std::vector<std::string> out;
+    if (!array) return out;
+    const jsize count = env->GetArrayLength(array);
+    out.reserve(static_cast<size_t>(count));
+    for (jsize i = 0; i < count; ++i) {
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(array, i));
+        out.push_back(fromJava(env, value));
+        if (value) env->DeleteLocalRef(value);
+    }
+    return out;
+}
+
+bool makeParentDirectories(const std::string& filePath) {
+    const size_t last = filePath.find_last_of('/');
+    if (last == std::string::npos) return true;
+    const std::string parent = filePath.substr(0, last);
+    size_t start = parent.starts_with("/") ? 1 : 0;
+    for (size_t i = start; i <= parent.size(); ++i) {
+        if (i != parent.size() && parent[i] != '/') continue;
+        const std::string part = parent.substr(0, i);
+        if (part.empty()) continue;
+        if (mkdir(part.c_str(), 0700) != 0 && errno != EEXIST) return false;
+    }
+    return true;
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Liveries(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return toJava(env, errorJson("No livery-list data was supplied."));
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return toJava(env, errorJson("The livery-list file is empty."));
+
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return toJava(env, errorJson("Could not read the livery-list buffer."));
+    nfsnl::Bytes plain;
+    bool transformed = false;
+    try {
+        size_t covered = 0;
+        transformed = nfsnl::nctTransform(
+            reinterpret_cast<const uint8_t*>(bytes),
+            static_cast<size_t>(length), plain, &covered) && covered >= static_cast<size_t>(length);
+    } catch (...) {
+        transformed = false;
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!transformed)
+        return toJava(env, errorJson("The .liveries.bin.nct file could not be decoded."));
+
+    nfsnl::Rr3Liveries liveries;
+    bool parsed = false;
+    try {
+        parsed = nfsnl::rr3LiveriesRead(plain.data(), plain.size(), liveries);
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough memory to inspect this livery list."));
+    } catch (...) {
+        return toJava(env, errorJson("The native livery-list parser failed."));
+    }
+    if (!parsed)
+        return toJava(env, errorJson("This file does not match the RR3 livery-list format."));
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"car\":" << jsonString(liveries.car)
+        << ",\"count\":" << liveries.liveries.size() << ",\"liveries\":[";
+    for (size_t i = 0; i < liveries.liveries.size(); ++i) {
+        const auto& item = liveries.liveries[i];
+        if (i) out << ',';
+        std::string texture;
+        for (const auto& overrideEntry : item.overrides) {
+            if (overrideEntry.second.compare(0, 7, "livery/") == 0) {
+                texture = overrideEntry.second;
+                break;
+            }
+        }
+        out << "{\"file\":" << jsonString(item.file)
+            << ",\"display\":" << jsonString(item.display)
+            << ",\"texture\":" << jsonString(texture)
+            << ",\"red\":" << static_cast<unsigned>(item.rgb[0])
+            << ",\"green\":" << static_cast<unsigned>(item.rgb[1])
+            << ",\"blue\":" << static_cast<unsigned>(item.rgb[2]) << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeAddRr3Livery(
+    JNIEnv* env, jobject /* thiz */,
+    jstring carFolderText, jobjectArray assetPathArray, jobjectArray sourcePathArray,
+    jstring outputDirectoryText, jstring liveryNameText, jint templateIndex,
+    jint red, jint green, jint blue) {
+    const std::string carFolder = fromJava(env, carFolderText);
+    const std::string outputDirectory = fromJava(env, outputDirectoryText);
+    const std::string liveryName = fromJava(env, liveryNameText);
+    if (carFolder.empty() || outputDirectory.empty() || liveryName.empty())
+        return toJava(env, errorJson("The car folder, output folder and livery name are required."));
+    if (carFolder.find('/') != std::string::npos || carFolder.find('\\') != std::string::npos ||
+        carFolder.find("..") != std::string::npos)
+        return toJava(env, errorJson("Invalid car folder name."));
+    if (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255)
+        return toJava(env, errorJson("RGB values must be between 0 and 255."));
+    if (liveryName.size() > 120)
+        return toJava(env, errorJson("The livery display name is too long (maximum 120 UTF-8 bytes)."));
+
+    const std::vector<std::string> assetsInput = stringsFromJava(env, assetPathArray);
+    const std::vector<std::string> sourceFiles = stringsFromJava(env, sourcePathArray);
+    if (assetsInput.empty() || assetsInput.size() != sourceFiles.size())
+        return toJava(env, errorJson("The livery assets and their cached source files do not match."));
+
+    std::vector<std::string> assets;
+    std::map<std::string, std::string> pathByAsset;
+    assets.reserve(assetsInput.size());
+    for (size_t i = 0; i < assetsInput.size(); ++i) {
+        const auto& asset = assetsInput[i];
+        if (asset.empty() || asset[0] == '/' || asset.find("..") != std::string::npos ||
+            asset.find('\\') != std::string::npos)
+            return toJava(env, errorJson("An unsafe asset path was supplied."));
+        if (pathByAsset.emplace(asset, sourceFiles[i]).second) assets.push_back(asset);
+    }
+
+    const uint8_t sourceRgb[3] = {
+        static_cast<uint8_t>(red), static_cast<uint8_t>(green), static_cast<uint8_t>(blue)
+    };
+    nfsnl::Rr3NewLivery spec;
+    spec.name = liveryName;
+    std::copy(sourceRgb, sourceRgb + 3, spec.rgb);
+    spec.from = static_cast<int>(templateIndex);
+    spec.repaint = true;
+
+    auto readAsset = [&](const std::string& path, nfsnl::Bytes& output) -> bool {
+        const auto found = pathByAsset.find(path);
+        if (found == pathByAsset.end()) return false;
+        return nfsnl::readFile(found->second, output);
+    };
+
+    std::vector<nfsnl::Rr3CarOutput> outputs;
+    std::string report;
+    bool ok = false;
+    try {
+        ok = nfsnl::rr3AddLiveries(
+            carFolder, std::vector<nfsnl::Rr3NewLivery>{spec},
+            assets, readAsset, outputs, report);
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough native memory to add this livery. The original assets are unchanged."));
+    } catch (...) {
+        return toJava(env, errorJson("The RR3 livery writer failed unexpectedly. The original assets are unchanged."));
+    }
+    if (!ok || outputs.empty())
+        return toJava(env, errorJson(report.empty() ? "The new livery could not be built." : report));
+
+    std::ostringstream filesJson;
+    filesJson << '[';
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        const auto& item = outputs[i];
+        if (item.path.empty() || item.path[0] == '/' || item.path.find("..") != std::string::npos ||
+            item.path.find('\\') != std::string::npos)
+            return toJava(env, errorJson("The livery writer returned an unsafe output path."));
+        const std::string destination = outputDirectory + "/" + item.path;
+        if (!makeParentDirectories(destination) || !nfsnl::writeFile(destination, item.data))
+            return toJava(env, errorJson("Could not write livery output: " + item.path));
+        if (i) filesJson << ',';
+        filesJson << "{\"path\":" << jsonString(item.path)
+                  << ",\"bytes\":" << item.data.size()
+                  << ",\"note\":" << jsonString(item.note) << '}';
+    }
+    filesJson << ']';
+    return toJava(env, "{\"ok\":true,\"report\":" + jsonString(report) +
+        ",\"files\":" + filesJson.str() + "}");
+}
+
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Career(
