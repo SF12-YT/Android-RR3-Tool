@@ -55,6 +55,14 @@ import java.util.zip.ZipOutputStream
 class MainActivity : Activity() {
     private data class CareerTextPage(val label: String, val text: String)
 
+    private class GameDataTreeNode(
+        val name: String,
+        val relativePath: String,
+        val file: GameDataFile? = null
+    ) {
+        val children = linkedMapOf<String, GameDataTreeNode>()
+    }
+
     /**
      * Reads the editable career text file in small record groups. The original
      * text remains on disk; only sections requested by the scroll view are
@@ -186,6 +194,7 @@ class MainActivity : Activity() {
     private val requestCarEditorInput = 1106
     private val requestCareerInspectorInput = 1107
     private val requestTrackInspectorInput = 1108
+    private val requestManualLiveryInput = 1109
 
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
@@ -194,6 +203,7 @@ class MainActivity : Activity() {
     private lateinit var indexGameFilesButton: TextView
     private lateinit var locateRootGameDataButton: TextView
     private var indexedGameFiles: List<GameDataFile> = emptyList()
+    private val expandedGameDataFolders = mutableSetOf<String>()
     private lateinit var saveFolderValue: TextView
     private lateinit var rootSaveValue: TextView
     private lateinit var engineValue: TextView
@@ -272,6 +282,9 @@ class MainActivity : Activity() {
     private lateinit var liveryStatus: TextView
     private lateinit var liveryCarListContainer: LinearLayout
     private lateinit var liverySlotsContainer: LinearLayout
+    private lateinit var liveryManualStatus: TextView
+    private lateinit var liveryManualSlotsContainer: LinearLayout
+    private val expandedLiveryYears = mutableSetOf<String>()
     private var selectedLiveryEntry: GameDataFile? = null
     private var selectedLiveryCarFolder: String = ""
     private var selectedLiveryBytes: ByteArray? = null
@@ -630,15 +643,67 @@ class MainActivity : Activity() {
             0xFF9BAFC5.toInt()
         )
         liveryCard.addView(liveryStatus, matchWrap(top = 10))
+
+        val liveryCarsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val liveryManualPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val liveryModeTabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val indexedCarsTab = actionButton("Indexed cars") {
+            liveryCarsPanel.visibility = View.VISIBLE
+            liveryManualPanel.visibility = View.GONE
+        }
+        val manualFileTab = actionButton("Manual .bin.nct") {
+            liveryCarsPanel.visibility = View.GONE
+            liveryManualPanel.visibility = View.VISIBLE
+        }
+        liveryModeTabs.addView(
+            indexedCarsTab,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+        liveryModeTabs.addView(
+            manualFileTab,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        liveryCard.addView(liveryModeTabs, matchWrap(top = 10))
+
         liveryCarListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        liveryCard.addView(liveryCarListContainer, matchWrap(top = 10))
-        addSection(liveryPage, "SELECTED CAR · LIVERY SLOTS")
+        liveryCarsPanel.addView(liveryCarListContainer, matchWrap(top = 10))
         liverySlotsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        liveryPage.addView(liverySlotsContainer, matchWrap())
+        liveryCarsPanel.addView(
+            text("SELECTED CAR · LIVERY SLOTS", 11, 0xFF8FA4BA.toInt(), bold = true),
+            matchWrap(top = 12, bottom = 6)
+        )
+        liveryCarsPanel.addView(liverySlotsContainer, matchWrap())
+
+        liveryManualStatus = text(
+            "Choose a .bin.nct file to inspect its livery entries. The indexed car list remains available in the other tab.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        liveryManualPanel.addView(liveryManualStatus, matchWrap(top = 10))
+        liveryManualPanel.addView(
+            actionButton("Select .bin.nct file") { chooseManualLiveryFile() },
+            matchWrap(top = 10)
+        )
+        liveryManualSlotsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        liveryManualPanel.addView(liveryManualSlotsContainer, matchWrap(top = 10))
+        liveryCard.addView(liveryCarsPanel, matchWrap())
+        liveryCard.addView(liveryManualPanel, matchWrap())
 
         addSection(careerPage, "RR3 CAREER INSPECTOR")
         val careerCard = card(careerPage)
@@ -883,7 +948,7 @@ class MainActivity : Activity() {
                     indexedGameFiles = files
                     gameFilesSearch.setText("")
                     gameFilesStatus.text =
-                        "Indexed ${files.size} supported files. Textures and 3D model assets are hidden."
+                        "Indexed ${files.size} supported files. Open folders to browse the depot tree. Textures and 3D model assets are hidden."
                     renderGameFiles()
                     renderLiveryCarChoices()
                     indexGameFilesButton.isEnabled = true
@@ -1114,12 +1179,10 @@ class MainActivity : Activity() {
             return
         }
 
-        val query = gameFilesSearch.text.toString().trim().lowercase()
-        val matches = indexedGameFiles.asSequence()
-            .filter { query.isEmpty() || it.relativePath.lowercase().contains(query) }
-            .take(60)
-            .toList()
-
+        val query = gameFilesSearch.text.toString().trim().lowercase(Locale.ROOT)
+        val matches = indexedGameFiles.filter {
+            query.isEmpty() || it.relativePath.lowercase(Locale.ROOT).contains(query)
+        }
         if (matches.isEmpty()) {
             gameFilesContainer.addView(
                 text("No matching RR3 files.", 12, 0xFF7F93A9.toInt()),
@@ -1128,41 +1191,91 @@ class MainActivity : Activity() {
             return
         }
 
+        val root = GameDataTreeNode("", "")
         for (entry in matches) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(11), dp(10), dp(11), dp(10))
-                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
-                isClickable = true
-                isFocusable = true
-                setOnClickListener { showGameFileActions(entry) }
+            val parts = entry.relativePath.replace('\\', '/').split('/').filter { it.isNotBlank() }
+            var node = root
+            var pathSoFar = ""
+            for ((index, part) in parts.withIndex()) {
+                pathSoFar = if (pathSoFar.isEmpty()) part else "$pathSoFar/$part"
+                val isFile = index == parts.lastIndex
+                val child = node.children.getOrPut(part) {
+                    GameDataTreeNode(part, pathSoFar, if (isFile) entry else null)
+                }
+                node = child
             }
-            gameFilesContainer.addView(row, matchWrap(bottom = 6))
-            row.addView(text(entry.name, 13, Color.WHITE, bold = true), matchWrap())
-            val size = if (entry.sizeBytes >= 0) " · ${entry.sizeBytes} bytes" else ""
-            row.addView(
-                text(entry.relativePath + size, 11, 0xFF8FA4BA.toInt()),
-                matchWrap(top = 3)
-            )
         }
 
-        val totalMatches = indexedGameFiles.count {
-            query.isEmpty() || it.relativePath.lowercase().contains(query)
+        fun addNode(parent: LinearLayout, node: GameDataTreeNode, depth: Int) {
+            val entry = node.file
+            if (entry == null) {
+                val expanded = query.isNotEmpty() || node.relativePath in expandedGameDataFolders
+                val folderRow = text(
+                    (if (expanded) "▾  " else "▸  ") + node.name + "  ·  " + node.children.size,
+                    13,
+                    Color.WHITE,
+                    bold = true
+                ).apply {
+                    setPadding(dp(11 + depth * 16), dp(10), dp(10), dp(10))
+                    background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        if (expandedGameDataFolders.contains(node.relativePath)) {
+                            expandedGameDataFolders.remove(node.relativePath)
+                        } else {
+                            expandedGameDataFolders.add(node.relativePath)
+                        }
+                        renderGameFiles()
+                    }
+                }
+                parent.addView(folderRow, matchWrap(bottom = 5))
+                if (expanded) {
+                    val children = node.children.values.sortedWith(
+                        compareBy<GameDataTreeNode>({ it.file != null }, { it.name.lowercase(Locale.ROOT) })
+                    )
+                    for (child in children) addNode(parent, child, depth + 1)
+                }
+            } else {
+                val fileRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(11 + depth * 16), dp(8), dp(10), dp(8))
+                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { showGameFileActions(entry) }
+                }
+                parent.addView(fileRow, matchWrap(bottom = 4))
+                fileRow.addView(text("📄  " + entry.name, 12, Color.WHITE, bold = true), matchWrap())
+                val size = if (entry.sizeBytes >= 0) "  ·  ${entry.sizeBytes} bytes" else ""
+                fileRow.addView(
+                    text(entry.relativePath + size, 10, 0xFF8FA4BA.toInt()),
+                    matchWrap(top = 2)
+                )
+            }
         }
-        if (totalMatches > matches.size) {
-            gameFilesContainer.addView(
-                text("Showing ${matches.size} of $totalMatches matches. Refine the search to narrow the list.", 11, 0xFF7F93A9.toInt()),
-                matchWrap(top = 4)
-            )
+
+        for (child in root.children.values.sortedWith(
+            compareBy<GameDataTreeNode>({ it.file != null }, { it.name.lowercase(Locale.ROOT) })
+        )) {
+            addNode(gameFilesContainer, child, 0)
+        }
+        gameFilesStatus.text = if (query.isEmpty()) {
+            "Indexed ${indexedGameFiles.size} supported files. Open folders to browse the depot tree."
+        } else {
+            "Showing ${matches.size} file(s) matching “${gameFilesSearch.text}”. Matching folders are expanded."
         }
     }
 
 
     private fun scanLiveryCarAssets(liveryEntry: GameDataFile, carFolder: String): List<GameDataFile> {
         val rootPath = liveryEntry.depotRootPath
+            ?: preferences.getString("game_data_root_dir", null)
         if (!rootPath.isNullOrBlank()) {
+            val backend = preferences.getString("game_data_backend", "root")
+            val useShizuku = liveryEntry.isShizuku || backend == "shizuku"
             val carRoot = File(rootPath, "vehicles/$carFolder").absolutePath
-            val listing = if (liveryEntry.isShizuku) {
+            val listing = if (useShizuku) {
                 val service = shizukuStorageService
                     ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
                 val pipe = service.listFiles(carRoot)
@@ -1172,11 +1285,11 @@ class MainActivity : Activity() {
                 runRootCommand("find ${shellQuote(carRoot)} -type f -print")
             }
             return GameDataBrowser.fromRootListing(
-                carRoot, listing, useShizuku = liveryEntry.isShizuku, includeTextures = true
+                carRoot, listing, useShizuku = useShizuku, includeTextures = true
             ).map {
                 it.copy(
                     relativePath = "vehicles/$carFolder/" + it.relativePath,
-                    depotRootPath = liveryEntry.depotRootPath
+                    depotRootPath = rootPath
                 )
             }
         }
@@ -1188,24 +1301,48 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun formatLiveryCarName(carName: String): String =
+        carName.split('_').filter { it.isNotBlank() }.joinToString(" ") { part ->
+            when (part.lowercase(Locale.ROOT)) {
+                "f1" -> "F1"
+                "f2" -> "F2"
+                "f3" -> "F3"
+                "gt3" -> "GT3"
+                "gt4" -> "GT4"
+                "gt500" -> "GT500"
+                "gtr" -> "GTR"
+                else -> if (part.matches(Regex("[a-zA-Z]{1,4}[0-9]+"))) {
+                    part.uppercase(Locale.ROOT)
+                } else {
+                    part.replaceFirstChar { it.uppercase(Locale.ROOT) }
+                }
+            }
+        }
+
     private fun renderLiveryCarChoices() {
         if (!::liveryCarListContainer.isInitialized) return
         liveryCarListContainer.removeAllViews()
 
         val marker = "vehicles/data/liveries/"
-        val entries = indexedGameFiles
-            .filter {
-                val path = it.relativePath.replace('\\', '/')
-                path.startsWith(marker, ignoreCase = true) &&
-                    path.endsWith(".liveries.bin.nct", ignoreCase = true)
-            }
-            .sortedBy { it.relativePath.lowercase(Locale.ROOT) }
+        val entries = indexedGameFiles.mapNotNull { entry ->
+            val path = entry.relativePath.replace('\\', '/')
+            if (!path.startsWith(marker, ignoreCase = true) ||
+                !path.endsWith(".liveries.bin.nct", ignoreCase = true)) return@mapNotNull null
+            val carFolder = path.substringAfter(marker)
+                .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+            if (carFolder.isBlank() || carFolder.equals("default", ignoreCase = true) ||
+                carFolder.contains('/')) return@mapNotNull null
+            val yearPart = carFolder.substringBefore('_', "")
+            val year = if (yearPart.matches(Regex("[0-9]{4}"))) yearPart else "Other"
+            val carName = if (year == "Other") carFolder else carFolder.substringAfter('_')
+            Triple(entry, year, carName)
+        }.sortedWith(compareBy({ it.second }, { it.third.lowercase(Locale.ROOT) }))
 
         if (entries.isEmpty()) {
             liveryStatus.text = if (indexedGameFiles.isEmpty()) {
                 "Index the RR3 .depot in Game Data first."
             } else {
-                "No car livery lists were found in the indexed depot."
+                "No car livery lists were found in the indexed depot (the generic default list is hidden)."
             }
             liveryCarListContainer.addView(
                 text("No selectable cars yet.", 12, 0xFF7F93A9.toInt()),
@@ -1214,29 +1351,57 @@ class MainActivity : Activity() {
             return
         }
 
-        liveryStatus.text = "Found ${entries.size} car livery list(s). Select one to inspect its slots."
-        for (entry in entries) {
-            val carFolder = entry.relativePath.replace('\\', '/')
-                .substringAfter(marker)
-                .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(11), dp(12), dp(11))
-                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+        liveryStatus.text = "Found ${entries.size} car livery list(s). Expand a year, then select a car."
+        for ((year, cars) in entries.groupBy { it.second }.toSortedMap()) {
+            val expanded = year in expandedLiveryYears
+            val yearRow = text(
+                (if (expanded) "▾  " else "▸  ") + year + "  ·  " + cars.size + " car(s)",
+                14,
+                Color.WHITE,
+                bold = true
+            ).apply {
+                setPadding(dp(12), dp(12), dp(10), dp(12))
+                background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
                 isClickable = true
                 isFocusable = true
-                setOnClickListener { loadLiverySlots(entry) }
+                setOnClickListener {
+                    if (year in expandedLiveryYears) expandedLiveryYears.remove(year)
+                    else expandedLiveryYears.add(year)
+                    renderLiveryCarChoices()
+                }
             }
-            liveryCarListContainer.addView(row, matchWrap(bottom = 7))
-            row.addView(text(carFolder, 14, Color.WHITE, bold = true), matchWrap())
-            row.addView(
-                text(entry.relativePath, 11, 0xFF8FA4BA.toInt()),
-                matchWrap(top = 3)
-            )
+            liveryCarListContainer.addView(yearRow, matchWrap(bottom = 5))
+            if (!expanded) continue
+
+            for ((entry, _, carName) in cars) {
+                val carFolder = entry.relativePath.replace('\\', '/')
+                    .substringAfter(marker)
+                    .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { loadLiverySlots(entry) }
+                }
+                liveryCarListContainer.addView(row, matchWrap(bottom = 5))
+                row.addView(
+                    text(formatLiveryCarName(carName), 13, Color.WHITE, bold = true),
+                    matchWrap()
+                )
+                row.addView(
+                    text(carFolder, 10, 0xFF8FA4BA.toInt()),
+                    matchWrap(top = 2)
+                )
+            }
         }
     }
 
-    private fun loadLiverySlots(entry: GameDataFile) {
+    private fun loadLiverySlots(
+        entry: GameDataFile,
+        target: LinearLayout = liverySlotsContainer
+    ) {
         val marker = "vehicles/data/liveries/"
         val path = entry.relativePath.replace('\\', '/')
         if (!path.startsWith(marker, ignoreCase = true) ||
@@ -1256,7 +1421,7 @@ class MainActivity : Activity() {
         selectedLiveryCarFolder = ""
         selectedLiveryBytes = null
         selectedLiveryArray = null
-        liverySlotsContainer.removeAllViews()
+        target.removeAllViews()
         liveryStatus.text = "Reading existing livery slots for $carFolder…"
 
         Thread {
@@ -1275,7 +1440,7 @@ class MainActivity : Activity() {
                     selectedLiveryBytes = liveryBytes
                     selectedLiveryArray = liveryArray
                     liveryStatus.text = "Loaded $carFolder. ${liveryArray.length()} existing slot(s)."
-                    renderLiverySlots(carFolder, liveryArray)
+                    renderLiverySlots(carFolder, liveryArray, target, allowAdd = true)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -1289,15 +1454,20 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun renderLiverySlots(carFolder: String, liveryArray: org.json.JSONArray) {
-        liverySlotsContainer.removeAllViews()
-        liverySlotsContainer.addView(
+    private fun renderLiverySlots(
+        carFolder: String,
+        liveryArray: org.json.JSONArray,
+        target: LinearLayout = liverySlotsContainer,
+        allowAdd: Boolean = true
+    ) {
+        target.removeAllViews()
+        target.addView(
             text("$carFolder · ${liveryArray.length()} existing slot(s)", 16, Color.WHITE, bold = true),
             matchWrap(bottom = 9)
         )
 
         if (liveryArray.length() == 0) {
-            liverySlotsContainer.addView(
+            target.addView(
                 text("This car has no readable livery entries to use as a template.", 12, 0xFF9BAFC5.toInt()),
                 matchWrap()
             )
@@ -1316,7 +1486,7 @@ class MainActivity : Activity() {
                 setPadding(dp(12), dp(10), dp(12), dp(10))
                 background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
             }
-            liverySlotsContainer.addView(slot, matchWrap(bottom = 6))
+            target.addView(slot, matchWrap(bottom = 6))
             slot.addView(
                 text("Slot ${i + 1}  ·  $display", 13, Color.WHITE, bold = true),
                 matchWrap()
@@ -1329,10 +1499,97 @@ class MainActivity : Activity() {
             }
         }
 
-        liverySlotsContainer.addView(
-            actionButton("Add a new livery slot") { prepareAddLiverySlot() },
-            matchWrap(top = 9)
-        )
+        if (allowAdd) {
+            target.addView(
+                actionButton("Add a new livery slot") { prepareAddLiverySlot() },
+                matchWrap(top = 9)
+            )
+        }
+    }
+
+    private fun chooseManualLiveryFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestManualLiveryInput)
+    }
+
+    private fun openManualLiveryFile(uri: Uri) {
+        liveryManualStatus.text = "Reading selected .bin.nct file…"
+        liveryManualSlotsContainer.removeAllViews()
+        Thread {
+            try {
+                val name = displayName(uri)
+                if (!name.endsWith(".bin.nct", ignoreCase = true)) {
+                    throw IllegalArgumentException("Choose a file ending in .bin.nct.")
+                }
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected file.")
+                val bytes = input.use { it.readBytes() }
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Liveries(bytes))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(payload.optString("error", "This .bin.nct file is not a recognised livery list."))
+                }
+                val liveryArray = payload.optJSONArray("liveries")
+                    ?: throw IllegalStateException("The selected file contains no readable livery entries.")
+                val isCarLiveryList = name.endsWith(".liveries.bin.nct", ignoreCase = true)
+                val carFolder = if (isCarLiveryList) {
+                    name.removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+                } else {
+                    name
+                }
+                val canAddSlot = isCarLiveryList &&
+                    carFolder.isNotBlank() &&
+                    !carFolder.equals("default", ignoreCase = true) &&
+                    !carFolder.contains('/') &&
+                    !carFolder.contains("..")
+                runOnUiThread {
+                    if (canAddSlot) {
+                        val entry = GameDataFile(
+                            name = name,
+                            relativePath = "vehicles/data/liveries/$name",
+                            uri = uri,
+                            sizeBytes = bytes.size.toLong()
+                        )
+                        selectedLiveryEntry = entry
+                        selectedLiveryCarFolder = carFolder
+                        selectedLiveryBytes = bytes
+                        selectedLiveryArray = liveryArray
+                        liveryManualStatus.text =
+                            "Loaded $name · ${liveryArray.length()} existing slot(s). A new slot can be added when the matching car assets are available."
+                        renderLiverySlots(
+                            carFolder,
+                            liveryArray,
+                            liveryManualSlotsContainer,
+                            allowAdd = liveryArray.length() > 0
+                        )
+                    } else {
+                        selectedLiveryEntry = null
+                        selectedLiveryCarFolder = ""
+                        selectedLiveryBytes = null
+                        selectedLiveryArray = null
+                        liveryManualStatus.text =
+                            "Inspected $name · ${liveryArray.length()} livery entry/entries. This file can be inspected here, but it is not a named car livery list for slot creation."
+                        renderLiverySlots(
+                            name,
+                            liveryArray,
+                            liveryManualSlotsContainer,
+                            allowAdd = false
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    liveryManualStatus.text = e.message ?: "Could not inspect this .bin.nct file."
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    liveryManualStatus.text = "Android ran out of memory while reading the selected file."
+                }
+            }
+        }.start()
     }
 
     private fun prepareAddLiverySlot() {
@@ -3877,6 +4134,10 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestTrackInspectorInput) {
             openTrackInspectorFile(uri)
+            return
+        }
+        if (requestCode == requestManualLiveryInput) {
+            openManualLiveryFile(uri)
             return
         }
         val accessFlags = data.flags and (
