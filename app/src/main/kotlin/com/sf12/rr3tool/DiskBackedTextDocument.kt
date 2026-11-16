@@ -258,6 +258,7 @@ internal class DiskBackedTextDocument(
         }
     }
 
+    @Synchronized
     fun deleteEditedPages() {
         editDirectory.deleteRecursively()
     }
@@ -275,6 +276,7 @@ internal class DiskBackedTextDocument(
         check(!closed) { "The text editor is already closed." }
     }
 
+    @Synchronized
     override fun close() {
         closed = true
     }
