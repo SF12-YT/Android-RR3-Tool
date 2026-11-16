@@ -1014,7 +1014,8 @@ Java_com_sf12_rr3tool_NativeBridge_nativeAddRr3Livery(
         if (asset.empty() || asset[0] == '/' || asset.find("..") != std::string::npos ||
             asset.find('\\') != std::string::npos)
             return toJava(env, errorJson("An unsafe asset path was supplied."));
-        if (pathByAsset.emplace(asset, sourceFiles[i]).second) assets.push_back(asset);
+        if (std::find(assets.begin(), assets.end(), asset) == assets.end()) assets.push_back(asset);
+        if (!sourceFiles[i].empty()) pathByAsset.emplace(asset, sourceFiles[i]);
     }
 
     const uint8_t sourceRgb[3] = {
