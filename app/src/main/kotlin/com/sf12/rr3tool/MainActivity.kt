@@ -1195,7 +1195,7 @@ class MainActivity : Activity() {
         val marker = "vehicles/data/liveries/"
         val entries = indexedGameFiles
             .filter {
-                val path = it.relativePath.replace('\\\\', '/')
+                val path = it.relativePath.replace('\\', '/')
                 path.startsWith(marker, ignoreCase = true) &&
                     path.endsWith(".liveries.bin.nct", ignoreCase = true)
             }
@@ -1216,7 +1216,7 @@ class MainActivity : Activity() {
 
         liveryStatus.text = "Found ${entries.size} car livery list(s). Select one to inspect its slots."
         for (entry in entries) {
-            val carFolder = entry.relativePath.replace('\\\\', '/')
+            val carFolder = entry.relativePath.replace('\\', '/')
                 .substringAfter(marker)
                 .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
             val row = LinearLayout(this).apply {
@@ -1238,7 +1238,7 @@ class MainActivity : Activity() {
 
     private fun loadLiverySlots(entry: GameDataFile) {
         val marker = "vehicles/data/liveries/"
-        val path = entry.relativePath.replace('\\\\', '/')
+        val path = entry.relativePath.replace('\\', '/')
         if (!path.startsWith(marker, ignoreCase = true) ||
             !path.endsWith(".liveries.bin.nct", ignoreCase = true)) {
             liveryStatus.text = "Choose an existing car's .liveries.bin.nct file."
@@ -1472,7 +1472,7 @@ class MainActivity : Activity() {
                         it.relativePath.substringAfterLast('/').lowercase(Locale.ROOT)
                             .startsWith(requestedStem.lowercase(Locale.ROOT) + ".")
                 } ?: carAssets.firstOrNull {
-                    it.relativePath.replace('\\\\', '/').contains("/livery/", ignoreCase = true)
+                    it.relativePath.replace('\\', '/').contains("/livery/", ignoreCase = true)
                 }
                 if (donorAsset == null) {
                     liveryStatus.text = "Could not find the selected template's body texture. Re-index the car's depot files."
