@@ -26,7 +26,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.Spinner
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -44,6 +46,8 @@ import java.io.Closeable
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MainActivity : Activity() {
     private data class CareerTextPage(val label: String, val text: String)
@@ -1154,7 +1158,7 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException("Shizuku could not list this car's texture files.")
                 ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
             } else {
-                runRootCommand("find \${shellQuote(carRoot)} -type f -print")
+                runRootCommand("find ${shellQuote(carRoot)} -type f -print")
             }
             return GameDataBrowser.fromRootListing(
                 carRoot, listing, useShizuku = liveryEntry.isShizuku, includeTextures = true
@@ -1225,8 +1229,8 @@ class MainActivity : Activity() {
         val templateIndices = ArrayList<Int>()
         for (i in 0 until liveryArray.length()) {
             val item = liveryArray.optJSONObject(i) ?: continue
-            val display = item.optString("display").ifBlank { item.optString("file", "Livery \${i + 1}") }
-            labels.add("\${i + 1}. $display")
+            val display = item.optString("display").ifBlank { item.optString("file", "Livery ${i + 1}") }
+            labels.add("${i + 1}. $display")
             templateIndices.add(i)
         }
         if (labels.isEmpty()) {
@@ -1322,7 +1326,6 @@ class MainActivity : Activity() {
                     gameFilesStatus.text = "The source asset paths are not unique; cannot safely stage this livery."
                     return@setOnClickListener
                 }
-                val sourceEntryByPath = sourcePairs.associate { it.first to it.second }
                 val assetPaths = (carAssets.map { it.relativePath } + sourcePairs.map { it.first })
                     .distinct()
                     .toTypedArray()
@@ -1331,7 +1334,7 @@ class MainActivity : Activity() {
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 gameFilesStatus.text = "Repainting the donor texture and building the new livery slot…"
                 Thread {
-                    val workDir = File(cacheDir, "rr3-livery-\${System.currentTimeMillis()}")
+                    val workDir = File(cacheDir, "rr3-livery-${System.currentTimeMillis()}")
                     val sourceDir = File(workDir, "source")
                     val outputDir = File(workDir, "output")
                     var zipFile: File? = null
@@ -1380,19 +1383,20 @@ class MainActivity : Activity() {
                                 zip.closeEntry()
                             }
                         }
-                        if (zipFile.length() <= 0L) throw IllegalStateException("The livery update ZIP is empty.")
+                        val readyZip = zipFile ?: throw IllegalStateException("The livery update ZIP was not created.")
+                        if (readyZip.length() <= 0L) throw IllegalStateException("The livery update ZIP is empty.")
                         val report = result.optString("report")
                         pendingTransformedData = null
                         pendingTransformedFile?.delete()
-                        pendingTransformedFile = zipFile
-                        pendingTransformedName = "RR3-\${carFolder}-livery-update.zip"
+                        pendingTransformedFile = readyZip
+                        pendingTransformedName = "RR3-${carFolder}-livery-update.zip"
                         pendingOutputForDataEditor = false
                         pendingOutputForBrowser = true
                         pendingOutputForCarEditor = false
                         runOnUiThread {
                             dialog.dismiss()
                             gameFilesStatus.text =
-                                "Built livery update ZIP (\${zipFile.length()} bytes). " +
+                                "Built livery update ZIP (${readyZip.length()} bytes). " +
                                 report.lines().firstOrNull { it.contains("now.") }.orEmpty() +
                                 " Choose where to save it."
                             launchRr3OutputPicker()
