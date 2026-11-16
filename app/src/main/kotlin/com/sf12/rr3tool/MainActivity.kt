@@ -1374,8 +1374,9 @@ class MainActivity : Activity() {
                         if (outputFiles.length() < 2) {
                             throw IllegalStateException("The livery writer did not return the expected livery and texture files.")
                         }
-                        zipFile = newCacheFile("rr3-livery-update", ".zip")
-                        ZipOutputStream(FileOutputStream(zipFile).buffered()).use { zip ->
+                        val preparedZip = newCacheFile("rr3-livery-update", ".zip")
+                        zipFile = preparedZip
+                        ZipOutputStream(FileOutputStream(preparedZip).buffered()).use { zip ->
                             outputDir.walkTopDown().filter { it.isFile }.forEach { file ->
                                 val relative = file.relativeTo(outputDir).invariantSeparatorsPath
                                 zip.putNextEntry(ZipEntry(relative))
