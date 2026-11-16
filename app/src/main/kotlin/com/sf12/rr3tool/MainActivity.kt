@@ -25,6 +25,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewConfiguration
 import android.widget.ArrayAdapter
 import android.widget.EditText
@@ -34,6 +35,8 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import java.io.File
@@ -175,79 +178,6 @@ class MainActivity : Activity() {
             }
         }
     }
-    /**
-     * Reads ordinary UTF-8 text in fixed-size line windows. Each window is an
-     * editable block in one continuous document; untouched tail lines remain
-     * on disk and are copied directly when the user builds the output.
-     */
-    private class PlainTextPager(private val sourceFile: File, private val pageSize: Int = 240) : Closeable {
-        private val reader: BufferedReader = sourceFile.bufferedReader(Charsets.UTF_8)
-        private var loadedLineCount = 0
-        private val pageLineCounts = mutableListOf<Int>()
-
-        @Synchronized
-        fun readNextPage(): String? {
-            val page = StringBuilder()
-            var count = 0
-            while (count < pageSize) {
-                val line = reader.readLine() ?: break
-                page.append(line).append('\n')
-                count++
-            }
-            if (count == 0) return null
-            loadedLineCount += count
-            pageLineCounts.add(count)
-            return page.toString()
-        }
-
-        @Synchronized
-        fun writeMerged(
-            pageTexts: List<String>,
-            output: File,
-            preserveLineCount: Boolean = false
-        ) {
-            if (preserveLineCount) {
-                if (pageTexts.size != pageLineCounts.size) {
-                    throw IllegalStateException("The RR3 localisation file has an unexpected number of edited sections.")
-                }
-                for (index in pageTexts.indices) {
-                    val page = pageTexts[index]
-                    val editedLineCount = if (page.isEmpty()) 0
-                        else page.count { it == '\n' } + if (page.endsWith('\n')) 0 else 1
-                    if (editedLineCount != pageLineCounts[index]) {
-                        throw IllegalStateException(
-                            "RR3 game text must keep its original line count. Section " +
-                                (index + 1) + " must contain exactly " + pageLineCounts[index] + " line(s)."
-                        )
-                    }
-                }
-            }
-            output.bufferedWriter(Charsets.UTF_8).use { writer ->
-                for (page in pageTexts) {
-                    if (page.isEmpty()) continue
-                    writer.write(page)
-                    if (!page.endsWith('\n')) writer.newLine()
-                }
-                sourceFile.bufferedReader(Charsets.UTF_8).use { sourceReader ->
-                    var lineNumber = 0
-                    while (true) {
-                        val line = sourceReader.readLine() ?: break
-                        if (lineNumber++ < loadedLineCount) continue
-                        writer.write(line)
-                        writer.newLine()
-                    }
-                }
-            }
-        }
-
-        override fun close() {
-            try {
-                reader.close()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
     private val requestGameData = 1101
     private val requestSaveFolder = 1102
     private val requestRr3TransformInput = 1103
@@ -1687,7 +1617,7 @@ class MainActivity : Activity() {
         gameFilesStatus.text = "Opening " + entry.relativePath + "…"
         Thread {
             var textFile: File? = null
-            var textPager: PlainTextPager? = null
+            var textPager: DiskBackedTextDocument? = null
             var handedToEditor = false
             try {
                 val source = readGameFile(entry)
@@ -1704,7 +1634,7 @@ class MainActivity : Activity() {
                     }
                     textFile = newCacheFile("rr3-browser-text-source", ".txt")
                     textFile!!.writeBytes(editableBytes)
-                    val pager = PlainTextPager(textFile!!)
+                    val pager = DiskBackedTextDocument(textFile!!)
                     textPager = pager
                     val firstPage = pager.readNextPage() ?: ""
                     handedToEditor = true
@@ -2111,7 +2041,7 @@ class MainActivity : Activity() {
             var careerFilesHandedToEditor = false
             var careerPager: CareerTextPager? = null
             var plainTextHandedToEditor = false
-            var plainTextPager: PlainTextPager? = null
+            var plainTextPager: DiskBackedTextDocument? = null
             try {
                 val name = displayName(uri)
                 val lowerName = name.lowercase(Locale.ROOT)
@@ -2173,7 +2103,7 @@ class MainActivity : Activity() {
                         }
                     }
 
-                    val pager = PlainTextPager(plainTextFile)
+                    val pager = DiskBackedTextDocument(plainTextFile)
                     plainTextPager = pager
                     val firstPage = pager.readNextPage() ?: ""
                     plainTextHandedToEditor = true
@@ -2234,7 +2164,7 @@ class MainActivity : Activity() {
      * itself moves; local event.y does not. A real text selection keeps native
      * long-press/selection dragging behaviour.
      */
-    private fun attachVerticalSwipeScrolling(editor: EditText, viewport: ScrollView) {
+    private fun attachVerticalSwipeScrolling(editor: EditText, viewport: ViewGroup) {
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var downRawX = 0f
         var downRawY = 0f
@@ -2759,142 +2689,298 @@ class MainActivity : Activity() {
     private fun showPagedTextEditorInline(
         sourceName: String,
         sourceFile: File,
-        pager: PlainTextPager,
+        pager: DiskBackedTextDocument,
         firstPage: String,
         encodeGameText: Boolean = false
     ) {
-        val pageEditors = mutableListOf<EditText>()
-        var refreshFindResults: (() -> Unit)? = null
-        var isLoadingPage = false
-        var reachedEnd = false
-        var building = false
         var closed = false
-        var buildButton: TextView? = null
-        var closeButton: TextView? = null
+        var building = false
+        var searchGeneration = 0
+        var activeHit: TextSearchHit? = null
+        var pendingSearch: Runnable? = null
+        val searchHandler = Handler(Looper.getMainLooper())
 
         val help = text(
-            "Plain-text editor · " + sourceName +
-                ". The file is shown as one continuous document. More lines load automatically as you scroll.",
+            "Virtualised text editor · " + sourceName +
+                ". Only visible pages are kept as views. Edited pages are stored separately, and Find searches the entire document.",
             12,
             0xFF9BAFC5.toInt()
         )
-        val pageContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+
+        val layoutManager = LinearLayoutManager(this)
+        val editorList = RecyclerView(this).apply {
             setBackgroundColor(0xFF0B1725.toInt())
-        }
-        val editorScroll = ScrollView(this).apply {
-            isFillViewport = false
-            isSmoothScrollingEnabled = true
+            this.layoutManager = layoutManager
+            setHasFixedSize(false)
+            setItemViewCacheSize(2)
+            itemAnimator = null
+            isNestedScrollingEnabled = false
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
-            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 setScrollBarSize(dp(12))
             }
-            addView(
-                pageContainer,
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-            )
         }
-        val loadStatus = text("Scroll to load more text…", 11, 0xFF75B9F1.toInt())
 
-        fun addPage(value: String) {
-            val rowEditor = EditText(this).apply {
-                setText(value)
-                setTextColor(Color.WHITE)
-                setHintTextColor(0xFF6F849B.toInt())
-                textSize = 12f
-                typeface = Typeface.MONOSPACE
-                gravity = Gravity.TOP or Gravity.START
-                inputType = InputType.TYPE_CLASS_TEXT or
-                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                setHorizontallyScrolling(false)
-                isVerticalScrollBarEnabled = false
-                setPadding(dp(10), dp(2), dp(10), dp(2))
-                background = rounded(0xFF0B1725.toInt(), 0f)
-                val lineCount = maxOf(1, value.count { it == '\n' } + 1)
-                minLines = minOf(lineCount, 4)
-                maxLines = 100_000
+        class PageHolder(val editor: EditText) : RecyclerView.ViewHolder(editor) {
+            var pageIndex: Int = RecyclerView.NO_POSITION
+            var watcher: TextWatcher? = null
+            var dirty: Boolean = false
+        }
+
+        fun saveHolder(holder: PageHolder) {
+            if (!holder.dirty || holder.pageIndex == RecyclerView.NO_POSITION) return
+            pager.saveEditedPage(holder.pageIndex, holder.editor.text.toString())
+            holder.dirty = false
+        }
+
+        val adapter = object : RecyclerView.Adapter<PageHolder>() {
+            override fun getItemCount(): Int = pager.pageCount
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageHolder {
+                val editor = EditText(this@MainActivity).apply {
+                    layoutParams = RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                    setTextColor(Color.WHITE)
+                    setHintTextColor(0xFF6F849B.toInt())
+                    textSize = 12f
+                    typeface = Typeface.MONOSPACE
+                    gravity = Gravity.TOP or Gravity.START
+                    inputType = InputType.TYPE_CLASS_TEXT or
+                        InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                        InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    setHorizontallyScrolling(false)
+                    isVerticalScrollBarEnabled = false
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                    background = rounded(0xFF0B1725.toInt(), 0f)
+                    minLines = 4
+                    maxLines = 100_000
+                }
+                attachVerticalSwipeScrolling(editor, editorList)
+                return PageHolder(editor)
             }
-            attachVerticalSwipeScrolling(rowEditor, editorScroll)
-            pageEditors.add(rowEditor)
-            pageContainer.addView(rowEditor, matchWrap())
-            refreshFindResults?.invoke()
+
+            override fun onBindViewHolder(holder: PageHolder, position: Int) {
+                saveHolder(holder)
+                holder.watcher?.let(holder.editor::removeTextChangedListener)
+                holder.pageIndex = position
+                holder.dirty = false
+                holder.editor.setText(pager.readPage(position))
+                holder.editor.hint = "Page " + (position + 1) + " of " + pager.pageCount
+
+                val watcher = object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        holder.dirty = true
+                    }
+                    override fun afterTextChanged(s: Editable?) = Unit
+                }
+                holder.watcher = watcher
+                holder.editor.addTextChangedListener(watcher)
+            }
+
+            override fun onViewDetachedFromWindow(holder: PageHolder) {
+                saveHolder(holder)
+                super.onViewDetachedFromWindow(holder)
+            }
+
+            override fun onViewRecycled(holder: PageHolder) {
+                saveHolder(holder)
+                holder.watcher?.let(holder.editor::removeTextChangedListener)
+                holder.watcher = null
+                holder.pageIndex = RecyclerView.NO_POSITION
+                super.onViewRecycled(holder)
+            }
+        }
+        editorList.adapter = adapter
+
+        fun flushAttachedEditors() {
+            for (index in 0 until editorList.childCount) {
+                val child = editorList.getChildAt(index)
+                val holder = editorList.getChildViewHolder(child) as? PageHolder ?: continue
+                saveHolder(holder)
+            }
         }
 
-        fun closeEditor() {
-            if (building) {
-                loadStatus.text = "Wait for the output to finish building before closing the editor."
+        val queryInput = editBox("Find in the entire file…", "", numeric = false)
+        val searchStatus = text(
+            "Ready · " + pager.pageCount + " page(s) indexed. Search includes text not yet displayed.",
+            11,
+            0xFF8FA4BA.toInt()
+        )
+
+        fun performSearch(forward: Boolean, restart: Boolean) {
+            if (closed || building) return
+            val query = queryInput.text.toString()
+            if (query.isEmpty()) {
+                searchGeneration++
+                activeHit = null
+                searchStatus.text = "Enter text to find in the entire file."
                 return
             }
-            if (closed) return
-            closed = true
-            pager.close()
-            sourceFile.delete()
-            closeDataEditorScreen()
-        }
 
-        fun loadNextPage() {
-            if (isLoadingPage || reachedEnd || building || closed) return
-            isLoadingPage = true
-            loadStatus.text = "Loading more lines…"
+            val generation = ++searchGeneration
+            val current = activeHit
+            val startPage = if (restart || current == null) {
+                if (forward) 0 else pager.pageCount - 1
+            } else {
+                current.pageIndex
+            }
+            val startOffset = if (restart || current == null) {
+                if (forward) 0 else Int.MAX_VALUE
+            } else {
+                if (forward) current.end else current.start - 1
+            }
+
+            try {
+                flushAttachedEditors()
+            } catch (error: Exception) {
+                searchStatus.text = error.message ?: "Could not save the current edited page before searching."
+                return
+            }
+
+            searchStatus.text = "Searching the entire file…"
             Thread {
-                var nextPage: String? = null
-                var failure: String? = null
-                try {
-                    nextPage = pager.readNextPage()
-                } catch (e: Exception) {
-                    failure = e.message ?: "Could not read the next part of the text file."
+                val result = try {
+                    pager.findMatch(query, startPage, startOffset, forward)
+                } catch (error: Exception) {
+                    null
                 }
                 runOnUiThread {
-                    isLoadingPage = false
-                    if (closed) return@runOnUiThread
-                    if (failure != null) {
-                        reachedEnd = true
-                        loadStatus.text = failure
-                    } else if (nextPage == null) {
-                        reachedEnd = true
-                        loadStatus.text = "End of file."
-                    } else {
-                        addPage(nextPage!!)
-                        loadStatus.text = "Keep scrolling; the next part loads automatically."
-                        editorScroll.post {
-                            val child = editorScroll.getChildAt(0)
-                            if (child != null &&
-                                editorScroll.scrollY + editorScroll.height >= child.height - dp(600)
-                            ) {
-                                loadNextPage()
+                    if (closed || generation != searchGeneration) return@runOnUiThread
+                    if (result == null) {
+                        activeHit = null
+                        searchStatus.text = "No match found in the entire file."
+                        return@runOnUiThread
+                    }
+
+                    activeHit = result
+                    searchStatus.text = "Found at line " + result.lineNumber +
+                        " · page " + (result.pageIndex + 1) + " of " + pager.pageCount
+
+                    layoutManager.scrollToPositionWithOffset(result.pageIndex, dp(18))
+                    fun selectVisibleMatch(attempt: Int) {
+                        editorList.post {
+                            if (closed || generation != searchGeneration) return@post
+                            val holder = editorList.findViewHolderForAdapterPosition(result.pageIndex) as? PageHolder
+                            if (holder == null) {
+                                if (attempt < 12) {
+                                    editorList.postDelayed({ selectVisibleMatch(attempt + 1) }, 24L)
+                                }
+                                return@post
+                            }
+                            holder.editor.requestFocus()
+                            val safeStart = result.start.coerceIn(0, holder.editor.text.length)
+                            val safeEnd = result.end.coerceIn(safeStart, holder.editor.text.length)
+                            holder.editor.setSelection(safeStart, safeEnd)
+                            holder.editor.post {
+                                val layout = holder.editor.layout ?: return@post
+                                val lineTop = layout.getLineTop(layout.getLineForOffset(safeStart))
+                                editorList.smoothScrollBy(
+                                    0,
+                                    holder.editor.top + lineTop - editorList.height / 3
+                                )
                             }
                         }
                     }
+                    selectVisibleMatch(0)
                 }
             }.start()
         }
 
-        fun buildOutput() {
-            if (isLoadingPage || building || closed) {
-                loadStatus.text = "Wait for the current loading operation to finish."
+        fun scheduleSearch() {
+            pendingSearch?.let(searchHandler::removeCallbacks)
+            activeHit = null
+            val query = queryInput.text.toString()
+            if (query.isBlank()) {
+                searchGeneration++
+                searchStatus.text = "Enter text to find in the entire file."
                 return
             }
+            searchStatus.text = "Ready to search the entire file…"
+            val task = Runnable { performSearch(forward = true, restart = true) }
+            pendingSearch = task
+            searchHandler.postDelayed(task, 300L)
+        }
+
+        queryInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                scheduleSearch()
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
+        val findButton = actionButton("Find") {
+            pendingSearch?.let(searchHandler::removeCallbacks)
+            performSearch(forward = true, restart = true)
+        }
+        val previousButton = actionButton("Prev") {
+            pendingSearch?.let(searchHandler::removeCallbacks)
+            performSearch(forward = false, restart = false)
+        }
+        val nextButton = actionButton("Next") {
+            pendingSearch?.let(searchHandler::removeCallbacks)
+            performSearch(forward = true, restart = false)
+        }
+
+        val searchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(queryInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(5)
+            })
+            addView(findButton, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(4)
+            })
+            addView(previousButton, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(4)
+            })
+            addView(nextButton, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
+        fun closeEditor() {
+            if (building) {
+                searchStatus.text = "Wait for the output to finish building before closing the editor."
+                return
+            }
+            if (closed) return
+            closed = true
+            searchGeneration++
+            pendingSearch?.let(searchHandler::removeCallbacks)
+            pager.close()
+            pager.deleteEditedPages()
+            sourceFile.delete()
+            closeDataEditorScreen()
+        }
+
+        val buildButton = actionButton("Build and export") {
+            if (building || closed) return@actionButton
+            try {
+                flushAttachedEditors()
+            } catch (error: Exception) {
+                searchStatus.text = error.message ?: "Could not save the edited pages."
+                return@actionButton
+            }
+
             building = true
-            buildButton?.isEnabled = false
-            closeButton?.isEnabled = false
-            val editedPages = pageEditors.map { it.text.toString() }
-            loadStatus.text = "Merging edited lines into a new text file…"
+            buildButton.isEnabled = false
+            closeButton.isEnabled = false
+            findButton.isEnabled = false
+            previousButton.isEnabled = false
+            nextButton.isEnabled = false
+            queryInput.isEnabled = false
+            searchStatus.text = "Merging edited pages into a new text file…"
             dataEditorStatus.text = "Building " + sourceName + "…"
+
             Thread {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
                 var encodedFile: File? = null
                 try {
-                    pager.writeMerged(
-                        editedPages,
-                        outputFile,
-                        preserveLineCount = encodeGameText
-                    )
+                    pager.writeMerged(outputFile, preserveLineCount = encodeGameText)
                     var readyFile = outputFile
                     if (encodeGameText) {
                         val editedBytes = outputFile.readBytes()
@@ -2922,78 +3008,74 @@ class MainActivity : Activity() {
                                 " Choose where to save the edited text."
                         launchRr3OutputPicker()
                     }
-                } catch (e: Exception) {
+                } catch (error: Exception) {
                     outputFile.delete()
                     encodedFile?.delete()
                     runOnUiThread {
                         building = false
-                        buildButton?.isEnabled = true
-                        closeButton?.isEnabled = true
-                        loadStatus.text = e.message ?: "Could not build the text file."
+                        buildButton.isEnabled = true
+                        closeButton.isEnabled = true
+                        findButton.isEnabled = true
+                        previousButton.isEnabled = true
+                        nextButton.isEnabled = true
+                        queryInput.isEnabled = true
+                        searchStatus.text = error.message ?: "Could not build the text file."
                     }
-                } catch (e: OutOfMemoryError) {
+                } catch (error: OutOfMemoryError) {
                     outputFile.delete()
                     encodedFile?.delete()
                     runOnUiThread {
                         building = false
-                        buildButton?.isEnabled = true
-                        closeButton?.isEnabled = true
-                        loadStatus.text = "Android ran out of memory. The original text file remains unchanged."
+                        buildButton.isEnabled = true
+                        closeButton.isEnabled = true
+                        findButton.isEnabled = true
+                        previousButton.isEnabled = true
+                        nextButton.isEnabled = true
+                        queryInput.isEnabled = true
+                        searchStatus.text = "Android ran out of memory. The original text file remains unchanged."
                     }
                 }
             }.start()
         }
 
-        addPage(firstPage)
+        val closeButton = actionButton("Close editor") { closeEditor() }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
-            refreshFindResults = addPagedTextFindControls(this, pageEditors, editorScroll)
+            addView(searchRow, matchWrap(bottom = 3))
+            addView(searchStatus, matchWrap(top = 3, bottom = 7))
             addView(
-                editorScroll,
+                editorList,
                 LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     0,
                     1f
                 )
             )
-            addView(loadStatus, matchWrap(top = 8, bottom = 8))
             val actions = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-            }
-            buildButton = actionButton("Build and export") { buildOutput() }
-            closeButton = actionButton("Close editor") { closeEditor() }
-            actions.addView(
-                buildButton,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                addView(buildButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginEnd = dp(6)
-                }
-            )
-            actions.addView(
-                closeButton,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            )
-            addView(actions, matchWrap())
+                })
+                addView(closeButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            addView(actions, matchWrap(top = 8))
         }
 
-        editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
-            val child = (view as ScrollView).getChildAt(0)
-            if (child != null && scrollY + view.height >= child.height - dp(600)) {
-                loadNextPage()
-            }
-        }
         closeDataEditorAction = { closeEditor() }
         openDataEditorScreen(sourceName)
         dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.MATCH_PARENT
         ))
-        editorScroll.post {
-            val child = editorScroll.getChildAt(0)
-            if (child != null && child.height <= editorScroll.height + dp(120)) {
-                loadNextPage()
-            }
+        if (pager.pageCount == 0) {
+            searchStatus.text = "The text file is empty."
+        } else {
+            searchStatus.text = "Ready · " + pager.pageCount +
+                " page(s) indexed. Search includes text not yet displayed."
         }
+        editorList.scrollToPosition(0)
     }
 
     private fun showEditableDataEditor(
