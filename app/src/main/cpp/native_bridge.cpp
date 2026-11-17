@@ -1249,7 +1249,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
     }
 
     uint8_t digest[16];
-    saves::md5(updatedAsset.data(), updatedAsset.size(), digest);
+    nfsnl::saves::md5(updatedAsset.data(), updatedAsset.size(), digest);
     static const char* hex = "0123456789abcdef";
     std::string md5;
     md5.reserve(32);
