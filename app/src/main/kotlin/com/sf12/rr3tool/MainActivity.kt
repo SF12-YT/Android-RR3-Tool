@@ -63,6 +63,15 @@ class MainActivity : Activity() {
         val children = linkedMapOf<String, GameDataTreeNode>()
     }
 
+    private data class PendingLiverySwatchEdit(
+        val liveryEntry: GameDataFile,
+        val liveryBytes: ByteArray,
+        val carFolder: String,
+        val liveryIndex: Int,
+        val slotsTarget: LinearLayout,
+        val textureEntry: GameDataFile
+    )
+
     /**
      * Reads the editable career text file in small record groups. The original
      * text remains on disk; only sections requested by the scroll view are
@@ -195,6 +204,7 @@ class MainActivity : Activity() {
     private val requestCareerInspectorInput = 1107
     private val requestTrackInspectorInput = 1108
     private val requestManualLiveryInput = 1109
+    private val requestLiverySwatchInput = 1110
 
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
@@ -289,6 +299,7 @@ class MainActivity : Activity() {
     private var selectedLiveryCarFolder: String = ""
     private var selectedLiveryBytes: ByteArray? = null
     private var selectedLiveryArray: org.json.JSONArray? = null
+    private var pendingLiverySwatchEdit: PendingLiverySwatchEdit? = null
 
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
@@ -1480,7 +1491,14 @@ class MainActivity : Activity() {
                 .ifBlank { item.optString("file").ifBlank { "Livery ${i + 1}" } }
             val fileName = item.optString("file")
             val texture = item.optString("texture")
-            val details = listOf(fileName, texture).filter { it.isNotBlank() }.distinct()
+            val swatch = item.optString("swatch")
+            val driver = item.optString("driver")
+            val details = listOf(
+                fileName,
+                texture,
+                if (driver.isNotBlank()) "Driver: $driver" else "",
+                if (swatch.isNotBlank()) "Swatch: $swatch" else ""
+            ).filter { it.isNotBlank() }.distinct()
             val slot = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1497,6 +1515,26 @@ class MainActivity : Activity() {
                     matchWrap(top = 3)
                 )
             }
+            if (allowAdd) {
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                }
+                actions.addView(
+                    actionButton("Edit entry") { showEditLiveryEntryDialog(i, target) },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginEnd = dp(6)
+                    }
+                )
+                val replaceButton = actionButton("Replace preview image") {
+                    chooseLiverySwatchImage(i, target)
+                }
+                replaceButton.isEnabled = swatch.isNotBlank()
+                actions.addView(
+                    replaceButton,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                )
+                target.addView(actions, matchWrap(top = 7))
+            }
         }
 
         if (allowAdd) {
@@ -1505,6 +1543,330 @@ class MainActivity : Activity() {
                 matchWrap(top = 9)
             )
         }
+    }
+
+    private fun showEditLiveryEntryDialog(liveryIndex: Int, target: LinearLayout) {
+        val entry = selectedLiveryEntry ?: run {
+            liveryStatus.text = "Select a car livery list first."
+            return
+        }
+        val carFolder = selectedLiveryCarFolder
+        val source = selectedLiveryBytes ?: run {
+            liveryStatus.text = "Reload the livery list before editing an entry."
+            return
+        }
+        val entries = selectedLiveryArray ?: return
+        val item = entries.optJSONObject(liveryIndex) ?: return
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        fun addField(label: String, value: String, hint: String = label): EditText {
+            content.addView(text(label, 12, Color.WHITE, bold = true), matchWrap(bottom = 4))
+            return editBox(hint, value, numeric = false).also {
+                content.addView(it, matchWrap(bottom = 9))
+            }
+        }
+
+        val displayInput = addField("Display name", item.optString("display"), "Livery display name")
+        val driverInput = addField(
+            "Driver name / driver field",
+            item.optString("driver"),
+            "Driver name or RR3 driver reference"
+        )
+        val swatchInput = addField(
+            "Preview image reference",
+            item.optString("swatch"),
+            "Swatch asset path"
+        )
+        content.addView(
+            text(
+                "The driver and swatch values are stored in the livery record. Their exact in-game use can vary by car; keep the original values as a fallback.",
+                11,
+                0xFF8499AF.toInt()
+            ),
+            matchWrap(top = 2)
+        )
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Edit livery \${liveryIndex + 1}")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save entry", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val display = displayInput.text.toString().trim()
+                val driver = driverInput.text.toString().trim()
+                val swatch = swatchInput.text.toString().trim()
+                if (display.length > 160 || driver.length > 1024 || swatch.length > 1024) {
+                    liveryStatus.text = "Display name must be at most 160 characters; driver and swatch fields at most 1024."
+                    return@setOnClickListener
+                }
+
+                val meshes = ArrayList<Int>()
+                val materials = ArrayList<Int>()
+                val materialArray = item.optJSONArray("materials") ?: org.json.JSONArray()
+                for (i in 0 until materialArray.length()) {
+                    val material = materialArray.optJSONObject(i) ?: continue
+                    val mesh = material.optInt("mesh", -1)
+                    val materialId = material.optInt("material", -1)
+                    if (mesh >= 0 && materialId >= 0) {
+                        meshes.add(mesh)
+                        materials.add(materialId)
+                    }
+                }
+
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                liveryStatus.text = "Updating livery entry \${liveryIndex + 1}…"
+                Thread {
+                    try {
+                        val updated = NativeBridge.nativeUpdateRr3Livery(
+                            source,
+                            liveryIndex,
+                            display,
+                            swatch,
+                            item.optString("logo"),
+                            item.optString("arms"),
+                            driver,
+                            item.optInt("flag", 1),
+                            item.optInt("red", 0),
+                            item.optInt("green", 0),
+                            item.optInt("blue", 0),
+                            meshes.toIntArray(),
+                            materials.toIntArray()
+                        ) ?: throw IllegalStateException("The RR3 livery writer rejected the edited entry.")
+                        publishUpdatedLiveryList(entry, carFolder, updated, target)
+                        runOnUiThread { dialog.dismiss() }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                            liveryStatus.text = e.message ?: "Could not update this livery entry."
+                        }
+                    } catch (e: OutOfMemoryError) {
+                        runOnUiThread {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                            liveryStatus.text = "Android ran out of memory while updating the livery entry."
+                        }
+                    }
+                }.start()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun publishUpdatedLiveryList(
+        entry: GameDataFile,
+        carFolder: String,
+        updatedBytes: ByteArray,
+        target: LinearLayout
+    ) {
+        val indexed = indexedGameFiles.any {
+            it.relativePath.equals(entry.relativePath, ignoreCase = true)
+        }
+        val outputFile = if (indexed) {
+            val assetListEntry = indexedGameFiles.firstOrNull {
+                it.relativePath.substringAfterLast('/').equals(
+                    "asset_list_base.txtCache.txt",
+                    ignoreCase = true
+                )
+            } ?: throw IllegalStateException(
+                "asset_list_base.txtCache.txt was not indexed. Re-index the depot before editing a livery."
+            )
+            val assetList = readGameFile(assetListEntry)
+            val updatedAssetList = NativeBridge.nativeUpdateRr3AssetList(
+                assetList,
+                entry.relativePath,
+                updatedBytes
+            ) ?: throw IllegalStateException("Could not update the depot asset-list cache.")
+            val zip = newCacheFile("rr3-livery-entry-update", ".zip")
+            try {
+                ZipOutputStream(FileOutputStream(zip).buffered()).use { output ->
+                    output.putNextEntry(ZipEntry(entry.relativePath))
+                    output.write(updatedBytes)
+                    output.closeEntry()
+                    output.putNextEntry(ZipEntry(assetListEntry.relativePath))
+                    output.write(updatedAssetList)
+                    output.closeEntry()
+                }
+                zip
+            } catch (e: Exception) {
+                zip.delete()
+                throw e
+            }
+        } else {
+            val file = newCacheFile("rr3-manual-livery-update", ".bin.nct")
+            FileOutputStream(file).use { it.write(updatedBytes) }
+            file
+        }
+
+        val payload = JSONObject(NativeBridge.nativeInspectRr3Liveries(updatedBytes))
+        if (!payload.optBoolean("ok")) {
+            outputFile.delete()
+            throw IllegalStateException(payload.optString("error", "The updated livery list could not be read back."))
+        }
+        val array = payload.optJSONArray("liveries")
+            ?: throw IllegalStateException("The updated livery list has no entries.")
+
+        runOnUiThread {
+            selectedLiveryBytes = updatedBytes
+            selectedLiveryArray = array
+            renderLiverySlots(carFolder, array, target, allowAdd = array.length() > 0)
+            liveryStatus.text = if (indexed) {
+                "Updated \${entry.name}. Export the ZIP and apply it to a backup of the depot."
+            } else {
+                "Updated \${entry.name}. Export the edited .bin.nct file and replace the original manually."
+            }
+            pendingTransformedData = null
+            pendingTransformedFile?.delete()
+            pendingTransformedFile = outputFile
+            pendingTransformedSize = outputFile.length()
+            pendingTransformedName = if (indexed) {
+                "RR3-\${carFolder}-livery-list-update.zip"
+            } else {
+                entry.name
+            }
+            pendingOutputForDataEditor = false
+            pendingOutputForBrowser = true
+            pendingOutputForCarEditor = false
+            launchRr3OutputPicker()
+        }
+    }
+
+    private fun chooseLiverySwatchImage(liveryIndex: Int, target: LinearLayout) {
+        val entry = selectedLiveryEntry ?: return
+        val bytes = selectedLiveryBytes ?: return
+        val carFolder = selectedLiveryCarFolder
+        val item = selectedLiveryArray?.optJSONObject(liveryIndex) ?: return
+        val swatchPath = item.optString("swatch").trim()
+        if (swatchPath.isBlank()) {
+            liveryStatus.text = "This livery has no swatch texture reference."
+            return
+        }
+        if (indexedGameFiles.none { it.relativePath.equals(entry.relativePath, ignoreCase = true) }) {
+            liveryStatus.text = "Preview-image replacement needs the indexed car view so the referenced depot texture can be found."
+            return
+        }
+        liveryStatus.text = "Locating preview image asset: $swatchPath…"
+        Thread {
+            try {
+                val carAssets = scanLiveryCarAssets(entry, carFolder)
+                val normalised = swatchPath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                val exact = carAssets.filter {
+                    val candidate = it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                    candidate == normalised || candidate.endsWith("/$normalised") ||
+                        normalised.endsWith("/$candidate")
+                }
+                val matches = if (exact.isNotEmpty()) exact else {
+                    val leaf = normalised.substringAfterLast('/')
+                    carAssets.filter {
+                        it.relativePath.substringAfterLast('/').equals(leaf, ignoreCase = true)
+                    }
+                }
+                val texture = matches.singleOrNull()
+                    ?: throw IllegalStateException(
+                        if (matches.isEmpty()) {
+                            "Could not find the swatch asset '$swatchPath' under vehicles/$carFolder. The reference is displayed in the editor so it can be checked manually."
+                        } else {
+                            "More than one texture matches '$swatchPath'. Edit the preview image reference to a unique depot path first."
+                        }
+                    )
+                runOnUiThread {
+                    pendingLiverySwatchEdit = PendingLiverySwatchEdit(
+                        entry,
+                        bytes,
+                        carFolder,
+                        liveryIndex,
+                        target,
+                        texture
+                    )
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivityForResult(intent, requestLiverySwatchInput)
+                    liveryStatus.text = "Choose a replacement image for \${texture.relativePath}."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { liveryStatus.text = e.message ?: "Could not locate the preview image." }
+            }
+        }.start()
+    }
+
+    private fun applyLiverySwatchImage(uri: Uri) {
+        val pending = pendingLiverySwatchEdit ?: run {
+            liveryStatus.text = "No preview image target is waiting."
+            return
+        }
+        pendingLiverySwatchEdit = null
+        liveryStatus.text = "Rebuilding the selected livery preview texture…"
+        Thread {
+            var zip: File? = null
+            try {
+                val original = readGameFile(pending.textureEntry)
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected image.")
+                val picture = input.use { it.readBytes() }
+                val updatedTexture = NativeBridge.nativeReplaceRr3Texture(
+                    pending.textureEntry.relativePath,
+                    original,
+                    picture
+                ) ?: throw IllegalStateException(
+                    "The image could not be converted into the selected RR3 texture format. Try a PNG or JPEG."
+                )
+                val assetListEntry = indexedGameFiles.firstOrNull {
+                    it.relativePath.substringAfterLast('/').equals(
+                        "asset_list_base.txtCache.txt",
+                        ignoreCase = true
+                    )
+                } ?: throw IllegalStateException(
+                    "asset_list_base.txtCache.txt was not indexed. Re-index the depot before replacing a swatch."
+                )
+                val updatedAssetList = NativeBridge.nativeUpdateRr3AssetList(
+                    readGameFile(assetListEntry),
+                    pending.textureEntry.relativePath,
+                    updatedTexture
+                ) ?: throw IllegalStateException("Could not update the depot asset-list cache.")
+                zip = newCacheFile("rr3-livery-swatch-update", ".zip")
+                ZipOutputStream(FileOutputStream(zip!!).buffered()).use { output ->
+                    output.putNextEntry(ZipEntry(pending.textureEntry.relativePath))
+                    output.write(updatedTexture)
+                    output.closeEntry()
+                    output.putNextEntry(ZipEntry(assetListEntry.relativePath))
+                    output.write(updatedAssetList)
+                    output.closeEntry()
+                }
+                val ready = zip ?: throw IllegalStateException("The preview-image ZIP was not created.")
+                runOnUiThread {
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = ready
+                    pendingTransformedSize = ready.length()
+                    pendingTransformedName = "RR3-\${pending.carFolder}-livery-swatch-update.zip"
+                    pendingOutputForDataEditor = false
+                    pendingOutputForBrowser = true
+                    pendingOutputForCarEditor = false
+                    liveryStatus.text =
+                        "Built replacement preview image for slot \${pending.liveryIndex + 1}. Export the ZIP and apply it to a backup of the depot."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                zip?.delete()
+                runOnUiThread {
+                    liveryStatus.text = e.message ?: "Could not replace the preview image."
+                }
+            } catch (e: OutOfMemoryError) {
+                zip?.delete()
+                runOnUiThread {
+                    liveryStatus.text = "Android ran out of memory while replacing the preview image."
+                }
+            }
+        }.start()
     }
 
     private fun chooseManualLiveryFile() {
@@ -4138,6 +4500,10 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestManualLiveryInput) {
             openManualLiveryFile(uri)
+            return
+        }
+        if (requestCode == requestLiverySwatchInput) {
+            applyLiverySwatchImage(uri)
             return
         }
         val accessFlags = data.flags and (
