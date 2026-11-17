@@ -1058,6 +1058,214 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3LiveryStringTable(
     return toJava(env, out.str());
 }
 
+
+namespace {
+bool copyJavaByteArray(JNIEnv* env, jbyteArray input, nfsnl::Bytes& out) {
+    if (!input) return false;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return false;
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return false;
+    out.assign(reinterpret_cast<const uint8_t*>(bytes),
+               reinterpret_cast<const uint8_t*>(bytes) + length);
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    return true;
+}
+
+std::vector<std::string> readGameTextKeys(const nfsnl::Bytes& plain) {
+    std::vector<std::string> keys;
+    std::set<std::string> seen;
+    static const char prefix[] = "GAMETEXT_";
+    for (size_t at = 0; at + 4 + sizeof(prefix) - 1 <= plain.size(); ++at) {
+        const uint8_t* p = plain.data() + at;
+        uint32_t length = static_cast<uint32_t>(p[0]) |
+                          (static_cast<uint32_t>(p[1]) << 8) |
+                          (static_cast<uint32_t>(p[2]) << 16) |
+                          (static_cast<uint32_t>(p[3]) << 24);
+        if (length < sizeof(prefix) - 1 || length > 160 ||
+            length > plain.size() - at - 4) continue;
+        const char* value = reinterpret_cast<const char*>(p + 4);
+        if (std::memcmp(value, prefix, sizeof(prefix) - 1) != 0) continue;
+        bool printable = true;
+        for (uint32_t i = 0; i < length; ++i) {
+            const uint8_t c = static_cast<uint8_t>(value[i]);
+            if (c < 0x20 || c >= 0x7f) { printable = false; break; }
+        }
+        if (!printable) continue;
+        std::string key(value, length);
+        if (seen.insert(key).second) keys.push_back(std::move(key));
+    }
+    return keys;
+}
+
+std::string base64Encode(const uint8_t* data, size_t length) {
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((length + 2) / 3) * 4);
+    for (size_t i = 0; i < length; i += 3) {
+        const uint32_t a = data[i];
+        const uint32_t b = i + 1 < length ? data[i + 1] : 0;
+        const uint32_t c = i + 2 < length ? data[i + 2] : 0;
+        const uint32_t n = (a << 16) | (b << 8) | c;
+        out.push_back(alphabet[(n >> 18) & 63]);
+        out.push_back(alphabet[(n >> 12) & 63]);
+        out.push_back(i + 1 < length ? alphabet[(n >> 6) & 63] : '=');
+        out.push_back(i + 2 < length ? alphabet[n & 63] : '=');
+    }
+    return out;
+}
+
+bool loadRr3EnglishTexts(const nfsnl::Bytes& gameText,
+                         const nfsnl::Bytes& englishText,
+                         nfsnl::Rr3Texts& texts) {
+    std::vector<std::string> names = {"gametext.txt", "text_en.txt"};
+    auto read = [&](const std::string& name, nfsnl::Bytes& bytes) -> bool {
+        if (name == "gametext.txt") bytes = gameText;
+        else if (name == "text_en.txt") bytes = englishText;
+        else return false;
+        return !bytes.empty();
+    };
+    return texts.load(names, read);
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
+    JNIEnv* env, jobject /* thiz */, jbyteArray paintInput, jbyteArray packInput,
+    jbyteArray gameTextInput, jbyteArray englishTextInput) {
+    nfsnl::Bytes paintRaw, packRaw, gameText, englishText;
+    if (!copyJavaByteArray(env, paintInput, paintRaw) ||
+        !copyJavaByteArray(env, packInput, packRaw) ||
+        !copyJavaByteArray(env, gameTextInput, gameText) ||
+        !copyJavaByteArray(env, englishTextInput, englishText)) {
+        return toJava(env, errorJson("One or more paint-label source files are missing or empty."));
+    }
+
+    nfsnl::Bytes paints, packs;
+    try {
+        size_t paintCovered = 0, packCovered = 0;
+        if (!nfsnl::nctTransform(paintRaw.data(), paintRaw.size(), paints, &paintCovered) ||
+            paintCovered < paintRaw.size() ||
+            !nfsnl::nctTransform(packRaw.data(), packRaw.size(), packs, &packCovered) ||
+            packCovered < packRaw.size()) {
+            return toJava(env, errorJson("Could not decode custom.paints.nct or custom.paintpacks.nct."));
+        }
+    } catch (...) {
+        return toJava(env, errorJson("The paint configuration decoder failed."));
+    }
+
+    nfsnl::Rr3Texts texts;
+    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
+        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    }
+
+    const auto packKeys = readGameTextKeys(packs);
+    const auto paintKeys = readGameTextKeys(paints);
+    std::vector<std::string> specialLabels;
+    for (const auto& key : packKeys) {
+        const std::string prefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
+        if (key.compare(0, prefix.size(), prefix) == 0 &&
+            key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0) {
+            specialLabels.push_back(key);
+        }
+    }
+
+    struct PaintOption {
+        std::string materialKey;
+        std::string colourKey;
+    };
+    std::vector<PaintOption> options;
+    std::string pendingMaterial;
+    const std::string materialPrefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
+    const std::string colourPrefix = "GAMETEXT_CUSTOMISATION_COLOUR_";
+    for (const auto& key : paintKeys) {
+        if (key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
+            key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
+            pendingMaterial = key;
+        } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0) {
+            options.push_back({pendingMaterial, key});
+            pendingMaterial.clear();
+        }
+    }
+    if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"packLabels\":[";
+    for (size_t i = 0; i < specialLabels.size(); ++i) {
+        if (i) out << ',';
+        const auto& key = specialLabels[i];
+        out << "{\"key\":" << jsonString(key)
+            << ",\"value\":" << jsonString(texts.get(key)) << '}';
+    }
+    out << "],\"paintOptions\":[";
+    for (size_t i = 0; i < options.size(); ++i) {
+        if (i) out << ',';
+        const auto& option = options[i];
+        out << "{\"materialKey\":" << jsonString(option.materialKey)
+            << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : texts.get(option.materialKey))
+            << ",\"colourKey\":" << jsonString(option.colourKey)
+            << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : texts.get(option.colourKey))
+            << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
+    JNIEnv* env, jobject /* thiz */, jbyteArray gameTextInput, jbyteArray englishTextInput,
+    jobjectArray keyArray, jobjectArray valueArray) {
+    nfsnl::Bytes gameText, englishText;
+    if (!copyJavaByteArray(env, gameTextInput, gameText) ||
+        !copyJavaByteArray(env, englishTextInput, englishText)) {
+        return toJava(env, errorJson("gametext.txt or text_en.txt is missing or empty."));
+    }
+    const jsize keyCount = keyArray ? env->GetArrayLength(keyArray) : 0;
+    const jsize valueCount = valueArray ? env->GetArrayLength(valueArray) : 0;
+    if (keyCount <= 0 || keyCount != valueCount || keyCount > 256) {
+        return toJava(env, errorJson("Select at least one paint label to update."));
+    }
+
+    nfsnl::Rr3Texts texts;
+    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
+        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    }
+
+    for (jsize i = 0; i < keyCount; ++i) {
+        auto keyObject = static_cast<jstring>(env->GetObjectArrayElement(keyArray, i));
+        auto valueObject = static_cast<jstring>(env->GetObjectArrayElement(valueArray, i));
+        if (!keyObject || !valueObject) {
+            if (keyObject) env->DeleteLocalRef(keyObject);
+            if (valueObject) env->DeleteLocalRef(valueObject);
+            continue;
+        }
+        const std::string key = fromJava(env, keyObject);
+        const std::string value = fromJava(env, valueObject);
+        env->DeleteLocalRef(keyObject);
+        env->DeleteLocalRef(valueObject);
+        if (key.empty() || value.empty()) continue;
+        if (key.size() > 160 || value.size() > 160) {
+            return toJava(env, errorJson("Paint labels must be no longer than 160 characters."));
+        }
+        texts.set(key, value);
+    }
+
+    const auto changed = texts.changedFiles();
+    if (changed.empty()) return toJava(env, errorJson("No paint-label changes were made."));
+    std::ostringstream out;
+    out << "{\"ok\":true,\"files\":[";
+    for (size_t i = 0; i < changed.size(); ++i) {
+        if (i) out << ',';
+        const auto& item = changed[i];
+        out << "{\"name\":" << jsonString(item.first)
+            << ",\"data\":" << jsonString(base64Encode(item.second.data(), item.second.size()))
+            << '}';
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3Livery(
     JNIEnv* env, jobject /* thiz */, jbyteArray input, jint liveryIndex,
