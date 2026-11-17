@@ -974,12 +974,299 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Liveries(
         out << "{\"file\":" << jsonString(item.file)
             << ",\"display\":" << jsonString(item.display)
             << ",\"texture\":" << jsonString(texture)
+            << ",\"swatch\":" << jsonString(item.swatch)
+            << ",\"logo\":" << jsonString(item.logo)
+            << ",\"flag\":" << static_cast<unsigned>(item.flag)
+            << ",\"arms\":" << jsonString(item.arms)
+            << ",\"driver\":" << jsonString(item.driver)
             << ",\"red\":" << static_cast<unsigned>(item.rgb[0])
             << ",\"green\":" << static_cast<unsigned>(item.rgb[1])
-            << ",\"blue\":" << static_cast<unsigned>(item.rgb[2]) << '}';
+            << ",\"blue\":" << static_cast<unsigned>(item.rgb[2])
+            << ",\"overrides\":[";
+        for (size_t j = 0; j < item.overrides.size(); ++j) {
+            if (j) out << ',';
+            out << "{\"slot\":" << item.overrides[j].first
+                << ",\"path\":" << jsonString(item.overrides[j].second) << '}';
+        }
+        out << "],\"materials\":[";
+        for (size_t j = 0; j < item.materials.size(); ++j) {
+            if (j) out << ',';
+            out << "{\"mesh\":" << item.materials[j].first
+                << ",\"material\":" << item.materials[j].second << '}';
+        }
+        out << "]}";
     }
     out << "]}";
     return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3LiveryStringTable(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return toJava(env, errorJson("No livery string-table data was supplied."));
+    const jsize length = env->GetArrayLength(input);
+    if (length < 4) return toJava(env, errorJson("The livery string table is empty or truncated."));
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return toJava(env, errorJson("Could not read the livery string-table buffer."));
+    nfsnl::Bytes plain;
+    bool ok = false;
+    try {
+        size_t covered = 0;
+        ok = nfsnl::nctTransform(
+            reinterpret_cast<const uint8_t*>(bytes),
+            static_cast<size_t>(length), plain, &covered) &&
+            covered >= static_cast<size_t>(length);
+    } catch (...) {
+        ok = false;
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!ok || plain.size() < 4)
+        return toJava(env, errorJson("The livery string table could not be decoded."));
+
+    auto readU32 = [&](size_t at, uint32_t& value) -> bool {
+        if (at + 4 > plain.size()) return false;
+        const uint8_t* p = plain.data() + at;
+        value = static_cast<uint32_t>(p[0]) |
+                (static_cast<uint32_t>(p[1]) << 8) |
+                (static_cast<uint32_t>(p[2]) << 16) |
+                (static_cast<uint32_t>(p[3]) << 24);
+        return true;
+    };
+
+    uint32_t count = 0;
+    if (!readU32(0, count) || count > 200000)
+        return toJava(env, errorJson("The livery string-table count is invalid."));
+    size_t cursor = 4;
+    std::ostringstream out;
+    out << "{\"ok\":true,\"count\":" << count << ",\"strings\":[";
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t length = 0;
+        if (!readU32(cursor, length) || length > plain.size() - std::min(cursor + 4, plain.size()))
+            return toJava(env, errorJson("The livery string table contains a truncated string."));
+        cursor += 4;
+        if (length > plain.size() - cursor)
+            return toJava(env, errorJson("The livery string table contains a truncated string."));
+        if (i) out << ',';
+        out << "{\"id\":" << i << ",\"value\":"
+            << jsonString(std::string(reinterpret_cast<const char*>(plain.data() + cursor), length))
+            << '}';
+        cursor += length;
+    }
+    if (cursor != plain.size())
+        return toJava(env, errorJson("The livery string table has unexpected trailing data."));
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3Livery(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input, jint liveryIndex,
+    jstring displayText, jstring swatchText, jstring logoText,
+    jstring armsText, jstring driverText, jint flag,
+    jint red, jint green, jint blue, jintArray meshArray, jintArray materialArray) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0 || liveryIndex < 0) return nullptr;
+    jbyte* bytes = env->GetByteArrayElements(input, nullptr);
+    if (!bytes) return nullptr;
+
+    nfsnl::Bytes plain;
+    bool decoded = false;
+    try {
+        size_t covered = 0;
+        decoded = nfsnl::nctTransform(
+            reinterpret_cast<const uint8_t*>(bytes),
+            static_cast<size_t>(length), plain, &covered) &&
+            covered >= static_cast<size_t>(length);
+    } catch (...) {
+        decoded = false;
+    }
+    env->ReleaseByteArrayElements(input, bytes, JNI_ABORT);
+    if (!decoded) return nullptr;
+
+    nfsnl::Rr3Liveries liveries;
+    try {
+        if (!nfsnl::rr3LiveriesRead(plain.data(), plain.size(), liveries) ||
+            static_cast<size_t>(liveryIndex) >= liveries.liveries.size()) return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+    if (red < 0 || red > 255 || green < 0 || green > 255 ||
+        blue < 0 || blue > 255 || flag < 0 || flag > 255) return nullptr;
+
+    const std::string display = fromJava(env, displayText);
+    const std::string swatch = fromJava(env, swatchText);
+    const std::string logo = fromJava(env, logoText);
+    const std::string arms = fromJava(env, armsText);
+    const std::string driver = fromJava(env, driverText);
+    if (display.size() > 160 || swatch.size() > 1024 || logo.size() > 1024 ||
+        arms.size() > 1024 || driver.size() > 1024) return nullptr;
+
+    const jsize meshCount = meshArray ? env->GetArrayLength(meshArray) : 0;
+    const jsize materialCount = materialArray ? env->GetArrayLength(materialArray) : 0;
+    if (meshCount != materialCount || meshCount > 10000) return nullptr;
+    std::vector<jint> meshes(static_cast<size_t>(meshCount));
+    std::vector<jint> materials(static_cast<size_t>(materialCount));
+    if (meshCount > 0) {
+        env->GetIntArrayRegion(meshArray, 0, meshCount, meshes.data());
+        env->GetIntArrayRegion(materialArray, 0, materialCount, materials.data());
+        if (env->ExceptionCheck()) return nullptr;
+    }
+    for (jsize i = 0; i < meshCount; ++i) {
+        if (meshes[static_cast<size_t>(i)] < 0 || materials[static_cast<size_t>(i)] < 0)
+            return nullptr;
+    }
+
+    auto& item = liveries.liveries[static_cast<size_t>(liveryIndex)];
+    item.display = display;
+    item.swatch = swatch;
+    item.logo = logo;
+    item.arms = arms;
+    item.driver = driver;
+    item.flag = static_cast<uint8_t>(flag);
+    item.rgb[0] = static_cast<uint8_t>(red);
+    item.rgb[1] = static_cast<uint8_t>(green);
+    item.rgb[2] = static_cast<uint8_t>(blue);
+    item.materials.clear();
+    for (jsize i = 0; i < meshCount; ++i) {
+        item.materials.push_back({
+            static_cast<uint32_t>(meshes[static_cast<size_t>(i)]),
+            static_cast<uint32_t>(materials[static_cast<size_t>(i)])
+        });
+    }
+
+    nfsnl::Bytes rebuilt = nfsnl::rr3LiveriesWrite(liveries);
+    nfsnl::Bytes encoded;
+    try {
+        size_t covered = 0;
+        if (!nfsnl::nctTransform(rebuilt.data(), rebuilt.size(), encoded, &covered) ||
+            covered < rebuilt.size()) return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+    if (encoded.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(encoded.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(encoded.size()),
+                            reinterpret_cast<const jbyte*>(encoded.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeReplaceRr3Texture(
+    JNIEnv* env, jobject /* thiz */, jstring assetPathText,
+    jbyteArray originalArray, jbyteArray imageArray) {
+    const std::string assetPath = fromJava(env, assetPathText);
+    if (assetPath.empty() || !originalArray || !imageArray) return nullptr;
+    const jsize originalLength = env->GetArrayLength(originalArray);
+    const jsize imageLength = env->GetArrayLength(imageArray);
+    if (originalLength <= 0 || imageLength <= 0) return nullptr;
+
+    jbyte* originalBytes = env->GetByteArrayElements(originalArray, nullptr);
+    if (!originalBytes) return nullptr;
+    nfsnl::Bytes original(
+        reinterpret_cast<const uint8_t*>(originalBytes),
+        reinterpret_cast<const uint8_t*>(originalBytes) + originalLength);
+    env->ReleaseByteArrayElements(originalArray, originalBytes, JNI_ABORT);
+
+    jbyte* imageBytes = env->GetByteArrayElements(imageArray, nullptr);
+    if (!imageBytes) return nullptr;
+    nfsnl::Image picture;
+    bool imageOk = false;
+    try {
+        imageOk = nfsnl::decodeImageFile(
+            reinterpret_cast<const uint8_t*>(imageBytes),
+            static_cast<size_t>(imageLength), picture);
+    } catch (...) {
+        imageOk = false;
+    }
+    env->ReleaseByteArrayElements(imageArray, imageBytes, JNI_ABORT);
+    if (!imageOk) return nullptr;
+
+    nfsnl::Bytes inner;
+    std::string innerName;
+    size_t frameCount = 0;
+    const bool wrapped = nfsnl::rr3IsContainer(
+        assetPath, original.data(), original.size());
+    if (wrapped) {
+        if (!nfsnl::rr3Unwrap(assetPath, original.data(), original.size(),
+                              inner, &innerName, &frameCount)) return nullptr;
+    } else {
+        inner = original;
+        innerName = assetPath;
+    }
+
+    nfsnl::Bytes imported;
+    std::string report;
+    bool importedOk = false;
+    try {
+        importedOk = nfsnl::importPicture(innerName, inner, picture, imported, report);
+    } catch (...) {
+        importedOk = false;
+    }
+    if (!importedOk || imported.empty()) return nullptr;
+
+    nfsnl::Bytes output = wrapped ? nfsnl::rr3WrapZ(imported) : imported;
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()),
+                            reinterpret_cast<const jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
+    JNIEnv* env, jobject /* thiz */, jbyteArray assetListArray,
+    jstring assetPathText, jbyteArray updatedAssetArray) {
+    const std::string assetPath = fromJava(env, assetPathText);
+    if (assetPath.empty() || !assetListArray || !updatedAssetArray) return nullptr;
+    const jsize listLength = env->GetArrayLength(assetListArray);
+    const jsize assetLength = env->GetArrayLength(updatedAssetArray);
+    if (listLength <= 0 || assetLength <= 0) return nullptr;
+
+    jbyte* listBytes = env->GetByteArrayElements(assetListArray, nullptr);
+    if (!listBytes) return nullptr;
+    nfsnl::Bytes rawList(
+        reinterpret_cast<const uint8_t*>(listBytes),
+        reinterpret_cast<const uint8_t*>(listBytes) + listLength);
+    env->ReleaseByteArrayElements(assetListArray, listBytes, JNI_ABORT);
+
+    jbyte* assetBytes = env->GetByteArrayElements(updatedAssetArray, nullptr);
+    if (!assetBytes) return nullptr;
+    nfsnl::Bytes updatedAsset(
+        reinterpret_cast<const uint8_t*>(assetBytes),
+        reinterpret_cast<const uint8_t*>(assetBytes) + assetLength);
+    env->ReleaseByteArrayElements(updatedAssetArray, assetBytes, JNI_ABORT);
+
+    nfsnl::Rr3AssetList list;
+    try {
+        if (!nfsnl::rr3AssetListRead(rawList, list)) return nullptr;
+    } catch (...) {
+        return nullptr;
+    }
+
+    uint8_t digest[16];
+    saves::md5(updatedAsset.data(), updatedAsset.size(), digest);
+    static const char* hex = "0123456789abcdef";
+    std::string md5;
+    md5.reserve(32);
+    for (uint8_t byte : digest) {
+        md5.push_back(hex[(byte >> 4) & 0x0f]);
+        md5.push_back(hex[byte & 0x0f]);
+    }
+    nfsnl::rr3AssetListSet(list, assetPath, md5, true);
+    nfsnl::Bytes output = nfsnl::rr3AssetListWrite(list);
+    if (output.empty() || output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()),
+                            reinterpret_cast<const jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
