@@ -33,6 +33,20 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3LiveryStringTable(input: ByteArray): String
 
+    external fun nativeInspectRr3PaintLabels(
+        customPaints: ByteArray,
+        customPaintPacks: ByteArray,
+        gameText: ByteArray,
+        englishText: ByteArray
+    ): String
+
+    external fun nativeUpdateRr3PaintLabels(
+        gameText: ByteArray,
+        englishText: ByteArray,
+        keys: Array<String>,
+        values: Array<String>
+    ): String
+
     external fun nativeUpdateRr3Livery(
         input: ByteArray,
         liveryIndex: Int,
