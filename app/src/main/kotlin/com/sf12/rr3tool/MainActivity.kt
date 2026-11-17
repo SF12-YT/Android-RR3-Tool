@@ -1950,7 +1950,7 @@ class MainActivity : Activity() {
         ).filter { it.second == null }.map { it.first }
         if (missing.isNotEmpty()) {
             liveryPaintStatus.text =
-                "Could not find \${missing.joinToString(", ")} in the indexed depot. Re-index Game Data and try again."
+                "Could not find ${missing.joinToString(", ")} in the indexed depot. Re-index Game Data and try again."
             return
         }
 
@@ -2067,7 +2067,7 @@ class MainActivity : Activity() {
                 background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
             }
             row.addView(
-                text(values.joinToString("  ·  ").ifBlank { "Paint option \${i + 1}" }, 13, Color.WHITE, bold = true),
+                text(values.joinToString("  ·  ").ifBlank { "Paint option ${i + 1}" }, 13, Color.WHITE, bold = true),
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             )
             row.addView(actionButton("Edit") {
@@ -2256,7 +2256,7 @@ class MainActivity : Activity() {
                     pendingOutputForBrowser = true
                     pendingOutputForCarEditor = false
                     liveryPaintStatus.text =
-                        "Built \${changedFiles.size} updated text file(s). Export the ZIP and apply it to a backup of the depot."
+                        "Built ${changedFiles.size} updated text file(s). Export the ZIP and apply it to a backup of the depot."
                     onBuilt()
                     launchRr3OutputPicker()
                 }
