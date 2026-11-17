@@ -31,6 +31,36 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3Liveries(input: ByteArray): String
 
+    external fun nativeInspectRr3LiveryStringTable(input: ByteArray): String
+
+    external fun nativeUpdateRr3Livery(
+        input: ByteArray,
+        liveryIndex: Int,
+        display: String,
+        swatch: String,
+        logo: String,
+        arms: String,
+        driver: String,
+        flag: Int,
+        red: Int,
+        green: Int,
+        blue: Int,
+        meshes: IntArray,
+        materials: IntArray
+    ): ByteArray?
+
+    external fun nativeReplaceRr3Texture(
+        assetPath: String,
+        original: ByteArray,
+        image: ByteArray
+    ): ByteArray?
+
+    external fun nativeUpdateRr3AssetList(
+        assetList: ByteArray,
+        assetPath: String,
+        updatedAsset: ByteArray
+    ): ByteArray?
+
     external fun nativeAddRr3Livery(
         carFolder: String,
         assetPaths: Array<String>,
