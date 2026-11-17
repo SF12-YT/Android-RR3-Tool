@@ -22,6 +22,7 @@ import android.provider.OpenableColumns
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -68,6 +69,12 @@ class MainActivity : Activity() {
         val carFolder: String,
         val liveryIndex: Int,
         val swatchPath: String
+    )
+
+    private data class PaintLabelField(
+        val key: String,
+        val label: String,
+        val value: String
     )
 
     /**
@@ -292,6 +299,8 @@ class MainActivity : Activity() {
     private lateinit var liverySlotsContainer: LinearLayout
     private lateinit var liveryManualStatus: TextView
     private lateinit var liveryManualSlotsContainer: LinearLayout
+    private lateinit var liveryPaintStatus: TextView
+    private lateinit var liveryPaintContainer: LinearLayout
     private val expandedLiveryYears = mutableSetOf<String>()
     private var selectedLiveryEntry: GameDataFile? = null
     private var selectedLiveryCarFolder: String = ""
@@ -660,6 +669,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        val liveryPaintPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
         val liveryModeTabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -667,19 +680,33 @@ class MainActivity : Activity() {
         val indexedCarsTab = actionButton("Indexed cars") {
             liveryCarsPanel.visibility = View.VISIBLE
             liveryManualPanel.visibility = View.GONE
+            liveryPaintPanel.visibility = View.GONE
         }
         val manualFileTab = actionButton("Manual .bin.nct") {
             liveryCarsPanel.visibility = View.GONE
             liveryManualPanel.visibility = View.VISIBLE
+            liveryPaintPanel.visibility = View.GONE
+        }
+        val paintLabelsTab = actionButton("Paint labels") {
+            liveryCarsPanel.visibility = View.GONE
+            liveryManualPanel.visibility = View.GONE
+            liveryPaintPanel.visibility = View.VISIBLE
+            loadLiveryPaintLabels()
         }
         liveryModeTabs.addView(
             indexedCarsTab,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(6)
+                marginEnd = dp(5)
             }
         )
         liveryModeTabs.addView(
             manualFileTab,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(5)
+            }
+        )
+        liveryModeTabs.addView(
+            paintLabelsTab,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
         liveryCard.addView(liveryModeTabs, matchWrap(top = 10))
@@ -711,8 +738,25 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         liveryManualPanel.addView(liveryManualSlotsContainer, matchWrap(top = 10))
+
+        liveryPaintStatus = text(
+            "Edit the Motorsports label and Road Cars paint-material/colour names. Index Game Data first.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        liveryPaintPanel.addView(liveryPaintStatus, matchWrap(top = 10))
+        liveryPaintPanel.addView(
+            actionButton("Reload paint labels") { loadLiveryPaintLabels() },
+            matchWrap(top = 8)
+        )
+        liveryPaintContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        liveryPaintPanel.addView(liveryPaintContainer, matchWrap(top = 10))
+
         liveryCard.addView(liveryCarsPanel, matchWrap())
         liveryCard.addView(liveryManualPanel, matchWrap())
+        liveryCard.addView(liveryPaintPanel, matchWrap())
 
         addSection(careerPage, "RR3 CAREER INSPECTOR")
         val careerCard = card(careerPage)
@@ -1879,6 +1923,352 @@ class MainActivity : Activity() {
                 zip?.delete()
                 runOnUiThread {
                     liveryStatus.text = "Android ran out of memory while replacing the preview image."
+                }
+            }
+        }.start()
+    }
+
+    private fun indexedFileByLeaf(leafName: String): GameDataFile? =
+        indexedGameFiles.firstOrNull {
+            it.relativePath.substringAfterLast('/').equals(leafName, ignoreCase = true)
+        }
+
+    private fun loadLiveryPaintLabels() {
+        if (indexedGameFiles.isEmpty()) {
+            liveryPaintStatus.text = "Index the RR3 .depot in Game Data first."
+            return
+        }
+        val paintEntry = indexedFileByLeaf("custom.paints.nct")
+        val packEntry = indexedFileByLeaf("custom.paintpacks.nct")
+        val gameTextEntry = indexedFileByLeaf("gametext.txt")
+        val englishEntry = indexedFileByLeaf("text_en.txt")
+        val missing = listOf(
+            "custom.paints.nct" to paintEntry,
+            "custom.paintpacks.nct" to packEntry,
+            "gametext.txt" to gameTextEntry,
+            "text_en.txt" to englishEntry
+        ).filter { it.second == null }.map { it.first }
+        if (missing.isNotEmpty()) {
+            liveryPaintStatus.text =
+                "Could not find \${missing.joinToString(", ")} in the indexed depot. Re-index Game Data and try again."
+            return
+        }
+
+        liveryPaintStatus.text = "Reading paint categories and English label strings…"
+        liveryPaintContainer.removeAllViews()
+        Thread {
+            try {
+                val result = JSONObject(
+                    NativeBridge.nativeInspectRr3PaintLabels(
+                        readGameFile(paintEntry!!),
+                        readGameFile(packEntry!!),
+                        readGameFile(gameTextEntry!!),
+                        readGameFile(englishEntry!!)
+                    )
+                )
+                if (!result.optBoolean("ok")) {
+                    throw IllegalStateException(
+                        result.optString("error", "Could not inspect the RR3 paint labels.")
+                    )
+                }
+                runOnUiThread {
+                    renderLiveryPaintLabels(result)
+                    val categoryCount = result.optJSONArray("packLabels")?.length() ?: 0
+                    val paintCount = result.optJSONArray("paintOptions")?.length() ?: 0
+                    liveryPaintStatus.text =
+                        "Loaded $categoryCount paint-pack label(s) and $paintCount Road Cars paint option(s). Edits change English display text, not the underlying paint material or colour."
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    liveryPaintStatus.text = e.message ?: "Could not load paint labels."
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    liveryPaintStatus.text = "Android ran out of memory while reading the paint label files."
+                }
+            }
+        }.start()
+    }
+
+    private fun renderLiveryPaintLabels(payload: JSONObject) {
+        liveryPaintContainer.removeAllViews()
+        val packLabels = payload.optJSONArray("packLabels") ?: org.json.JSONArray()
+        val paintOptions = payload.optJSONArray("paintOptions") ?: org.json.JSONArray()
+
+        fun fallbackKeyName(key: String): String =
+            key.substringAfterLast('_')
+                .removeSuffix("NAME")
+                .replace('_', ' ')
+                .lowercase(Locale.ROOT)
+                .replaceFirstChar { it.uppercase() }
+
+        val special = (0 until packLabels.length()).mapNotNull { i ->
+            packLabels.optJSONObject(i)
+        }.filter {
+            it.optString("key").endsWith("_SPECIAL", ignoreCase = true)
+        }
+        if (special.isNotEmpty()) {
+            liveryPaintContainer.addView(
+                text("MOTORSPORTS · OFFICIAL / SPECIAL LABEL", 11, 0xFF8FA4BA.toInt(), bold = true),
+                matchWrap(bottom = 6)
+            )
+            for (item in special) {
+                val key = item.optString("key")
+                val current = item.optString("value")
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(10), dp(10), dp(10))
+                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                }
+                val label = text(
+                    current.ifBlank { fallbackKeyName(key) },
+                    13,
+                    Color.WHITE,
+                    bold = true
+                )
+                row.addView(label, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(actionButton("Edit") {
+                    showPaintLabelEditDialog(
+                        "Edit Motorsports label",
+                        listOf(PaintLabelField(key, "Official / Special label", current))
+                    )
+                })
+                liveryPaintContainer.addView(row, matchWrap(bottom = 6))
+            }
+        }
+
+        liveryPaintContainer.addView(
+            text("ROAD CARS · PAINT MATERIAL AND COLOUR", 11, 0xFF8FA4BA.toInt(), bold = true),
+            matchWrap(top = 12, bottom = 6)
+        )
+        if (paintOptions.length() == 0) {
+            liveryPaintContainer.addView(
+                text("No Road Cars paint options were found in custom.paints.nct.", 12, 0xFF9BAFC5.toInt()),
+                matchWrap()
+            )
+        }
+        for (i in 0 until paintOptions.length()) {
+            val item = paintOptions.optJSONObject(i) ?: continue
+            val materialKey = item.optString("materialKey")
+            val colourKey = item.optString("colourKey")
+            if (materialKey.isBlank() && colourKey.isBlank()) continue
+            val material = item.optString("material").ifBlank {
+                if (materialKey.isBlank()) "" else fallbackKeyName(materialKey)
+            }
+            val colour = item.optString("colour").ifBlank {
+                if (colourKey.isBlank()) "" else fallbackKeyName(colourKey)
+            }
+            val values = listOf(material, colour).filter { it.isNotBlank() }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(10), dp(10), dp(10))
+                background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+            }
+            row.addView(
+                text(values.joinToString("  ·  ").ifBlank { "Paint option \${i + 1}" }, 13, Color.WHITE, bold = true),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            row.addView(actionButton("Edit") {
+                val fields = mutableListOf<PaintLabelField>()
+                if (materialKey.isNotBlank()) {
+                    fields.add(PaintLabelField(materialKey, "Paint material", material))
+                }
+                if (colourKey.isNotBlank()) {
+                    fields.add(PaintLabelField(colourKey, "Colour name", colour))
+                }
+                showPaintLabelEditDialog("Edit Road Cars paint label", fields)
+            })
+            liveryPaintContainer.addView(row, matchWrap(bottom = 6))
+        }
+
+        val otherPackLabels = (0 until packLabels.length()).mapNotNull { i ->
+            packLabels.optJSONObject(i)
+        }.filterNot { it.optString("key").endsWith("_SPECIAL", ignoreCase = true) }
+        if (otherPackLabels.isNotEmpty()) {
+            liveryPaintContainer.addView(
+                text("PAINT-PACK CATEGORY NAMES", 11, 0xFF8FA4BA.toInt(), bold = true),
+                matchWrap(top = 12, bottom = 6)
+            )
+            for (item in otherPackLabels) {
+                val key = item.optString("key")
+                val value = item.optString("value")
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(10), dp(10), dp(10))
+                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                }
+                row.addView(
+                    text(value.ifBlank { fallbackKeyName(key) }, 13, Color.WHITE, bold = true),
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                )
+                row.addView(actionButton("Edit") {
+                    showPaintLabelEditDialog(
+                        "Edit paint-pack category",
+                        listOf(PaintLabelField(key, "Category name", value))
+                    )
+                })
+                liveryPaintContainer.addView(row, matchWrap(bottom = 6))
+            }
+        }
+    }
+
+    private fun showPaintLabelEditDialog(title: String, fields: List<PaintLabelField>) {
+        if (fields.isEmpty()) {
+            liveryPaintStatus.text = "This option has no editable label fields in the available files."
+            return
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val inputs = fields.map { field ->
+            content.addView(
+                text(field.label, 12, Color.WHITE, bold = true),
+                matchWrap(bottom = 4)
+            )
+            val input = editBox(field.label, field.value, numeric = false)
+            content.addView(input, matchWrap(bottom = 9))
+            field to input
+        }
+        content.addView(
+            text(
+                "Fields are optional individually. Leave a field as-is to keep its current text; at least one field must contain text to save.",
+                11,
+                0xFF8499AF.toInt()
+            ),
+            matchWrap(top = 2)
+        )
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save labels", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val populated = inputs.mapNotNull { (field, input) ->
+                    val value = input.text.toString().trim()
+                    if (value.isBlank()) null else field.key to value
+                }
+                if (populated.isEmpty()) {
+                    liveryPaintStatus.text =
+                        "Keep at least one label populated (for example the Official label or the colour name)."
+                    return@setOnClickListener
+                }
+                if (populated.any { it.second.length > 160 }) {
+                    liveryPaintStatus.text = "Paint labels must be at most 160 characters."
+                    return@setOnClickListener
+                }
+                saveLiveryPaintLabels(
+                    populated.map { it.first }.toTypedArray(),
+                    populated.map { it.second }.toTypedArray()
+                ) {
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun saveLiveryPaintLabels(
+        keys: Array<String>,
+        values: Array<String>,
+        onBuilt: () -> Unit
+    ) {
+        val gameTextEntry = indexedFileByLeaf("gametext.txt")
+        val englishEntry = indexedFileByLeaf("text_en.txt")
+        val assetListEntry = indexedFileByLeaf("asset_list_base.txtCache.txt")
+        if (gameTextEntry == null || englishEntry == null || assetListEntry == null) {
+            liveryPaintStatus.text =
+                "gametext.txt, text_en.txt or asset_list_base.txtCache.txt is not indexed. Re-index the depot."
+            return
+        }
+
+        liveryPaintStatus.text = "Updating the selected paint label text…"
+        Thread {
+            var zip: File? = null
+            try {
+                val result = JSONObject(
+                    NativeBridge.nativeUpdateRr3PaintLabels(
+                        readGameFile(gameTextEntry),
+                        readGameFile(englishEntry),
+                        keys,
+                        values
+                    )
+                )
+                if (!result.optBoolean("ok")) {
+                    throw IllegalStateException(
+                        result.optString("error", "The paint label writer rejected the changes.")
+                    )
+                }
+                val changed = result.optJSONArray("files")
+                    ?: throw IllegalStateException("The paint label writer returned no updated files.")
+                if (changed.length() == 0) {
+                    throw IllegalStateException("No paint label changes were needed.")
+                }
+
+                var updatedAssetList = readGameFile(assetListEntry)
+                val changedFiles = ArrayList<Pair<String, ByteArray>>()
+                for (i in 0 until changed.length()) {
+                    val file = changed.optJSONObject(i) ?: continue
+                    val name = file.optString("name")
+                    val entry = indexedFileByLeaf(name)
+                        ?: throw IllegalStateException("$name is not present in the indexed depot.")
+                    val encoded = file.optString("data")
+                    val bytes = try {
+                        Base64.decode(encoded, Base64.DEFAULT)
+                    } catch (_: IllegalArgumentException) {
+                        throw IllegalStateException("The updated $name file could not be decoded.")
+                    }
+                    updatedAssetList = NativeBridge.nativeUpdateRr3AssetList(
+                        updatedAssetList,
+                        entry.relativePath,
+                        bytes
+                    ) ?: throw IllegalStateException("Could not update the asset-list entry for $name.")
+                    changedFiles.add(entry.relativePath to bytes)
+                }
+                if (changedFiles.isEmpty()) {
+                    throw IllegalStateException("No paint label files were rebuilt.")
+                }
+
+                zip = newCacheFile("rr3-paint-label-update", ".zip")
+                ZipOutputStream(FileOutputStream(zip!!).buffered()).use { output ->
+                    for ((path, bytes) in changedFiles) {
+                        output.putNextEntry(ZipEntry(path))
+                        output.write(bytes)
+                        output.closeEntry()
+                    }
+                    output.putNextEntry(ZipEntry(assetListEntry.relativePath))
+                    output.write(updatedAssetList)
+                    output.closeEntry()
+                }
+                val ready = zip ?: throw IllegalStateException("The paint label ZIP was not created.")
+                runOnUiThread {
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = ready
+                    pendingTransformedSize = ready.length()
+                    pendingTransformedName = "RR3-paint-label-update.zip"
+                    pendingOutputForDataEditor = false
+                    pendingOutputForBrowser = true
+                    pendingOutputForCarEditor = false
+                    liveryPaintStatus.text =
+                        "Built \${changedFiles.size} updated text file(s). Export the ZIP and apply it to a backup of the depot."
+                    onBuilt()
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                zip?.delete()
+                runOnUiThread {
+                    liveryPaintStatus.text = e.message ?: "Could not update the paint labels."
+                }
+            } catch (e: OutOfMemoryError) {
+                zip?.delete()
+                runOnUiThread {
+                    liveryPaintStatus.text = "Android ran out of memory while updating paint labels."
                 }
             }
         }.start()
