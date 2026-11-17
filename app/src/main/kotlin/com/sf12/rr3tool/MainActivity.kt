@@ -65,11 +65,9 @@ class MainActivity : Activity() {
 
     private data class PendingLiverySwatchEdit(
         val liveryEntry: GameDataFile,
-        val liveryBytes: ByteArray,
         val carFolder: String,
         val liveryIndex: Int,
-        val slotsTarget: LinearLayout,
-        val textureEntry: GameDataFile
+        val swatchPath: String
     )
 
     /**
@@ -1496,7 +1494,7 @@ class MainActivity : Activity() {
             val details = listOf(
                 fileName,
                 texture,
-                if (driver.isNotBlank()) "Driver: $driver" else "",
+                if (driver.isNotBlank()) "Driver suit texture: $driver" else "",
                 if (swatch.isNotBlank()) "Swatch: $swatch" else ""
             ).filter { it.isNotBlank() }.distinct()
             val slot = LinearLayout(this).apply {
@@ -1569,11 +1567,15 @@ class MainActivity : Activity() {
             }
         }
 
-        val displayInput = addField("Display name", item.optString("display"), "Livery display name")
+        val displayInput = addField(
+            "In-game livery / driver name",
+            item.optString("display"),
+            "Name shown by RR3 for this livery"
+        )
         val driverInput = addField(
-            "Driver name / driver field",
+            "Driver suit texture path",
             item.optString("driver"),
-            "Driver name or RR3 driver reference"
+            "RR3 driver suit texture asset path"
         )
         val swatchInput = addField(
             "Preview image reference",
@@ -1582,7 +1584,7 @@ class MainActivity : Activity() {
         )
         content.addView(
             text(
-                "The driver and swatch values are stored in the livery record. Their exact in-game use can vary by car; keep the original values as a fallback.",
+                "The in-game livery/driver text is the Display name field above. The Driver suit texture field below is an asset path, not a person's name; leave it unchanged unless you intend to change the suit texture.",
                 11,
                 0xFF8499AF.toInt()
             ),
@@ -1738,26 +1740,71 @@ class MainActivity : Activity() {
     }
 
     private fun chooseLiverySwatchImage(liveryIndex: Int, target: LinearLayout) {
-        val entry = selectedLiveryEntry ?: return
-        val bytes = selectedLiveryBytes ?: return
+        val entry = selectedLiveryEntry ?: run {
+            liveryStatus.text = "Select a car livery list first."
+            return
+        }
         val carFolder = selectedLiveryCarFolder
-        val item = selectedLiveryArray?.optJSONObject(liveryIndex) ?: return
+        val item = selectedLiveryArray?.optJSONObject(liveryIndex) ?: run {
+            liveryStatus.text = "Reload the livery list before replacing a preview image."
+            return
+        }
         val swatchPath = item.optString("swatch").trim()
         if (swatchPath.isBlank()) {
-            liveryStatus.text = "This livery has no swatch texture reference."
+            liveryStatus.text = "This livery has no preview-image reference. Set one in Edit entry first."
             return
         }
-        if (indexedGameFiles.none { it.relativePath.equals(entry.relativePath, ignoreCase = true) }) {
-            liveryStatus.text = "Preview-image replacement needs the indexed car view so the referenced depot texture can be found."
+
+        // Open the picker before touching the depot. A failed asset scan must
+        // never make this button appear to do nothing.
+        pendingLiverySwatchEdit = PendingLiverySwatchEdit(
+            liveryEntry = entry,
+            carFolder = carFolder,
+            liveryIndex = liveryIndex,
+            swatchPath = swatchPath
+        )
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivityForResult(intent, requestLiverySwatchInput)
+            liveryStatus.text = "Choose a PNG or JPEG for livery slot ${liveryIndex + 1}."
+        } catch (e: Exception) {
+            pendingLiverySwatchEdit = null
+            liveryStatus.text = e.message ?: "Android could not open the image picker."
+        }
+    }
+
+    private fun applyLiverySwatchImage(uri: Uri) {
+        val pending = pendingLiverySwatchEdit ?: run {
+            liveryStatus.text = "No preview image target is waiting."
             return
         }
-        liveryStatus.text = "Locating preview image asset: $swatchPath…"
+        pendingLiverySwatchEdit = null
+        liveryStatus.text = "Locating the preview texture and rebuilding the image…"
         Thread {
+            var zip: File? = null
             try {
-                val carAssets = scanLiveryCarAssets(entry, carFolder)
-                val normalised = swatchPath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                if (indexedGameFiles.none {
+                        it.relativePath.equals(pending.liveryEntry.relativePath, ignoreCase = true)
+                    }) {
+                    throw IllegalStateException(
+                        "Preview replacement needs the indexed RR3 depot. Re-index Game Data and try again."
+                    )
+                }
+
+                val carAssets = scanLiveryCarAssets(pending.liveryEntry, pending.carFolder)
+                val normalised = pending.swatchPath
+                    .replace('\\', '/')
+                    .trimStart('/')
+                    .lowercase(Locale.ROOT)
                 val exact = carAssets.filter {
-                    val candidate = it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                    val candidate = it.relativePath
+                        .replace('\\', '/')
+                        .trimStart('/')
+                        .lowercase(Locale.ROOT)
                     candidate == normalised || candidate.endsWith("/$normalised") ||
                         normalised.endsWith("/$candidate")
                 }
@@ -1767,57 +1814,25 @@ class MainActivity : Activity() {
                         it.relativePath.substringAfterLast('/').equals(leaf, ignoreCase = true)
                     }
                 }
-                val texture = matches.singleOrNull()
+                val textureEntry = matches.singleOrNull()
                     ?: throw IllegalStateException(
                         if (matches.isEmpty()) {
-                            "Could not find the swatch asset '$swatchPath' under vehicles/$carFolder. The reference is displayed in the editor so it can be checked manually."
+                            "Could not find the preview texture '${pending.swatchPath}' under vehicles/${pending.carFolder}. Check the Preview image reference in Edit entry."
                         } else {
-                            "More than one texture matches '$swatchPath'. Edit the preview image reference to a unique depot path first."
+                            "More than one texture matches '${pending.swatchPath}'. Set a unique preview image reference in Edit entry."
                         }
                     )
-                runOnUiThread {
-                    pendingLiverySwatchEdit = PendingLiverySwatchEdit(
-                        entry,
-                        bytes,
-                        carFolder,
-                        liveryIndex,
-                        target,
-                        texture
-                    )
-                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "image/*"
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    startActivityForResult(intent, requestLiverySwatchInput)
-                    liveryStatus.text = "Choose a replacement image for \${texture.relativePath}."
-                }
-            } catch (e: Exception) {
-                runOnUiThread { liveryStatus.text = e.message ?: "Could not locate the preview image." }
-            }
-        }.start()
-    }
 
-    private fun applyLiverySwatchImage(uri: Uri) {
-        val pending = pendingLiverySwatchEdit ?: run {
-            liveryStatus.text = "No preview image target is waiting."
-            return
-        }
-        pendingLiverySwatchEdit = null
-        liveryStatus.text = "Rebuilding the selected livery preview texture…"
-        Thread {
-            var zip: File? = null
-            try {
-                val original = readGameFile(pending.textureEntry)
+                val original = readGameFile(textureEntry)
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected image.")
                 val picture = input.use { it.readBytes() }
                 val updatedTexture = NativeBridge.nativeReplaceRr3Texture(
-                    pending.textureEntry.relativePath,
+                    textureEntry.relativePath,
                     original,
                     picture
                 ) ?: throw IllegalStateException(
-                    "The image could not be converted into the selected RR3 texture format. Try a PNG or JPEG."
+                    "The image could not be converted into this RR3 texture format. Try a PNG or JPEG."
                 )
                 val assetListEntry = indexedGameFiles.firstOrNull {
                     it.relativePath.substringAfterLast('/').equals(
@@ -1829,12 +1844,12 @@ class MainActivity : Activity() {
                 )
                 val updatedAssetList = NativeBridge.nativeUpdateRr3AssetList(
                     readGameFile(assetListEntry),
-                    pending.textureEntry.relativePath,
+                    textureEntry.relativePath,
                     updatedTexture
                 ) ?: throw IllegalStateException("Could not update the depot asset-list cache.")
                 zip = newCacheFile("rr3-livery-swatch-update", ".zip")
                 ZipOutputStream(FileOutputStream(zip!!).buffered()).use { output ->
-                    output.putNextEntry(ZipEntry(pending.textureEntry.relativePath))
+                    output.putNextEntry(ZipEntry(textureEntry.relativePath))
                     output.write(updatedTexture)
                     output.closeEntry()
                     output.putNextEntry(ZipEntry(assetListEntry.relativePath))
@@ -1847,12 +1862,12 @@ class MainActivity : Activity() {
                     pendingTransformedFile?.delete()
                     pendingTransformedFile = ready
                     pendingTransformedSize = ready.length()
-                    pendingTransformedName = "RR3-\${pending.carFolder}-livery-swatch-update.zip"
+                    pendingTransformedName = "RR3-${pending.carFolder}-livery-swatch-update.zip"
                     pendingOutputForDataEditor = false
                     pendingOutputForBrowser = true
                     pendingOutputForCarEditor = false
                     liveryStatus.text =
-                        "Built replacement preview image for slot \${pending.liveryIndex + 1}. Export the ZIP and apply it to a backup of the depot."
+                        "Built replacement preview image for slot ${pending.liveryIndex + 1} (${textureEntry.relativePath}). Export the ZIP and apply it to a backup of the depot."
                     launchRr3OutputPicker()
                 }
             } catch (e: Exception) {
@@ -4471,6 +4486,15 @@ class MainActivity : Activity() {
     @Deprecated("Using the document-tree activity result to persist a folder grant")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == requestLiverySwatchInput) {
+            if (resultCode == RESULT_OK && data?.data != null) {
+                applyLiverySwatchImage(data.data!!)
+            } else {
+                pendingLiverySwatchEdit = null
+                liveryStatus.text = "Preview image selection cancelled."
+            }
+            return
+        }
         if (resultCode != RESULT_OK || data?.data == null) return
 
         val uri = data.data ?: return
@@ -4500,10 +4524,6 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestManualLiveryInput) {
             openManualLiveryFile(uri)
-            return
-        }
-        if (requestCode == requestLiverySwatchInput) {
-            applyLiverySwatchImage(uri)
             return
         }
         val accessFlags = data.flags and (
