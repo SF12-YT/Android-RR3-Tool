@@ -66,14 +66,44 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -v 4 "$APK"
 
+      - name: Package APK for round-trip verification
+        if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]'))
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          sha256sum "$APK"
+          zip -q -j app-debug-apk.zip "$APK"
+
       - name: Publish verified preview APK
         if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="android-preview-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" app/build/outputs/apk/debug/app-debug.apk \
+          gh release create "$tag" app/build/outputs/apk/debug/app-debug.apk app-debug-apk.zip \
             --repo "$GITHUB_REPOSITORY" \
             --prerelease \
             --title "Android RR3 Tool preview $GITHUB_RUN_NUMBER" \
-            --notes "Preview APK built from commit $GITHUB_SHA. This is an early development build."
+            --notes "Preview APK built from commit $GITHUB_SHA. APK and ZIP are round-trip checked by CI."
+
+      - name: Download and verify published APK assets
+        if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="android-preview-${GITHUB_RUN_NUMBER}"
+          mkdir -p release-download
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern "app-debug.apk" --pattern "app-debug-apk.zip" \
+            --dir release-download
+
+          ORIGINAL="app/build/outputs/apk/debug/app-debug.apk"
+          DOWNLOADED="release-download/app-debug.apk"
+          cmp "$ORIGINAL" "$DOWNLOADED"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$DOWNLOADED"
+
+          unzip -p "release-download/app-debug-apk.zip" app-debug.apk > release-download/from-zip.apk
+          cmp "$ORIGINAL" "release-download/from-zip.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose release-download/from-zip.apk
