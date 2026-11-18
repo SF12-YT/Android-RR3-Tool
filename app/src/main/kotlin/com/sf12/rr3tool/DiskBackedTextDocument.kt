@@ -108,7 +108,7 @@ internal class DiskBackedTextDocument(
 
         val edited = editedPageFile(pageIndex)
         if (edited.isFile) {
-            return edited.readText(StandardCharsets.UTF_8)
+            return normalizeLineEndings(edited.readText(StandardCharsets.UTF_8))
         }
 
         val start = pageStarts[pageIndex]
@@ -124,9 +124,7 @@ internal class DiskBackedTextDocument(
             file.seek(start)
             file.readFully(bytes)
         }
-        return String(bytes, StandardCharsets.UTF_8)
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
+        return normalizeLineEndings(String(bytes, StandardCharsets.UTF_8))
     }
 
     @Synchronized
@@ -136,8 +134,9 @@ internal class DiskBackedTextDocument(
 
         val destination = editedPageFile(pageIndex)
         val temporary = File(editDirectory, "page_" + pageIndex + ".tmp")
+        val textWithOriginalLineEndings = restoreOriginalLineEndings(pageIndex, text)
         FileOutputStream(temporary).buffered().use { output ->
-            output.write(text.toByteArray(StandardCharsets.UTF_8))
+            output.write(textWithOriginalLineEndings.toByteArray(StandardCharsets.UTF_8))
             output.flush()
         }
         if (destination.exists() && !destination.delete()) {
@@ -262,6 +261,68 @@ internal class DiskBackedTextDocument(
     fun deleteEditedPages() {
         editDirectory.deleteRecursively()
     }
+
+    /**
+     * The editor displays all line endings as '\n', but RR3 language files can
+     * use CRLF. Reapply the source page's exact newline sequence when saving;
+     * otherwise one edited page can introduce mixed line endings into the
+     * encrypted game-text file.
+     */
+    private fun restoreOriginalLineEndings(pageIndex: Int, text: String): String {
+        val start = pageStarts[pageIndex]
+        val end = if (pageIndex + 1 < pageStarts.size) pageStarts[pageIndex + 1] else sourceLength
+        val length = (end - start).coerceAtLeast(0L)
+        if (length == 0L) return text
+        require(length <= MAX_PAGE_BYTES) {
+            "A single text page is too large to save safely (" + length + " bytes)."
+        }
+
+        val sourceBytes = ByteArray(length.toInt())
+        RandomAccessFile(sourceFile, "r").use { file ->
+            file.seek(start)
+            file.readFully(sourceBytes)
+        }
+
+        val endings = ArrayList<String>()
+        var index = 0
+        while (index < sourceBytes.size) {
+            when (sourceBytes[index].toInt() and 0xFF) {
+                0x0D -> {
+                    if (index + 1 < sourceBytes.size &&
+                        (sourceBytes[index + 1].toInt() and 0xFF) == 0x0A
+                    ) {
+                        endings.add("\r\n")
+                        index += 2
+                    } else {
+                        endings.add("\r")
+                        index++
+                    }
+                }
+                0x0A -> {
+                    endings.add("\n")
+                    index++
+                }
+                else -> index++
+            }
+        }
+        if (endings.isEmpty()) return text
+
+        val fallback = endings.first()
+        var newlineIndex = 0
+        return buildString(text.length + endings.count { it.length > 1 }) {
+            for (character in text) {
+                if (character == '\n') {
+                    append(endings.getOrNull(newlineIndex) ?: fallback)
+                    newlineIndex++
+                } else {
+                    append(character)
+                }
+            }
+        }
+    }
+
+    private fun normalizeLineEndings(text: String): String =
+        text.replace("\r\n", "\n").replace('\r', '\n')
 
     private fun editedPageFile(pageIndex: Int): File =
         File(editDirectory, "page_" + pageIndex + ".txt")
