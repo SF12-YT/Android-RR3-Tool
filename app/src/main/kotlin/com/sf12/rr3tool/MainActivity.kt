@@ -3061,9 +3061,11 @@ class MainActivity : Activity() {
 
                     textFile = newCacheFile("rr3-browser-text-source", ".txt")
                     copyGameFileToFile(entry, textFile!!)
+                    var needsGameTextEncoding = false
                     if (isGameText) {
                         val encodedOrPlain = textFile!!.readBytes()
-                        if (!NativeBridge.nativeRr3TextIsPlain(encodedOrPlain)) {
+                        needsGameTextEncoding = !NativeBridge.nativeRr3TextIsPlain(encodedOrPlain)
+                        if (needsGameTextEncoding) {
                             val decoded = NativeBridge.nativeTransformRr3Text(encodedOrPlain)
                                 ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
                             FileOutputStream(textFile!!).use { it.write(decoded) }
@@ -3078,7 +3080,7 @@ class MainActivity : Activity() {
                         gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
                         dataEditorStatus.text = "Opened " + name + " as a continuous text file."
                         selectTabFromView("Data Editor")
-                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = isGameText)
+                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = needsGameTextEncoding)
                     }
                     return@Thread
                 }
@@ -3089,7 +3091,8 @@ class MainActivity : Activity() {
                 val isGameText = lowerName == "gametext.txt" ||
                     (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
                 if (name.substringAfterLast('.', "").equals("txt", ignoreCase = true)) {
-                    val editableBytes = if (isGameText && !NativeBridge.nativeRr3TextIsPlain(bytes)) {
+                    val needsGameTextEncoding = isGameText && !NativeBridge.nativeRr3TextIsPlain(bytes)
+                    val editableBytes = if (needsGameTextEncoding) {
                         NativeBridge.nativeTransformRr3Text(bytes)
                             ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
                     } else {
@@ -3558,13 +3561,17 @@ class MainActivity : Activity() {
 
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
-                    if (isGameText) {
+                    val needsGameTextEncoding = if (isGameText) {
                         val existingText = plainTextFile.readBytes()
-                        if (!NativeBridge.nativeRr3TextIsPlain(existingText)) {
+                        val encoded = !NativeBridge.nativeRr3TextIsPlain(existingText)
+                        if (encoded) {
                             val decodedText = NativeBridge.nativeTransformRr3Text(existingText)
                                 ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
                             plainTextFile.writeBytes(decodedText)
                         }
+                        encoded
+                    } else {
+                        false
                     }
 
                     val pager = DiskBackedTextDocument(plainTextFile)
@@ -3573,7 +3580,7 @@ class MainActivity : Activity() {
                     plainTextHandedToEditor = true
                     runOnUiThread {
                         dataEditorStatus.text = "Opened $name as a continuous, section-loaded text file."
-                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage, encodeGameText = isGameText)
+                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage, encodeGameText = needsGameTextEncoding)
                     }
                     return@Thread
                 }
