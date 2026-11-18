@@ -4457,6 +4457,12 @@ class MainActivity : Activity() {
                         val editedBytes = outputFile.readBytes()
                         val encodedBytes = NativeBridge.nativeTransformRr3Text(editedBytes)
                             ?: throw IllegalStateException("Could not encode the edited RR3 game text.")
+                        val roundTrip = NativeBridge.nativeTransformRr3Text(encodedBytes)
+                        if (roundTrip == null || !roundTrip.contentEquals(editedBytes)) {
+                            throw IllegalStateException(
+                                "The rebuilt game text failed its decode check. The original file has not been changed."
+                            )
+                        }
                         encodedFile = newCacheFile("rr3-text-encoded", ".txt")
                         FileOutputStream(encodedFile!!).use { it.write(encodedBytes) }
                         outputFile.delete()
