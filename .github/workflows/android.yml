@@ -34,6 +34,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Create explicit debug signing key
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v \
+            -keystore "$HOME/.android/rr3tool-debug.keystore" \
+            -storepass android \
+            -alias rr3tooldebug \
+            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=RR3 Tool Debug,O=SF12-YT,C=AU"
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
@@ -49,7 +60,13 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug
 
-      - name: Publish preview APK
+      - name: Verify APK signature and alignment
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -v 4 "$APK"
+
+      - name: Publish verified preview APK
         if: (github.event_name == 'workflow_dispatch' && inputs.publish_preview == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[publish-apk]'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
