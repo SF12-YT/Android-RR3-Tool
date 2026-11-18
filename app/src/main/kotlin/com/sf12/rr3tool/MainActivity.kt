@@ -261,6 +261,9 @@ class MainActivity : Activity() {
     private lateinit var gameFilesStatus: TextView
     private lateinit var gameFilesSearch: EditText
     private lateinit var gameFilesContainer: LinearLayout
+    private lateinit var liveryFilesStatus: TextView
+    private lateinit var liveryFilesSearch: EditText
+    private lateinit var liveryFilesContainer: LinearLayout
     private lateinit var indexGameFilesButton: TextView
     private lateinit var locateRootGameDataButton: TextView
     private var indexedGameFiles: List<GameDataFile> = emptyList()
@@ -429,7 +432,7 @@ class MainActivity : Activity() {
         )
 
         val tabNames = listOf(
-            "Game Data", "Save Editor", "Transform", "Data Editor",
+            "Game Data", "Liveries", "Save Editor", "Transform", "Data Editor",
             "Car Editor", "Career", "Track Inspector", "About"
         )
         val tabPages = linkedMapOf<String, LinearLayout>()
@@ -469,6 +472,9 @@ class MainActivity : Activity() {
                 )
                 button.setTextColor(if (active) Color.WHITE else 0xFF9BAFC5.toInt())
             }
+            if (selected == "Liveries" && ::liveryFilesContainer.isInitialized) {
+                renderLiveryFiles()
+            }
         }
 
         for (name in tabNames) {
@@ -493,6 +499,7 @@ class MainActivity : Activity() {
         selectTab("Game Data")
 
         val gameDataPage = tabPages.getValue("Game Data")
+        val liveryPage = tabPages.getValue("Liveries")
         val savePage = tabPages.getValue("Save Editor")
         val transformPage = tabPages.getValue("Transform")
         val editorPage = tabPages.getValue("Data Editor")
@@ -543,6 +550,42 @@ class MainActivity : Activity() {
         gameFilesSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderGameFiles()
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+
+        addSection(liveryPage, "LIVERY DATA")
+        val liveryCard = card(liveryPage)
+        liveryCard.addView(
+            text("Inspect decoded car livery records", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        liveryCard.addView(
+            text(
+                "Experimental reader for vehicles/data/liveries/*.liveries.bin.nct. It displays the fields the current RR3 parser recognises; unsupported or unknown binary fields may not appear. Files are read-only and are not modified.",
+                13,
+                0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        liveryFilesStatus = text(
+            "Index RR3 files in Game Data first, then open a livery list here.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        liveryCard.addView(liveryFilesStatus, matchWrap(top = 10))
+        liveryCard.addView(
+            actionButton("Refresh livery lists") { renderLiveryFiles() },
+            matchWrap(top = 10)
+        )
+        liveryFilesSearch = editBox("Search car names or livery paths", "", numeric = false)
+        liveryCard.addView(liveryFilesSearch, matchWrap(top = 10))
+        liveryFilesContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        liveryCard.addView(liveryFilesContainer, matchWrap(top = 10))
+        liveryFilesSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderLiveryFiles()
             override fun afterTextChanged(s: Editable?) = Unit
         })
 
@@ -1426,6 +1469,179 @@ class MainActivity : Activity() {
     }
 
 
+
+    private fun renderLiveryFiles() {
+        if (!::liveryFilesContainer.isInitialized) return
+        liveryFilesContainer.removeAllViews()
+
+        val allLiveryFiles = indexedGameFiles.filter { entry ->
+            val path = entry.relativePath.replace('\\', '/')
+            path.startsWith("vehicles/data/liveries/", ignoreCase = true) &&
+                path.endsWith(".liveries.bin.nct", ignoreCase = true)
+        }
+        if (allLiveryFiles.isEmpty()) {
+            liveryFilesStatus.text =
+                "No livery lists are indexed. Go to Game Data and index the RR3 .depot files first."
+            liveryFilesContainer.addView(
+                text("No livery lists found.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+            return
+        }
+
+        val query = liveryFilesSearch.text.toString().trim().lowercase(Locale.ROOT)
+        val matches = allLiveryFiles.filter {
+            query.isEmpty() || it.relativePath.lowercase(Locale.ROOT).contains(query)
+        }
+        liveryFilesStatus.text = "Found ${allLiveryFiles.size} livery lists · showing ${matches.size} matches."
+        if (matches.isEmpty()) {
+            liveryFilesContainer.addView(
+                text("No matching livery lists.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
+            return
+        }
+
+        for (entry in matches.take(100)) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { inspectLiveryGameFile(entry) }
+            }
+            liveryFilesContainer.addView(row, matchWrap(bottom = 6))
+            row.addView(text(entry.name, 13, Color.WHITE, bold = true), matchWrap())
+            row.addView(
+                text(entry.relativePath, 11, 0xFF8FA4BA.toInt()),
+                matchWrap(top = 3)
+            )
+            if (entry.sizeBytes >= 0L) {
+                row.addView(
+                    text("${entry.sizeBytes} bytes · tap to inspect", 10, 0xFF7188A0.toInt()),
+                    matchWrap(top = 3)
+                )
+            } else {
+                row.addView(
+                    text("Tap to inspect decoded livery data", 10, 0xFF7188A0.toInt()),
+                    matchWrap(top = 3)
+                )
+            }
+        }
+        if (matches.size > 100) {
+            liveryFilesContainer.addView(
+                text("Showing the first 100 matches. Refine the search to narrow the list.", 11, 0xFF7F93A9.toInt()),
+                matchWrap(top = 4)
+            )
+        }
+    }
+
+    private fun inspectLiveryGameFile(entry: GameDataFile) {
+        liveryFilesStatus.text = "Decoding ${entry.name}…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val payload = JSONObject(NativeBridge.nativeInspectRr3Liveries(source))
+                if (!payload.optBoolean("ok")) {
+                    throw IllegalStateException(
+                        payload.optString("error", "The livery data could not be decoded or parsed.")
+                    )
+                }
+                runOnUiThread {
+                    val count = payload.optJSONArray("liveries")?.length() ?: 0
+                    liveryFilesStatus.text = "Read $count livery record(s) from ${entry.name}."
+                    showLiveryDataDialog(entry, source.size, payload)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    liveryFilesStatus.text = e.message ?: "Could not inspect this livery file."
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    liveryFilesStatus.text = "Not enough memory to inspect this livery list. The source file was not changed."
+                }
+            }
+        }.start()
+    }
+
+    private fun showLiveryDataDialog(entry: GameDataFile, sourceSize: Int, payload: JSONObject) {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(12))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(content)
+        }
+
+        fun addDetail(parent: LinearLayout, label: String, value: String) {
+            parent.addView(text(label, 10, 0xFF75B9F1.toInt(), bold = true), matchWrap(top = 8))
+            parent.addView(text(value.ifBlank { "—" }, 12, Color.WHITE), matchWrap(top = 2))
+        }
+
+        content.addView(
+            text(entry.relativePath, 11, 0xFF8FA4BA.toInt()),
+            matchWrap(bottom = 10)
+        )
+        addDetail(content, "CAR / INTERNAL IDENTIFIER", payload.optString("car"))
+        addDetail(content, "DECODED FILE SIZE", "$sourceSize bytes")
+        val liveries = payload.optJSONArray("liveries")
+        val count = liveries?.length() ?: 0
+        addDetail(content, "LIVERY RECORD COUNT", payload.optInt("count", count).toString())
+
+        if (count == 0) {
+            content.addView(
+                text("The parser decoded the file but returned no livery records.", 12, 0xFFFFC27A.toInt()),
+                matchWrap(top = 12)
+            )
+        } else {
+            for (index in 0 until count) {
+                val item = liveries?.optJSONObject(index) ?: continue
+                val red = item.optInt("red").coerceIn(0, 255)
+                val green = item.optInt("green").coerceIn(0, 255)
+                val blue = item.optInt("blue").coerceIn(0, 255)
+                val hex = String.format(Locale.ROOT, "#%02X%02X%02X", red, green, blue)
+                val record = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(10), dp(12), dp(11))
+                    background = rounded(0xFF101F30.toInt(), dp(10).toFloat())
+                }
+                content.addView(record, matchWrap(top = 12))
+                record.addView(
+                    text(
+                        "SLOT ${index + 1} · " + item.optString("display").ifBlank { "Unnamed livery" },
+                        13, Color.WHITE, bold = true
+                    ),
+                    matchWrap(bottom = 3)
+                )
+                addDetail(record, "INTERNAL FILE", item.optString("file"))
+                addDetail(record, "DISPLAY NAME", item.optString("display"))
+                addDetail(record, "TEXTURE OVERRIDE", item.optString("texture"))
+                addDetail(record, "BUTTON COLOUR · RGB", "$red, $green, $blue")
+                addDetail(record, "BUTTON COLOUR · HEX", hex)
+            }
+        }
+
+        content.addView(
+            text("RAW PARSER OUTPUT · JSON", 10, 0xFF75B9F1.toInt(), bold = true),
+            matchWrap(top = 18, bottom = 6)
+        )
+        content.addView(
+            text(payload.toString(2), 10, 0xFFB7C8D9.toInt()).apply {
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+            },
+            matchWrap()
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Livery data")
+            .setView(scroll)
+            .setPositiveButton("Close", null)
+            .show()
+    }
+
     private fun showGameFileActions(entry: GameDataFile) {
         val actions = arrayListOf("Export original file")
         val lower = entry.name.lowercase()
@@ -1436,7 +1652,10 @@ class MainActivity : Activity() {
         val normalisedPath = entry.relativePath.replace('\\', '/').lowercase(Locale.ROOT)
         val isLiveryList = normalisedPath.startsWith("vehicles/data/liveries/") &&
             lower.endsWith(".liveries.bin.nct")
-        if (isLiveryList) actions.add("Add livery slot to this car")
+        if (isLiveryList) {
+            actions.add("Inspect livery data")
+            actions.add("Add livery slot to this car")
+        }
         if (entry.relativePath.replace('\\', '/').lowercase().startsWith("tracks/data/") && lower.endsWith(".bin.nct")) actions.add("Inspect RR3 track data")
         if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
         if (lower.endsWith(".bin") || effectiveName.endsWith(".nct") ||
@@ -1465,6 +1684,7 @@ class MainActivity : Activity() {
                     "Inspect RR3 career data" -> inspectCareerGameFile(entry)
                     "Inspect RR3 track data" -> inspectTrackGameFile(entry)
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
+                    "Inspect livery data" -> inspectLiveryGameFile(entry)
                     "Add livery slot to this car" -> prepareAddLiverySlot(entry)
                     "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
