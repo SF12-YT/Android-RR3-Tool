@@ -3108,7 +3108,7 @@ class MainActivity : Activity() {
                         gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
                         dataEditorStatus.text = "Opened " + name + " as a continuous text file."
                         selectTabFromView("Data Editor")
-                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = isGameText)
+                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = needsGameTextEncoding)
                     }
                     return@Thread
                 }
