@@ -2,7 +2,7 @@ name: Android build
 
 on:
   push:
-    branches: [main, feature/continuous-text-editor]
+    branches: [main, feature/continuous-text-editor, feature/livery-nct-data-view]
   pull_request:
   workflow_dispatch:
     inputs:
