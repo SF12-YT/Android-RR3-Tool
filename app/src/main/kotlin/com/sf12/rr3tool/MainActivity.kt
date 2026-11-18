@@ -301,11 +301,15 @@ class MainActivity : Activity() {
     private lateinit var liveryManualSlotsContainer: LinearLayout
     private lateinit var liveryPaintStatus: TextView
     private lateinit var liveryPaintContainer: LinearLayout
+    private lateinit var liveryDecodedContainer: LinearLayout
     private val expandedLiveryYears = mutableSetOf<String>()
     private var selectedLiveryEntry: GameDataFile? = null
     private var selectedLiveryCarFolder: String = ""
     private var selectedLiveryBytes: ByteArray? = null
     private var selectedLiveryArray: org.json.JSONArray? = null
+    private var selectedLiveryPayload: JSONObject? = null
+    private var selectedLiverySourceName: String = ""
+    private var selectedLiverySourceSize: Long = 0L
     private var pendingLiverySwatchEdit: PendingLiverySwatchEdit? = null
 
     private val preferences by lazy {
@@ -673,42 +677,34 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        val liveryDecodedPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
         val liveryModeTabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val indexedCarsTab = actionButton("Indexed cars") {
-            liveryCarsPanel.visibility = View.VISIBLE
-            liveryManualPanel.visibility = View.GONE
-            liveryPaintPanel.visibility = View.GONE
+        fun selectLiveryMode(mode: String) {
+            liveryCarsPanel.visibility = if (mode == "cars") View.VISIBLE else View.GONE
+            liveryManualPanel.visibility = if (mode == "manual") View.VISIBLE else View.GONE
+            liveryPaintPanel.visibility = if (mode == "paint") View.VISIBLE else View.GONE
+            liveryDecodedPanel.visibility = if (mode == "decoded") View.VISIBLE else View.GONE
+            if (mode == "paint") loadLiveryPaintLabels()
+            if (mode == "decoded") renderSelectedLiveryDecodedData()
         }
-        val manualFileTab = actionButton("Manual .bin.nct") {
-            liveryCarsPanel.visibility = View.GONE
-            liveryManualPanel.visibility = View.VISIBLE
-            liveryPaintPanel.visibility = View.GONE
+        val indexedCarsTab = actionButton("Cars") { selectLiveryMode("cars") }
+        val manualFileTab = actionButton("Manual") { selectLiveryMode("manual") }
+        val paintLabelsTab = actionButton("Paints") { selectLiveryMode("paint") }
+        val decodedDataTab = actionButton("NCT data") { selectLiveryMode("decoded") }
+        for (tab in listOf(indexedCarsTab, manualFileTab, paintLabelsTab, decodedDataTab)) {
+            liveryModeTabs.addView(
+                tab,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(5)
+                }
+            )
         }
-        val paintLabelsTab = actionButton("Paint labels") {
-            liveryCarsPanel.visibility = View.GONE
-            liveryManualPanel.visibility = View.GONE
-            liveryPaintPanel.visibility = View.VISIBLE
-            loadLiveryPaintLabels()
-        }
-        liveryModeTabs.addView(
-            indexedCarsTab,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(5)
-            }
-        )
-        liveryModeTabs.addView(
-            manualFileTab,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(5)
-            }
-        )
-        liveryModeTabs.addView(
-            paintLabelsTab,
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        )
         liveryCard.addView(liveryModeTabs, matchWrap(top = 10))
 
         liveryCarListContainer = LinearLayout(this).apply {
@@ -757,6 +753,18 @@ class MainActivity : Activity() {
         liveryCard.addView(liveryCarsPanel, matchWrap())
         liveryCard.addView(liveryManualPanel, matchWrap())
         liveryCard.addView(liveryPaintPanel, matchWrap())
+        liveryDecodedContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        liveryDecodedPanel.addView(liveryDecodedContainer, matchWrap(top = 10))
+        liveryDecodedPanel.addView(
+            text(
+                "This view shows every field currently returned by the native livery parser. It is an experimental inspection view, not a complete dump of every unknown byte in the NCT format.",
+                11, 0xFF8FA4BA.toInt()
+            ),
+            matchWrap(top = 12)
+        )
+        liveryCard.addView(liveryDecodedPanel, matchWrap())
 
         addSection(careerPage, "RR3 CAREER INSPECTOR")
         val careerCard = card(careerPage)
@@ -1372,6 +1380,161 @@ class MainActivity : Activity() {
             }
         }
 
+
+    private fun renderSelectedLiveryDecodedData() {
+        if (!::liveryDecodedContainer.isInitialized) return
+        liveryDecodedContainer.removeAllViews()
+
+        val payload = selectedLiveryPayload
+        if (payload == null) {
+            liveryDecodedContainer.addView(
+                text(
+                    "Select a car in Cars, or load a .bin.nct file in Manual, then return here to inspect its decoded data.",
+                    12, 0xFF9BAFC5.toInt()
+                ),
+                matchWrap()
+            )
+            return
+        }
+
+        fun addDetail(parent: LinearLayout, label: String, value: String) {
+            parent.addView(
+                text(label, 10, 0xFF75B9F1.toInt(), bold = true),
+                matchWrap(top = 9)
+            )
+            parent.addView(
+                text(value.ifBlank { "—" }, 12, Color.WHITE).apply {
+                    setTextIsSelectable(true)
+                },
+                matchWrap(top = 2)
+            )
+        }
+
+        fun stringValue(item: JSONObject, key: String): String {
+            return if (item.has(key) && !item.isNull(key)) item.optString(key).trim() else ""
+        }
+
+        val title = selectedLiverySourceName.ifBlank { "Livery NCT" }
+        liveryDecodedContainer.addView(
+            text(title, 15, Color.WHITE, bold = true),
+            matchWrap(bottom = 4)
+        )
+        addDetail(liveryDecodedContainer, "INTERNAL CAR IDENTIFIER", payload.optString("car"))
+        addDetail(liveryDecodedContainer, "SOURCE FILE", title)
+        addDetail(liveryDecodedContainer, "ENCRYPTED FILE SIZE", "$selectedLiverySourceSize bytes")
+
+        val liveries = payload.optJSONArray("liveries")
+        val count = liveries?.length() ?: 0
+        addDetail(
+            liveryDecodedContainer,
+            "PARSED LIVERY RECORDS",
+            payload.optInt("count", count).toString()
+        )
+
+        if (count == 0) {
+            liveryDecodedContainer.addView(
+                text("The parser decoded the container but found no livery records.", 12, 0xFFFFC27A.toInt()),
+                matchWrap(top = 12)
+            )
+        }
+
+        for (index in 0 until count) {
+            val item = liveries?.optJSONObject(index) ?: continue
+            val red = item.optInt("red").coerceIn(0, 255)
+            val green = item.optInt("green").coerceIn(0, 255)
+            val blue = item.optInt("blue").coerceIn(0, 255)
+            val hex = String.format(Locale.ROOT, "#%02X%02X%02X", red, green, blue)
+            val record = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(10), dp(12), dp(12))
+                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+            }
+            liveryDecodedContainer.addView(record, matchWrap(top = 12))
+            record.addView(
+                text(
+                    "RECORD ${index + 1} · " +
+                        stringValue(item, "display").ifBlank { stringValue(item, "file").ifBlank { "Unnamed" } },
+                    13, Color.WHITE, bold = true
+                ),
+                matchWrap(bottom = 3)
+            )
+
+            for ((key, label) in listOf(
+                "file" to "INTERNAL FILE",
+                "display" to "DISPLAY NAME",
+                "texture" to "TEXTURE OVERRIDE",
+                "swatch" to "SWATCH PATH",
+                "logo" to "LOGO PATH",
+                "flag" to "FLAG VALUE",
+                "arms" to "ARMS TEXTURE",
+                "driver" to "DRIVER TEXTURE"
+            )) {
+                val value = if (key == "flag") item.optInt(key).toString() else stringValue(item, key)
+                addDetail(record, label, value)
+            }
+            addDetail(record, "BUTTON COLOUR · RGB", "$red, $green, $blue")
+            addDetail(record, "BUTTON COLOUR · HEX", hex)
+
+            val overrides = item.optJSONArray("overrides")
+            record.addView(
+                text(
+                    "TEXTURE OVERRIDES · ${overrides?.length() ?: 0}",
+                    10, 0xFF75B9F1.toInt(), bold = true
+                ),
+                matchWrap(top = 12, bottom = 4)
+            )
+            if (overrides == null || overrides.length() == 0) {
+                record.addView(text("None parsed", 11, 0xFF8FA4BA.toInt()), matchWrap())
+            } else {
+                for (overrideIndex in 0 until overrides.length()) {
+                    val override = overrides.optJSONObject(overrideIndex) ?: continue
+                    record.addView(
+                        text(
+                            "Slot ${override.optInt("slot")}  →  " + stringValue(override, "path"),
+                            11, 0xFFD4E1EF.toInt()
+                        ).apply { setTextIsSelectable(true) },
+                        matchWrap(top = 3)
+                    )
+                }
+            }
+
+            val materials = item.optJSONArray("materials")
+            record.addView(
+                text(
+                    "MESH / MATERIAL ASSIGNMENTS · ${materials?.length() ?: 0}",
+                    10, 0xFF75B9F1.toInt(), bold = true
+                ),
+                matchWrap(top = 12, bottom = 4)
+            )
+            if (materials == null || materials.length() == 0) {
+                record.addView(text("None parsed", 11, 0xFF8FA4BA.toInt()), matchWrap())
+            } else {
+                for (materialIndex in 0 until materials.length()) {
+                    val material = materials.optJSONObject(materialIndex) ?: continue
+                    record.addView(
+                        text(
+                            "Mesh ${material.optInt("mesh")}  →  material ${material.optInt("material")}",
+                            11, 0xFFD4E1EF.toInt()
+                        ).apply { setTextIsSelectable(true) },
+                        matchWrap(top = 3)
+                    )
+                }
+            }
+        }
+
+        liveryDecodedContainer.addView(
+            text("RAW PARSER OUTPUT · JSON", 11, 0xFF75B9F1.toInt(), bold = true),
+            matchWrap(top = 18, bottom = 6)
+        )
+        liveryDecodedContainer.addView(
+            text(payload.toString(2), 10, 0xFFB7C8D9.toInt()).apply {
+                typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+            },
+            matchWrap()
+        )
+    }
+
     private fun renderLiveryCarChoices() {
         if (!::liveryCarListContainer.isInitialized) return
         liveryCarListContainer.removeAllViews()
@@ -1474,6 +1637,9 @@ class MainActivity : Activity() {
         selectedLiveryCarFolder = ""
         selectedLiveryBytes = null
         selectedLiveryArray = null
+        selectedLiveryPayload = null
+        selectedLiverySourceName = ""
+        selectedLiverySourceSize = 0L
         target.removeAllViews()
         liveryStatus.text = "Reading existing livery slots for $carFolder…"
 
@@ -1492,6 +1658,9 @@ class MainActivity : Activity() {
                     selectedLiveryCarFolder = carFolder
                     selectedLiveryBytes = liveryBytes
                     selectedLiveryArray = liveryArray
+                    selectedLiveryPayload = payload
+                    selectedLiverySourceName = entry.name
+                    selectedLiverySourceSize = liveryBytes.size.toLong()
                     liveryStatus.text = "Loaded $carFolder. ${liveryArray.length()} existing slot(s)."
                     renderLiverySlots(carFolder, liveryArray, target, allowAdd = true)
                 }
@@ -1761,6 +1930,8 @@ class MainActivity : Activity() {
         runOnUiThread {
             selectedLiveryBytes = updatedBytes
             selectedLiveryArray = array
+            selectedLiveryPayload = payload
+            selectedLiverySourceSize = updatedBytes.size.toLong()
             renderLiverySlots(carFolder, array, target, allowAdd = array.length() > 0)
             liveryStatus.text = if (indexed) {
                 "Updated \${entry.name}. Export the ZIP and apply it to a backup of the depot."
@@ -2286,6 +2457,9 @@ class MainActivity : Activity() {
     private fun openManualLiveryFile(uri: Uri) {
         liveryManualStatus.text = "Reading selected .bin.nct file…"
         liveryManualSlotsContainer.removeAllViews()
+        selectedLiveryPayload = null
+        selectedLiverySourceName = ""
+        selectedLiverySourceSize = 0L
         Thread {
             try {
                 val name = displayName(uri)
@@ -2313,6 +2487,9 @@ class MainActivity : Activity() {
                     !carFolder.contains('/') &&
                     !carFolder.contains("..")
                 runOnUiThread {
+                    selectedLiveryPayload = payload
+                    selectedLiverySourceName = name
+                    selectedLiverySourceSize = bytes.size.toLong()
                     if (canAddSlot) {
                         val entry = GameDataFile(
                             name = name,
