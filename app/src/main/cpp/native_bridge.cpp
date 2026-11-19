@@ -1620,7 +1620,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
     nfsnl::Rr3AssetList verified;
     if (!nfsnl::rr3AssetListRead(output, verified)) return nullptr;
     std::string expectedPath = "/" + assetPath;
-    for (char& c : expectedPath) if (c == '\\\\') c = '/';
+    for (char& c : expectedPath) if (c == static_cast<char>(92)) c = '/';
     bool digestVerified = false;
     for (const auto& entry : verified.entries) {
         if (entry.first == expectedPath) {
