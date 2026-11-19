@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -27,16 +28,16 @@ struct Stream {
     unsigned i = 0;
     unsigned j = 0;
 
-    Stream() {
+    Stream(const uint8_t* key = kNctRc4Key, unsigned drop = kNctRc4Drop) {
         std::memcpy(state, kNctRc4Init, 256);
         for (unsigned k = 0; k < 256; ++k) {
             uint8_t t = state[k];
-            j = (j + t + kNctRc4Key[k & 7]) & 255;
+            j = (j + t + key[k & 7]) & 255;
             state[k] = state[j];
             state[j] = t;
         }
         j = 0;
-        for (unsigned k = 0; k < kNctRc4Drop; ++k) next();
+        for (unsigned k = 0; k < drop; ++k) next();
     }
 
     uint8_t next() {
@@ -46,6 +47,41 @@ struct Stream {
         return state[(state[i] + state[j]) & 255];
     }
 };
+
+bool textFileIsPlain(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    uint8_t sample[256];
+    input.read(reinterpret_cast<char*>(sample), sizeof(sample));
+    const std::streamsize count = input.gcount();
+    return count > 0 && nfsnl::rr3TextIsPlain(sample, static_cast<size_t>(count));
+}
+
+jlong transformTextFile(const std::string& inputPath, const std::string& outputPath) {
+    if (inputPath.empty() || outputPath.empty() || inputPath == outputPath) return -1;
+    std::ifstream input(inputPath, std::ios::binary);
+    if (!input) return -1;
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output) return -1;
+
+    Stream stream(kTextRc4Key, kTextRc4Drop);
+    std::array<uint8_t, 256 * 1024> buffer{};
+    uint64_t total = 0;
+    while (input) {
+        input.read(reinterpret_cast<char*>(buffer.data()),
+                   static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize got = input.gcount();
+        if (got <= 0) break;
+        for (std::streamsize i = 0; i < got; ++i) buffer[static_cast<size_t>(i)] ^= stream.next();
+        output.write(reinterpret_cast<const char*>(buffer.data()), got);
+        if (!output) return -1;
+        total += static_cast<uint64_t>(got);
+    }
+    if (input.bad() || !input.eof() || !output) return -1;
+    output.flush();
+    if (!output || total > static_cast<uint64_t>(std::numeric_limits<jlong>::max())) return -1;
+    return static_cast<jlong>(total);
+}
 
 bool verifyAgainstUpstream() {
     nfsnl::Bytes sample(8193);
@@ -632,6 +668,25 @@ Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextIsPlain(
         input, 0, length, reinterpret_cast<jbyte*>(source.data()));
     if (env->ExceptionCheck()) return JNI_FALSE;
     return nfsnl::rr3TextIsPlain(source.data(), source.size()) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextFileIsPlain(
+    JNIEnv* env, jobject /* thiz */, jstring pathText) {
+    const std::string path = fromJava(env, pathText);
+    return android_nct::textFileIsPlain(path) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3TextFile(
+    JNIEnv* env, jobject /* thiz */, jstring inputPathText, jstring outputPathText) {
+    const std::string inputPath = fromJava(env, inputPathText);
+    const std::string outputPath = fromJava(env, outputPathText);
+    try {
+        return android_nct::transformTextFile(inputPath, outputPath);
+    } catch (...) {
+        return -1;
+    }
 }
 
 
