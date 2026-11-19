@@ -3172,9 +3172,12 @@ class MainActivity : Activity() {
                     copyGameFileToFile(entry, textFile!!)
                     var needsGameTextEncoding = false
                     if (isGameText) {
-                        // Read only a small prefix to detect encryption, then
-                        // stream the full RC4 transform to disk when required.
-                        needsGameTextEncoding = prepareRr3TextFileForEditing(textFile!!)
+                        // The key index must begin with GAMETEXT_; do not let
+                        // the generic binary heuristic misclassify this file.
+                        needsGameTextEncoding = prepareRr3TextFileForEditing(
+                            textFile!!,
+                            isGameTextIndex = lowerName == "gametext.txt"
+                        )
                     }
 
                     val pager = DiskBackedTextDocument(textFile!!)
@@ -3183,9 +3186,12 @@ class MainActivity : Activity() {
                     handedToEditor = true
                     runOnUiThread {
                         gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
-                        dataEditorStatus.text = "Opened " + name + " as a continuous text file."
+                        dataEditorStatus.text = "Opened " + name + " as a section-loaded text file."
                         selectTabFromView("Data Editor")
-                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = needsGameTextEncoding)
+                        showSectionedTextFileEditor(
+                            name, textFile!!, pager, firstPage,
+                            encodeGameText = needsGameTextEncoding
+                        )
                     }
                     return@Thread
                 }
@@ -3196,24 +3202,28 @@ class MainActivity : Activity() {
                 val isGameText = lowerName == "gametext.txt" ||
                     (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
                 if (name.substringAfterLast('.', "").equals("txt", ignoreCase = true)) {
-                    val needsGameTextEncoding = isGameText && !NativeBridge.nativeRr3TextIsPlain(bytes)
-                    val editableBytes = if (needsGameTextEncoding) {
-                        NativeBridge.nativeTransformRr3Text(bytes)
-                            ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
-                    } else {
-                        bytes
-                    }
                     textFile = newCacheFile("rr3-browser-text-source", ".txt")
-                    FileOutputStream(textFile!!).use { it.write(editableBytes) }
+                    FileOutputStream(textFile!!).use { it.write(bytes) }
+                    val needsGameTextEncoding = if (isGameText) {
+                        prepareRr3TextFileForEditing(
+                            textFile!!,
+                            isGameTextIndex = lowerName == "gametext.txt"
+                        )
+                    } else {
+                        false
+                    }
                     val pager = DiskBackedTextDocument(textFile!!)
                     textPager = pager
                     val firstPage = pager.readNextPage() ?: ""
                     handedToEditor = true
                     runOnUiThread {
                         gameFilesStatus.text = "Opened " + entry.relativePath + " in the text editor."
-                        dataEditorStatus.text = "Opened " + name + " as a continuous text file."
+                        dataEditorStatus.text = "Opened " + name + " as a section-loaded text file."
                         selectTabFromView("Data Editor")
-                        showPagedTextEditorInline(name, textFile!!, pager, firstPage, encodeGameText = needsGameTextEncoding)
+                        showSectionedTextFileEditor(
+                            name, textFile!!, pager, firstPage,
+                            encodeGameText = needsGameTextEncoding
+                        )
                     }
                     return@Thread
                 }
