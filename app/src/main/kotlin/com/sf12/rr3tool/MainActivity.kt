@@ -2878,10 +2878,6 @@ class MainActivity : Activity() {
             effectiveName.endsWith(".gui") || effectiveName.endsWith(".xml")) {
             actions.add("Decode / encode RR3 data")
         }
-        if (effectiveName == "gametext.txt" ||
-            (effectiveName.startsWith("text_") && effectiveName.endsWith(".txt"))) {
-            actions.add("Decode / encode RR3 game text")
-        }
         val extension = effectiveName.substringAfterLast('.', "").lowercase()
         if (extension in setOf("sounddef", "evt", "tbl", "table", "txt")) {
             actions.add("Open in RR3 text data editor")
@@ -2900,7 +2896,6 @@ class MainActivity : Activity() {
                     "Inspect RR3 career data" -> inspectCareerGameFile(entry)
                     "Inspect RR3 track data" -> inspectTrackGameFile(entry)
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
-                    "Decode / encode RR3 game text" -> decodeGameTextFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
                     "Convert audio to WAV" -> convertGameAudio(entry)
                 }
@@ -4799,10 +4794,10 @@ class MainActivity : Activity() {
                 }
 
                 if (isGameText) {
-                    val input = contentResolver.openInputStream(uri)
-                        ?: throw IllegalStateException("Could not open the selected file.")
-                    val bytes = input.use { it.readBytes() }
-                    runOnUiThread { showRr3TextMode(name, bytes) }
+                    // All RR3 language files now use the same disk-backed,
+                    // paged editor as files opened from the Game Data browser.
+                    // Do not materialise the full gametext file in a ByteArray.
+                    openEditableDataFile(uri)
                     return@Thread
                 }
 
