@@ -4457,6 +4457,10 @@ class MainActivity : Activity() {
                 return
             }
             building = true
+            // Snapshot EditText contents on the UI thread; the worker only
+            // writes immutable strings to the disk-backed page overlays.
+            val editedPages = pageEditors.map { it.text.toString() }
+            pageEditors.forEach { it.isEnabled = false }
             loadStatus.text = "Saving edited sections and rebuilding the text file…"
             dataEditorStatus.text = "Building $sourceName…"
 
@@ -4465,8 +4469,8 @@ class MainActivity : Activity() {
                 var encodedOutput: File? = null
                 var roundTripFile: File? = null
                 try {
-                    for (index in pageEditors.indices) {
-                        pager.saveEditedPage(index, pageEditors[index].text.toString())
+                    for (index in editedPages.indices) {
+                        pager.saveEditedPage(index, editedPages[index])
                     }
                     pager.writeMerged(plainOutput, preserveLineCount = encodeGameText)
                     var readyFile = plainOutput
@@ -4518,6 +4522,7 @@ class MainActivity : Activity() {
                     roundTripFile?.delete()
                     runOnUiThread {
                         building = false
+                        pageEditors.forEach { it.isEnabled = true }
                         loadStatus.text = error.message ?: "Could not rebuild the text file."
                     }
                 } catch (error: OutOfMemoryError) {
@@ -4526,6 +4531,7 @@ class MainActivity : Activity() {
                     roundTripFile?.delete()
                     runOnUiThread {
                         building = false
+                        pageEditors.forEach { it.isEnabled = true }
                         loadStatus.text = "Android ran out of memory. The original text file remains unchanged."
                     }
                 }
