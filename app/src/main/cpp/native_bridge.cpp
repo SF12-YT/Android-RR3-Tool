@@ -1607,10 +1607,28 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
         md5.push_back(hex[(byte >> 4) & 0x0f]);
         md5.push_back(hex[byte & 0x0f]);
     }
-    nfsnl::rr3AssetListSet(list, assetPath, md5, true);
+    // This file is being replaced, so its cached MD5 must change too.
+    // keepIfListed=true preserves the old digest and leaves the depot cache stale.
+    nfsnl::rr3AssetListSet(list, assetPath, md5, false);
+
     nfsnl::Bytes output = nfsnl::rr3AssetListWrite(list);
     if (output.empty() || output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
         return nullptr;
+
+    // Read the generated cache back and confirm the exact replacement digest
+    // is present before returning an exportable asset-list file.
+    nfsnl::Rr3AssetList verified;
+    if (!nfsnl::rr3AssetListRead(output, verified)) return nullptr;
+    std::string expectedPath = "/" + assetPath;
+    for (char& c : expectedPath) if (c == '\\\\') c = '/';
+    bool digestVerified = false;
+    for (const auto& entry : verified.entries) {
+        if (entry.first == expectedPath) {
+            digestVerified = entry.second == md5;
+            break;
+        }
+    }
+    if (!digestVerified) return nullptr;
     jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
     if (!result) return nullptr;
     env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()),
