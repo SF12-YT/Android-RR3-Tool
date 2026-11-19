@@ -107,6 +107,12 @@ internal object NativeBridge {
 
     external fun nativeRr3TextIsPlain(input: ByteArray): Boolean
 
+    /** Detects a plain or encrypted RR3 text file from a small prefix only. */
+    external fun nativeRr3TextFileIsPlain(path: String): Boolean
+
+    /** Streams the RR3 text cipher from one file to another without loading it into a ByteArray. */
+    external fun nativeTransformRr3TextFile(inputPath: String, outputPath: String): Long
+
     external fun nativeInspectRr3Save(savePath: String, keysPath: String): String
 
     external fun nativeCalibrateRr3Save(
