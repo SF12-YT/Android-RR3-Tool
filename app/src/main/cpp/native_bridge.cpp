@@ -1386,14 +1386,16 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     std::string pendingMaterial;
     const std::string materialPrefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
     const std::string colourPrefix = "GAMETEXT_CUSTOMISATION_COLOUR_";
+    const std::string colorPrefix = "GAMETEXT_CUSTOMISATION_COLOR_";
     for (const auto& key : paintKeys) {
         if (key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
             key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
             pendingMaterial = key;
-        } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0) {
-            // Keep every paint-table colour in the browser. Whether its text
-            // is editable is reported separately below; filtering by
-            // gametext membership here hid valid paint options from users.
+        } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0 ||
+                   key.compare(0, colorPrefix.size(), colorPrefix) == 0) {
+            // Keep every paint-table colour in the browser, including files
+            // using the American spelling. Localisation editability is
+            // checked separately and must not hide the paint option.
             options.push_back({pendingMaterial, key});
             pendingMaterial.clear();
         }
