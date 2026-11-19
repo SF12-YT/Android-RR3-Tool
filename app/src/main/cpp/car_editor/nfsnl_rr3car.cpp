@@ -585,9 +585,21 @@ bool rr3CarWrite(const Rr3Car& car, Bytes& out, std::string& report) {
         return false;
     }
 
+    // Decode and parse the result again before allowing it to leave the
+    // editor. This catches a malformed token stream before it can be installed.
+    Rr3Car verified;
+    if (!rr3CarRead(enc.data(), enc.size(), verified)) {
+        report = "the rebuilt car file failed its read-back check: " + verified.why;
+        return false;
+    }
+    if (rr3CarPlain(verified) != plain) {
+        report = "the rebuilt car file did not preserve the complete token stream";
+        return false;
+    }
+
     out.swap(enc);
     char b[200];
-    snprintf(b, sizeof(b), "%zu bytes (was %zu); fully re-encrypted",
+    snprintf(b, sizeof(b), "%zu bytes (was %zu); fully re-encrypted and read-back verified",
              out.size(), car.original.size());
     report = b;
     return true;
