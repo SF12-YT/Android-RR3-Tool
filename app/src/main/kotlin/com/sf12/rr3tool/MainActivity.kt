@@ -904,11 +904,45 @@ class MainActivity : Activity() {
      *
      * @return true when the source was encrypted and has been decoded in place.
      */
-    private fun prepareRr3TextFileForEditing(sourceFile: File): Boolean {
+    private fun hasGameTextSignature(file: File): Boolean {
+        if (!file.isFile || file.length() < 9L) return false
+        val prefix = ByteArray(16)
+        val count = FileInputStream(file).use { it.read(prefix) }
+        if (count < 9) return false
+        var offset = 0
+        if (count >= 12 &&
+            prefix[0] == 0xEF.toByte() &&
+            prefix[1] == 0xBB.toByte() &&
+            prefix[2] == 0xBF.toByte()
+        ) {
+            offset = 3
+        }
+        while (offset < count && (
+                prefix[offset] == 0x20.toByte() ||
+                prefix[offset] == 0x09.toByte() ||
+                prefix[offset] == 0x0A.toByte() ||
+                prefix[offset] == 0x0D.toByte()
+            )
+        ) offset++
+        val signature = "GAMETEXT_".toByteArray(Charsets.US_ASCII)
+        if (count - offset < signature.size) return false
+        return signature.indices.all { prefix[offset + it] == signature[it] }
+    }
+
+    /**
+     * RR3 game text is a separate RC4 stream. For gametext.txt, require its
+     * actual key-table signature before accepting the file as plaintext;
+     * the generic control-character heuristic alone is not sufficient.
+     */
+    private fun prepareRr3TextFileForEditing(
+        sourceFile: File,
+        isGameTextIndex: Boolean
+    ): Boolean {
         if (!sourceFile.isFile || sourceFile.length() <= 0L) {
             throw IllegalStateException("The RR3 game-text file is empty or unreadable.")
         }
-        if (NativeBridge.nativeRr3TextFileIsPlain(sourceFile.absolutePath)) return false
+        val appearsPlain = NativeBridge.nativeRr3TextFileIsPlain(sourceFile.absolutePath)
+        if (appearsPlain && (!isGameTextIndex || hasGameTextSignature(sourceFile))) return false
 
         val decodedFile = newCacheFile("rr3-game-text-decoded", ".txt")
         try {
@@ -919,8 +953,12 @@ class MainActivity : Activity() {
             if (decodedSize < 0L || decodedSize != sourceFile.length()) {
                 throw IllegalStateException("Could not decode this RR3 game-text file.")
             }
-            if (!NativeBridge.nativeRr3TextFileIsPlain(decodedFile.absolutePath)) {
-                throw IllegalStateException("The decoded RR3 game-text file did not pass its text check.")
+            if (!NativeBridge.nativeRr3TextFileIsPlain(decodedFile.absolutePath) ||
+                (isGameTextIndex && !hasGameTextSignature(decodedFile))
+            ) {
+                throw IllegalStateException(
+                    "The decoded file did not contain a valid RR3 game-text key table. The source was left unchanged."
+                )
             }
 
             if (sourceFile.exists() && !sourceFile.delete()) {
@@ -3629,7 +3667,10 @@ class MainActivity : Activity() {
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
                     val needsGameTextEncoding = if (isGameText) {
-                        prepareRr3TextFileForEditing(plainTextFile)
+                        prepareRr3TextFileForEditing(
+                            plainTextFile,
+                            isGameTextIndex = lowerName == "gametext.txt"
+                        )
                     } else {
                         false
                     }
@@ -3639,8 +3680,11 @@ class MainActivity : Activity() {
                     val firstPage = pager.readNextPage() ?: ""
                     plainTextHandedToEditor = true
                     runOnUiThread {
-                        dataEditorStatus.text = "Opened $name as a continuous, section-loaded text file."
-                        showPagedTextEditorInline(name, plainTextFile, pager, firstPage, encodeGameText = needsGameTextEncoding)
+                        dataEditorStatus.text = "Opened $name as a section-loaded text file."
+                        showSectionedTextFileEditor(
+                            name, plainTextFile, pager, firstPage,
+                            encodeGameText = needsGameTextEncoding
+                        )
                     }
                     return@Thread
                 }
@@ -4215,6 +4259,271 @@ class MainActivity : Activity() {
                 loadNextSection()
             }
         }
+    }
+
+    /**
+     * Plain text and RR3 localisation files use the same section-at-a-time
+     * editor interaction as events.dat.nct. The backing store remains
+     * disk-based, so unopened sections are never materialised as EditTexts.
+     */
+    private fun showSectionedTextFileEditor(
+        sourceName: String,
+        sourceFile: File,
+        pager: DiskBackedTextDocument,
+        firstPage: String,
+        encodeGameText: Boolean
+    ) {
+        val pageEditors = mutableListOf<EditText>()
+        var refreshFindResults: (() -> Unit)? = null
+        var loading = false
+        var reachedEnd = false
+        var building = false
+        var closed = false
+        var buildAction: () -> Unit = {}
+
+        val help = text(
+            "Text file · ${pager.pageCount} section(s) indexed. Scroll to load more; edits are saved section by section.",
+            12,
+            0xFF9BAFC5.toInt()
+        )
+        val pageContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0B1725.toInt())
+        }
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = false
+            isSmoothScrollingEnabled = true
+            isVerticalScrollBarEnabled = true
+            isScrollbarFadingEnabled = false
+            scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setScrollBarSize(dp(12))
+            }
+            addView(
+                pageContainer,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
+
+        fun disposeEditor() {
+            if (closed) return
+            closed = true
+            pager.close()
+            pager.deleteEditedPages()
+            sourceFile.delete()
+            closeDataEditorScreen()
+        }
+
+        fun closeEditor() {
+            if (building) {
+                loadStatus.text = "Wait for the rebuild to finish before closing the editor."
+                return
+            }
+            disposeEditor()
+        }
+
+        fun addPage(pageText: String) {
+            val pageIndex = pageEditors.size
+            val lineCount = maxOf(
+                1,
+                pageText.count { it == '\\n' } +
+                    if (pageText.endsWith("\\n")) 0 else 1
+            )
+            val editor = EditText(this).apply {
+                setText(pageText)
+                setTextColor(Color.WHITE)
+                setHintTextColor(0xFF6F849B.toInt())
+                textSize = 11.5f
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.TOP or Gravity.START
+                inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                setHorizontallyScrolling(false)
+                isVerticalScrollBarEnabled = false
+                setPadding(dp(10), dp(2), dp(10), dp(2))
+                background = rounded(0xFF0B1725.toInt(), 0f)
+                minLines = minOf(lineCount, 4)
+                // Each section is bounded; avoid the unbounded 100,000-line
+                // measurement request used by the old RecyclerView editor.
+                maxLines = (lineCount + 64).coerceIn(24, 4096)
+                hint = "Section ${pageIndex + 1}"
+            }
+            attachVerticalSwipeScrolling(editor, editorScroll)
+            pageEditors.add(editor)
+            pageContainer.addView(editor, matchWrap())
+            refreshFindResults?.invoke()
+        }
+
+        fun checkNearBottom() {
+            if (closed || loading || reachedEnd || building) return
+            val child = editorScroll.getChildAt(0) ?: return
+            if (editorScroll.scrollY + editorScroll.height >= child.height - dp(600)) {
+                loadNextSection()
+            }
+        }
+
+        fun loadNextSection() {
+            if (loading || reachedEnd || building || closed) return
+            loading = true
+            loadStatus.text = "Loading the next section…"
+            Thread {
+                var nextPage: String? = null
+                var failure: String? = null
+                try {
+                    nextPage = pager.readNextPage()
+                } catch (error: Exception) {
+                    failure = error.message ?: "Could not read the next part of the text file."
+                } catch (error: OutOfMemoryError) {
+                    failure = "Android ran out of memory while loading this section."
+                }
+                runOnUiThread {
+                    loading = false
+                    if (closed) return@runOnUiThread
+                    when {
+                        failure != null -> {
+                            reachedEnd = true
+                            loadStatus.text = failure
+                        }
+                        nextPage == null -> {
+                            reachedEnd = true
+                            loadStatus.text = "End of file."
+                        }
+                        else -> {
+                            addPage(nextPage!!)
+                            loadStatus.text = "Keep scrolling; more sections load automatically."
+                            editorScroll.post { checkNearBottom() }
+                        }
+                    }
+                }
+            }.start()
+        }
+
+        addPage(firstPage)
+        editorScroll.viewTreeObserver.addOnScrollChangedListener { checkNearBottom() }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(help, matchWrap(bottom = 8))
+            refreshFindResults = addPagedTextFindControls(this, pageEditors, editorScroll)
+            addView(
+                editorScroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+            addView(loadStatus, matchWrap(top = 8, bottom = 8))
+            val actions = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val buildButton = actionButton("Build and export") { buildAction() }
+            val closeButton = actionButton("Close editor") { closeEditor() }
+            actions.addView(buildButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            })
+            actions.addView(closeButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(actions, matchWrap(top = 8))
+        }
+
+        fun buildOutput() {
+            if (loading || building || closed) {
+                loadStatus.text = "Wait for the current section to finish loading."
+                return
+            }
+            building = true
+            loadStatus.text = "Saving edited sections and rebuilding the text file…"
+            dataEditorStatus.text = "Building $sourceName…"
+
+            Thread {
+                val plainOutput = newCacheFile("rr3-text-edited", ".txt")
+                var encodedOutput: File? = null
+                var roundTripFile: File? = null
+                try {
+                    for (index in pageEditors.indices) {
+                        pager.saveEditedPage(index, pageEditors[index].text.toString())
+                    }
+                    pager.writeMerged(plainOutput, preserveLineCount = encodeGameText)
+                    var readyFile = plainOutput
+                    if (encodeGameText) {
+                        encodedOutput = newCacheFile("rr3-text-encoded", ".txt")
+                        val encodedSize = NativeBridge.nativeTransformRr3TextFile(
+                            plainOutput.absolutePath, encodedOutput!!.absolutePath
+                        )
+                        if (encodedSize < 0L || encodedSize != plainOutput.length()) {
+                            throw IllegalStateException("Could not encode the edited RR3 game text.")
+                        }
+                        roundTripFile = newCacheFile("rr3-text-roundtrip", ".txt")
+                        val decodedSize = NativeBridge.nativeTransformRr3TextFile(
+                            encodedOutput!!.absolutePath, roundTripFile!!.absolutePath
+                        )
+                        if (decodedSize != plainOutput.length() ||
+                            !filesAreEqual(plainOutput, roundTripFile!!)
+                        ) {
+                            throw IllegalStateException(
+                                "The rebuilt game text failed its decode check. The original has not been changed."
+                            )
+                        }
+                        roundTripFile!!.delete()
+                        roundTripFile = null
+                        plainOutput.delete()
+                        readyFile = encodedOutput!!
+                    }
+
+                    pendingTransformedData = null
+                    pendingTransformedFile?.delete()
+                    pendingTransformedFile = readyFile
+                    pendingTransformedSize = readyFile.length()
+                    pendingTransformedName = sourceName
+                    pendingOutputForDataEditor = true
+                    pendingOutputForBrowser = false
+                    pendingOutputForCarEditor = false
+                    runOnUiThread {
+                        building = false
+                        disposeEditor()
+                        dataEditorStatus.text =
+                            "Built ${readyFile.length()} bytes" +
+                                (if (encodeGameText) " with RR3 game-text encoding." else ".") +
+                                " Choose where to save the edited text."
+                        launchRr3OutputPicker()
+                    }
+                } catch (error: Exception) {
+                    plainOutput.delete()
+                    encodedOutput?.delete()
+                    roundTripFile?.delete()
+                    runOnUiThread {
+                        building = false
+                        loadStatus.text = error.message ?: "Could not rebuild the text file."
+                    }
+                } catch (error: OutOfMemoryError) {
+                    plainOutput.delete()
+                    encodedOutput?.delete()
+                    roundTripFile?.delete()
+                    runOnUiThread {
+                        building = false
+                        loadStatus.text = "Android ran out of memory. The original text file remains unchanged."
+                    }
+                }
+            }.start()
+        }
+        buildAction = { buildOutput() }
+
+        closeDataEditorAction = { closeEditor() }
+        openDataEditorScreen(sourceName)
+        dataEditorWorkspace.addView(
+            content,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        editorScroll.post { checkNearBottom() }
     }
 
     private fun showPagedTextEditorInline(
