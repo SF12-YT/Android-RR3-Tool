@@ -2264,10 +2264,14 @@ class MainActivity : Activity() {
                 )
                 row.addView(label, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 row.addView(actionButton("Edit") {
-                    showPaintLabelEditDialog(
-                        "Edit Motorsports label",
-                        listOf(PaintLabelField(key, "Official / Special label", current))
-                    )
+                    if (item.optBoolean("editable")) {
+                        showPaintLabelEditDialog(
+                            "Edit Motorsports label",
+                            listOf(PaintLabelField(key, "Official / Special label", current))
+                        )
+                    } else {
+                        liveryPaintStatus.text = "This paint-pack entry is a category marker without an English localisation line, so it is display-only."
+                    }
                 })
                 liveryPaintContainer.addView(row, matchWrap(bottom = 6))
             }
@@ -2307,13 +2311,17 @@ class MainActivity : Activity() {
             )
             row.addView(actionButton("Edit") {
                 val fields = mutableListOf<PaintLabelField>()
-                if (materialKey.isNotBlank()) {
+                if (materialKey.isNotBlank() && item.optBoolean("materialEditable")) {
                     fields.add(PaintLabelField(materialKey, "Paint material", material))
                 }
-                if (colourKey.isNotBlank()) {
+                if (colourKey.isNotBlank() && item.optBoolean("colourEditable")) {
                     fields.add(PaintLabelField(colourKey, "Colour name", colour))
                 }
-                showPaintLabelEditDialog("Edit Road Cars paint label", fields)
+                if (fields.isEmpty()) {
+                    liveryPaintStatus.text = "This paint option is present in the paint table, but it has no matching English localisation entry to edit."
+                } else {
+                    showPaintLabelEditDialog("Edit Road Cars paint label", fields)
+                }
             })
             liveryPaintContainer.addView(row, matchWrap(bottom = 6))
         }
@@ -2340,10 +2348,14 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 )
                 row.addView(actionButton("Edit") {
-                    showPaintLabelEditDialog(
-                        "Edit paint-pack category",
-                        listOf(PaintLabelField(key, "Category name", value))
-                    )
+                    if (item.optBoolean("editable")) {
+                        showPaintLabelEditDialog(
+                            "Edit paint-pack category",
+                            listOf(PaintLabelField(key, "Category name", value))
+                        )
+                    } else {
+                        liveryPaintStatus.text = "This paint-pack category has no matching English localisation line, so it is display-only."
+                    }
                 })
                 liveryPaintContainer.addView(row, matchWrap(bottom = 6))
             }
