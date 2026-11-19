@@ -4797,7 +4797,7 @@ class MainActivity : Activity() {
                     // All RR3 language files now use the same disk-backed,
                     // paged editor as files opened from the Game Data browser.
                     // Do not materialise the full gametext file in a ByteArray.
-                    openEditableDataFile(uri)
+                    runOnUiThread { openEditableDataFile(uri) }
                     return@Thread
                 }
 
