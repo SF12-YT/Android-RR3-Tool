@@ -64,26 +64,60 @@ internal class DiskBackedTextDocument(
         var bytesSeen = 0L
         var newlineCount = 0L
         var lastByte = -1
+        // A CR may be the complete line ending or the first half of CRLF.
+        // Delay indexing it until the next byte is known so page boundaries
+        // never split a CRLF pair. This also supports CR-only RR3 text files.
+        var pendingCrEnd = -1L
         val buffer = ByteArray(64 * 1024)
+
+        fun recordLineEnding(endOffset: Long) {
+            if (newlineCount % pageSize == 0L &&
+                endOffset < sourceLength &&
+                pageStarts.lastOrNull() != endOffset
+            ) {
+                pageStarts.add(endOffset)
+            }
+        }
 
         BufferedInputStream(FileInputStream(sourceFile), buffer.size).use { input ->
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 for (index in 0 until count) {
-                    lastByte = buffer[index].toInt() and 0xFF
-                    bytesSeen++
-                    if (lastByte == 0x0A) {
+                    val value = buffer[index].toInt() and 0xFF
+                    if (pendingCrEnd >= 0L) {
+                        if (value == 0x0A) {
+                            bytesSeen++
+                            lastByte = value
+                            newlineCount++
+                            recordLineEnding(bytesSeen)
+                            pendingCrEnd = -1L
+                            continue
+                        }
                         newlineCount++
-                        if (newlineCount % pageSize == 0L && bytesSeen < sourceLength) {
-                            pageStarts.add(bytesSeen)
+                        recordLineEnding(pendingCrEnd)
+                        pendingCrEnd = -1L
+                    }
+
+                    bytesSeen++
+                    lastByte = value
+                    when (value) {
+                        0x0D -> pendingCrEnd = bytesSeen
+                        0x0A -> {
+                            newlineCount++
+                            recordLineEnding(bytesSeen)
                         }
                     }
                 }
             }
         }
+        if (pendingCrEnd >= 0L) {
+            newlineCount++
+            recordLineEnding(pendingCrEnd)
+        }
 
-        val totalLines = newlineCount + if (bytesSeen > 0L && lastByte != 0x0A) 1L else 0L
+        val totalLines = newlineCount +
+            if (bytesSeen > 0L && lastByte != 0x0A && lastByte != 0x0D) 1L else 0L
         val requiredPages = if (totalLines == 0L) {
             1
         } else {
