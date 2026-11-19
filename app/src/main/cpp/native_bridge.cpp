@@ -1343,12 +1343,12 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     std::vector<std::string> specialLabels;
     for (const auto& key : packKeys) {
         const std::string prefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
-        // Some paint-pack entries are category markers rather than
-        // localisation IDs (for example ..._SPECIAL). Only expose keys that
-        // actually have a corresponding line in gametext.txt.
+        // _SPECIAL is a category marker in the paint-pack table, not a
+        // localisation string. Other entries remain visible even if this
+        // game's gametext table has no editable English line for them.
         if (key.compare(0, prefix.size(), prefix) == 0 &&
             key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0 &&
-            keyLines.find(key) != keyLines.end()) {
+            key != "GAMETEXT_CUSTOMISATION_PAINTS_SPECIAL") {
             specialLabels.push_back(key);
         }
     }
@@ -1366,15 +1366,14 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
             key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
             pendingMaterial = key;
         } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0) {
-            const bool materialExists = !pendingMaterial.empty() &&
-                keyLines.find(pendingMaterial) != keyLines.end();
-            const bool colourExists = keyLines.find(key) != keyLines.end();
-            if (materialExists && colourExists) options.push_back({pendingMaterial, key});
+            // Keep every paint-table colour in the browser. Whether its text
+            // is editable is reported separately below; filtering by
+            // gametext membership here hid valid paint options from users.
+            options.push_back({pendingMaterial, key});
             pendingMaterial.clear();
         }
     }
-    if (!pendingMaterial.empty() && keyLines.find(pendingMaterial) != keyLines.end())
-        options.push_back({pendingMaterial, ""});
+    if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
 
     std::ostringstream out;
     out << "{\"ok\":true,\"packLabels\":[";
@@ -1382,16 +1381,23 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
         if (i) out << ',';
         const auto& key = specialLabels[i];
         out << "{\"key\":" << jsonString(key)
-            << ",\"value\":" << jsonString(rr3PaintTextValue(english, keyLines, key)) << '}';
+            << ",\"value\":" << jsonString(rr3PaintTextValue(english, keyLines, key))
+            << ",\"editable\":" << (keyLines.find(key) != keyLines.end() ? "true" : "false") << '}';
     }
     out << "],\"paintOptions\":[";
     for (size_t i = 0; i < options.size(); ++i) {
         if (i) out << ',';
         const auto& option = options[i];
+        const bool materialEditable = !option.materialKey.empty() &&
+            keyLines.find(option.materialKey) != keyLines.end();
+        const bool colourEditable = !option.colourKey.empty() &&
+            keyLines.find(option.colourKey) != keyLines.end();
         out << "{\"materialKey\":" << jsonString(option.materialKey)
             << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.materialKey))
+            << ",\"materialEditable\":" << (materialEditable ? "true" : "false")
             << ",\"colourKey\":" << jsonString(option.colourKey)
             << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.colourKey))
+            << ",\"colourEditable\":" << (colourEditable ? "true" : "false")
             << '}';
     }
     out << "]}";
