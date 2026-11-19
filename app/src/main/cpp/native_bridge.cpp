@@ -1177,6 +1177,40 @@ std::vector<std::string> readGameTextKeys(const nfsnl::Bytes& plain) {
         }
         addKey(reinterpret_cast<const char*>(plain.data() + at), end - at);
     }
+    // Some versions store Unity strings as UTF-16LE/BE. The old scan
+    // only saw byte-oriented ASCII and silently missed those paint entries.
+    for (size_t at = 0; at + prefixLength * 2 <= plain.size(); ++at) {
+        for (int endian = 0; endian < 2; ++endian) {
+            std::string wideKey;
+            wideKey.reserve(64);
+            bool validPrefix = true;
+            for (size_t i = 0; i < prefixLength; ++i) {
+                const uint8_t first = plain[at + i * 2];
+                const uint8_t second = plain[at + i * 2 + 1];
+                const uint8_t character = endian == 0 ? first : second;
+                const uint8_t zero = endian == 0 ? second : first;
+                if (character != static_cast<uint8_t>(prefix[i]) || zero != 0) {
+                    validPrefix = false;
+                    break;
+                }
+            }
+            if (!validPrefix) continue;
+
+            const size_t limit = std::min<size_t>(160, (plain.size() - at) / 2);
+            for (size_t i = 0; i < limit; ++i) {
+                const uint8_t first = plain[at + i * 2];
+                const uint8_t second = plain[at + i * 2 + 1];
+                const uint8_t character = endian == 0 ? first : second;
+                const uint8_t zero = endian == 0 ? second : first;
+                const bool valid = (character >= 'A' && character <= 'Z') ||
+                                   (character >= '0' && character <= '9') ||
+                                   character == '_';
+                if (zero != 0 || !valid) break;
+                wideKey.push_back(static_cast<char>(character));
+            }
+            addKey(wideKey.data(), wideKey.size());
+        }
+    }
     return keys;
 }
 
@@ -1388,14 +1422,27 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     const std::string colourPrefix = "GAMETEXT_CUSTOMISATION_COLOUR_";
     const std::string colorPrefix = "GAMETEXT_CUSTOMISATION_COLOR_";
     for (const auto& key : paintKeys) {
-        if (key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
-            key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
+        const bool isMaterialName =
+            key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
+            key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0;
+        const bool isPaintTableEntry =
+            key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
+            key != "GAMETEXT_CUSTOMISATION_PAINTS_SPECIAL";
+        const bool isColourName =
+            key.compare(0, colourPrefix.size(), colourPrefix) == 0 ||
+            key.compare(0, colorPrefix.size(), colorPrefix) == 0 ||
+            (key.compare(0, 23, "GAMETEXT_CUSTOMISATION_") == 0 &&
+             (key.find("COLOUR") != std::string::npos ||
+              key.find("COLOR") != std::string::npos));
+
+        if (isMaterialName) {
+            if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
             pendingMaterial = key;
-        } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0 ||
-                   key.compare(0, colorPrefix.size(), colorPrefix) == 0) {
-            // Keep every paint-table colour in the browser, including files
-            // using the American spelling. Localisation editability is
-            // checked separately and must not hide the paint option.
+        } else if (isColourName || isPaintTableEntry) {
+            // Some revisions use the PAINTS_* namespace for the colour too,
+            // rather than the separate COLOUR_/COLOR_ prefixes. Keep those
+            // entries visible instead of silently dropping everything but
+            // the small subset matching the older naming convention.
             options.push_back({pendingMaterial, key});
             pendingMaterial.clear();
         }
