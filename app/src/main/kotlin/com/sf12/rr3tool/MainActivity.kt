@@ -4226,7 +4226,7 @@ class MainActivity : Activity() {
 
         val help = text(
             "Virtualised text editor · " + sourceName +
-                ". Only visible pages are kept as views. Edited pages are stored separately, and Find searches the entire document.",
+                ". 160-line pages are prepared ahead while scrolling; only a small page cache is kept in memory. Edited pages are stored separately, and Find searches the entire document.",
             12,
             0xFF9BAFC5.toInt()
         )
