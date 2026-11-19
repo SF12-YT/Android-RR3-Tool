@@ -8,6 +8,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
+import java.util.LinkedHashMap
+import java.util.concurrent.Executors
 
 internal data class TextSearchHit(
     val pageIndex: Int,
@@ -26,10 +28,17 @@ internal data class TextSearchHit(
  */
 internal class DiskBackedTextDocument(
     private val sourceFile: File,
-    private val pageSize: Int = 80
+    private val pageSize: Int = 160
 ) : Closeable {
     private val pageStarts = ArrayList<Long>()
     private val pageLineCounts = ArrayList<Int>()
+    // A small LRU avoids reopening and decoding nearby pages on every fling.
+    // Large/exceptional pages are deliberately not cached.
+    private val pageCache = LinkedHashMap<Int, String>(8, 0.75f, true)
+    private val prefetchingPages = HashSet<Int>()
+    private val prefetchExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "rr3-text-page-prefetch").apply { isDaemon = true }
+    }
     private val editDirectory = File(sourceFile.parentFile, sourceFile.name + ".edits")
     private val sourceLength = sourceFile.length()
     private var nextSequentialPage = 0
@@ -106,9 +115,13 @@ internal class DiskBackedTextDocument(
         checkOpen()
         require(pageIndex in 0 until pageCount) { "Text page index is outside the document." }
 
+        pageCache[pageIndex]?.let { return it }
+
         val edited = editedPageFile(pageIndex)
         if (edited.isFile) {
-            return normalizeLineEndings(edited.readText(StandardCharsets.UTF_8))
+            val text = normalizeLineEndings(edited.readText(StandardCharsets.UTF_8))
+            cachePage(pageIndex, text, edited.length())
+            return text
         }
 
         val start = pageStarts[pageIndex]
@@ -124,7 +137,60 @@ internal class DiskBackedTextDocument(
             file.seek(start)
             file.readFully(bytes)
         }
-        return normalizeLineEndings(String(bytes, StandardCharsets.UTF_8))
+        val text = normalizeLineEndings(String(bytes, StandardCharsets.UTF_8))
+        cachePage(pageIndex, text, length)
+        return text
+    }
+
+    /**
+     * Read likely next/previous pages away from the UI thread. RecyclerView
+     * still has a synchronous fallback, but most page binds should hit cache.
+     */
+    fun prefetchPages(firstPage: Int, lastPage: Int) {
+        if (firstPage > lastPage) return
+        val queued = synchronized(this) {
+            if (closed) return
+            (firstPage.coerceAtLeast(0)..lastPage.coerceAtMost(pageCount - 1))
+                .filter { page ->
+                    if (page in pageCache || page in prefetchingPages) return@filter false
+                    val edited = editedPageFile(page)
+                    val bytes = if (edited.isFile) edited.length() else sourcePageLength(page)
+                    bytes in 1..MAX_CACHED_PAGE_BYTES
+                }
+                .onEach { prefetchingPages.add(it) }
+        }
+        for (page in queued) {
+            try {
+                prefetchExecutor.execute {
+                    try {
+                        readPage(page)
+                    } catch (_: Exception) {
+                        // Binding reports real read failures; prefetch is opportunistic.
+                    } finally {
+                        synchronized(this) { prefetchingPages.remove(page) }
+                    }
+                }
+            } catch (_: RuntimeException) {
+                synchronized(this) { prefetchingPages.remove(page) }
+            }
+        }
+    }
+
+    private fun sourcePageLength(pageIndex: Int): Long {
+        val start = pageStarts[pageIndex]
+        val end = if (pageIndex + 1 < pageStarts.size) pageStarts[pageIndex + 1] else sourceLength
+        return (end - start).coerceAtLeast(0L)
+    }
+
+    private fun cachePage(pageIndex: Int, text: String, sourceBytes: Long) {
+        if (sourceBytes !in 1..MAX_CACHED_PAGE_BYTES) return
+        pageCache[pageIndex] = text
+        while (pageCache.size > MAX_CACHED_PAGES) {
+            val eldest = pageCache.entries.iterator()
+            if (!eldest.hasNext()) break
+            eldest.next()
+            eldest.remove()
+        }
     }
 
     @Synchronized
@@ -147,6 +213,7 @@ internal class DiskBackedTextDocument(
             temporary.delete()
             throw IllegalStateException("Could not save edited text page " + pageIndex + ".")
         }
+        cachePage(pageIndex, normalizeLineEndings(text), destination.length())
     }
 
     /**
@@ -340,10 +407,15 @@ internal class DiskBackedTextDocument(
     @Synchronized
     override fun close() {
         closed = true
+        pageCache.clear()
+        prefetchingPages.clear()
+        prefetchExecutor.shutdownNow()
     }
 
     companion object {
         private const val MAX_PAGE_BYTES = 32L * 1024L * 1024L
+        private const val MAX_CACHED_PAGE_BYTES = 512L * 1024L
+        private const val MAX_CACHED_PAGES = 8
         private const val COPY_BUFFER_SIZE = 64 * 1024
     }
 }
