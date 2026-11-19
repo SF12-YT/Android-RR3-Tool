@@ -897,6 +897,70 @@ class MainActivity : Activity() {
     private fun newCacheFile(prefix: String, suffix: String = ".tmp"): File =
         File(cacheDir, prefix + "_" + System.nanoTime() + suffix)
 
+    /**
+     * Game text uses its own RC4 stream. Detection reads only the first 256
+     * bytes, and decoding streams to a temporary file to avoid multi-copy
+     * ByteArray allocations that can kill the app on the large gametext file.
+     *
+     * @return true when the source was encrypted and has been decoded in place.
+     */
+    private fun prepareRr3TextFileForEditing(sourceFile: File): Boolean {
+        if (!sourceFile.isFile || sourceFile.length() <= 0L) {
+            throw IllegalStateException("The RR3 game-text file is empty or unreadable.")
+        }
+        if (NativeBridge.nativeRr3TextFileIsPlain(sourceFile.absolutePath)) return false
+
+        val decodedFile = newCacheFile("rr3-game-text-decoded", ".txt")
+        try {
+            val decodedSize = NativeBridge.nativeTransformRr3TextFile(
+                sourceFile.absolutePath,
+                decodedFile.absolutePath
+            )
+            if (decodedSize < 0L || decodedSize != sourceFile.length()) {
+                throw IllegalStateException("Could not decode this RR3 game-text file.")
+            }
+            if (!NativeBridge.nativeRr3TextFileIsPlain(decodedFile.absolutePath)) {
+                throw IllegalStateException("The decoded RR3 game-text file did not pass its text check.")
+            }
+
+            if (sourceFile.exists() && !sourceFile.delete()) {
+                throw IllegalStateException("Could not replace the encrypted temporary text copy.")
+            }
+            if (!decodedFile.renameTo(sourceFile)) {
+                FileInputStream(decodedFile).use { input ->
+                    FileOutputStream(sourceFile).use { output ->
+                        input.copyTo(output, 256 * 1024)
+                    }
+                }
+                if (sourceFile.length() != decodedSize) {
+                    throw IllegalStateException("Could not finish replacing the temporary game-text file.")
+                }
+            }
+            return true
+        } finally {
+            decodedFile.delete()
+        }
+    }
+
+    private fun filesAreEqual(first: File, second: File): Boolean {
+        if (first.length() != second.length()) return false
+        val leftBuffer = ByteArray(64 * 1024)
+        val rightBuffer = ByteArray(64 * 1024)
+        FileInputStream(first).buffered().use { left ->
+            FileInputStream(second).buffered().use { right ->
+                while (true) {
+                    val leftCount = left.read(leftBuffer)
+                    val rightCount = right.read(rightBuffer)
+                    if (leftCount != rightCount) return false
+                    if (leftCount < 0) return true
+                    for (i in 0 until leftCount) {
+                        if (leftBuffer[i] != rightBuffer[i]) return false
+                    }
+                }
+            }
+        }
+    }
+
     private fun copyGameFileToFile(entry: GameDataFile, target: File) {
         target.parentFile?.mkdirs()
         val rootPath = entry.rootPath
@@ -3063,13 +3127,9 @@ class MainActivity : Activity() {
                     copyGameFileToFile(entry, textFile!!)
                     var needsGameTextEncoding = false
                     if (isGameText) {
-                        val encodedOrPlain = textFile!!.readBytes()
-                        needsGameTextEncoding = !NativeBridge.nativeRr3TextIsPlain(encodedOrPlain)
-                        if (needsGameTextEncoding) {
-                            val decoded = NativeBridge.nativeTransformRr3Text(encodedOrPlain)
-                                ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
-                            FileOutputStream(textFile!!).use { it.write(decoded) }
-                        }
+                        // Read only a small prefix to detect encryption, then
+                        // stream the full RC4 transform to disk when required.
+                        needsGameTextEncoding = prepareRr3TextFileForEditing(textFile!!)
                     }
 
                     val pager = DiskBackedTextDocument(textFile!!)
@@ -3562,14 +3622,7 @@ class MainActivity : Activity() {
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
                     val needsGameTextEncoding = if (isGameText) {
-                        val existingText = plainTextFile.readBytes()
-                        val encoded = !NativeBridge.nativeRr3TextIsPlain(existingText)
-                        if (encoded) {
-                            val decodedText = NativeBridge.nativeTransformRr3Text(existingText)
-                                ?: throw IllegalStateException("Could not decode this RR3 game-text file.")
-                            plainTextFile.writeBytes(decodedText)
-                        }
-                        encoded
+                        prepareRr3TextFileForEditing(plainTextFile)
                     } else {
                         false
                     }
@@ -4267,6 +4320,21 @@ class MainActivity : Activity() {
             }
         }
         editorList.adapter = adapter
+        editorList.setItemViewCacheSize(4)
+        editorList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                val first = layoutManager.findFirstVisibleItemPosition()
+                val last = layoutManager.findLastVisibleItemPosition()
+                if (first != RecyclerView.NO_POSITION && last != RecyclerView.NO_POSITION) {
+                    // Keep several pages ahead/behind ready before a fast fling
+                    // reaches them; the pager caps the cache to eight small pages.
+                    pager.prefetchPages(
+                        (first - 2).coerceAtLeast(0),
+                        (last + 5).coerceAtMost(pager.pageCount - 1)
+                    )
+                }
+            }
+        })
 
         fun flushAttachedEditors() {
             for (index in 0 until editorList.childCount) {
@@ -4457,21 +4525,36 @@ class MainActivity : Activity() {
             Thread {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
                 var encodedFile: File? = null
+                var roundTripFile: File? = null
                 try {
                     pager.writeMerged(outputFile, preserveLineCount = encodeGameText)
                     var readyFile = outputFile
                     if (encodeGameText) {
-                        val editedBytes = outputFile.readBytes()
-                        val encodedBytes = NativeBridge.nativeTransformRr3Text(editedBytes)
-                            ?: throw IllegalStateException("Could not encode the edited RR3 game text.")
-                        val roundTrip = NativeBridge.nativeTransformRr3Text(encodedBytes)
-                        if (roundTrip == null || !roundTrip.contentEquals(editedBytes)) {
+                        encodedFile = newCacheFile("rr3-text-encoded", ".txt")
+                        val encodedSize = NativeBridge.nativeTransformRr3TextFile(
+                            outputFile.absolutePath,
+                            encodedFile!!.absolutePath
+                        )
+                        if (encodedSize < 0L || encodedSize != outputFile.length()) {
+                            throw IllegalStateException("Could not encode the edited RR3 game text.")
+                        }
+
+                        // Verify the stream cipher by decoding the output back
+                        // to a second disk file, then compare without heap copies.
+                        roundTripFile = newCacheFile("rr3-text-roundtrip", ".txt")
+                        val decodedSize = NativeBridge.nativeTransformRr3TextFile(
+                            encodedFile!!.absolutePath,
+                            roundTripFile!!.absolutePath
+                        )
+                        if (decodedSize != outputFile.length() ||
+                            !filesAreEqual(outputFile, roundTripFile!!)
+                        ) {
                             throw IllegalStateException(
                                 "The rebuilt game text failed its decode check. The original file has not been changed."
                             )
                         }
-                        encodedFile = newCacheFile("rr3-text-encoded", ".txt")
-                        FileOutputStream(encodedFile!!).use { it.write(encodedBytes) }
+                        roundTripFile!!.delete()
+                        roundTripFile = null
                         outputFile.delete()
                         readyFile = encodedFile!!
                     }
@@ -4495,6 +4578,7 @@ class MainActivity : Activity() {
                 } catch (error: Exception) {
                     outputFile.delete()
                     encodedFile?.delete()
+                    roundTripFile?.delete()
                     runOnUiThread {
                         building = false
                         buildButton?.isEnabled = true
@@ -4508,6 +4592,7 @@ class MainActivity : Activity() {
                 } catch (error: OutOfMemoryError) {
                     outputFile.delete()
                     encodedFile?.delete()
+                    roundTripFile?.delete()
                     runOnUiThread {
                         building = false
                         buildButton?.isEnabled = true
@@ -4559,6 +4644,9 @@ class MainActivity : Activity() {
                 " page(s) indexed. Search includes text not yet displayed."
         }
         editorList.scrollToPosition(0)
+        editorList.post {
+            pager.prefetchPages(1, minOf(5, pager.pageCount - 1))
+        }
     }
 
     private fun showEditableDataEditor(
