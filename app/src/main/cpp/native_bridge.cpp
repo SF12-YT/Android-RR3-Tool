@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -1342,8 +1343,12 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     std::vector<std::string> specialLabels;
     for (const auto& key : packKeys) {
         const std::string prefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
+        // Some paint-pack entries are category markers rather than
+        // localisation IDs (for example ..._SPECIAL). Only expose keys that
+        // actually have a corresponding line in gametext.txt.
         if (key.compare(0, prefix.size(), prefix) == 0 &&
-            key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0) {
+            key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0 &&
+            keyLines.find(key) != keyLines.end()) {
             specialLabels.push_back(key);
         }
     }
@@ -1361,11 +1366,15 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
             key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
             pendingMaterial = key;
         } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0) {
-            options.push_back({pendingMaterial, key});
+            const bool materialExists = !pendingMaterial.empty() &&
+                keyLines.find(pendingMaterial) != keyLines.end();
+            const bool colourExists = keyLines.find(key) != keyLines.end();
+            if (materialExists && colourExists) options.push_back({pendingMaterial, key});
             pendingMaterial.clear();
         }
     }
-    if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
+    if (!pendingMaterial.empty() && keyLines.find(pendingMaterial) != keyLines.end())
+        options.push_back({pendingMaterial, ""});
 
     std::ostringstream out;
     out << "{\"ok\":true,\"packLabels\":[";
