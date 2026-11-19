@@ -1140,12 +1140,12 @@ bool rr3ReadTextDocument(const nfsnl::Bytes& raw, Rr3TextDocument& doc) {
     size_t start = 0;
     while (true) {
         size_t end = start;
-        while (end < text.size() && text[end] != '\\r' && text[end] != '\\n') ++end;
+        while (end < text.size() && text[end] != '\r' && text[end] != '\n') ++end;
         doc.lines.push_back(text.substr(start, end - start));
         if (end == text.size()) break;
 
-        if (text[end] == '\\r' && end + 1 < text.size() && text[end + 1] == '\\n') {
-            doc.endings.emplace_back("\\r\\n");
+        if (text[end] == '\r' && end + 1 < text.size() && text[end + 1] == '\n') {
+            doc.endings.emplace_back("\r\n");
             start = end + 2;
         } else {
             doc.endings.emplace_back(1, text[end]);
@@ -1313,21 +1313,21 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
 
     std::ostringstream out;
-    out << "{\\"ok\\":true,\\"packLabels\\":[";
+    out << "{\"ok\":true,\"packLabels\":[";
     for (size_t i = 0; i < specialLabels.size(); ++i) {
         if (i) out << ',';
         const auto& key = specialLabels[i];
-        out << "{\\"key\\":" << jsonString(key)
-            << ",\\"value\\":" << jsonString(rr3PaintTextValue(english, keyLines, key)) << '}';
+        out << "{\"key\":" << jsonString(key)
+            << ",\"value\":" << jsonString(rr3PaintTextValue(english, keyLines, key)) << '}';
     }
-    out << "],\\"paintOptions\\":[";
+    out << "],\"paintOptions\":[";
     for (size_t i = 0; i < options.size(); ++i) {
         if (i) out << ',';
         const auto& option = options[i];
-        out << "{\\"materialKey\\":" << jsonString(option.materialKey)
-            << ",\\"material\\":" << jsonString(option.materialKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.materialKey))
-            << ",\\"colourKey\\":" << jsonString(option.colourKey)
-            << ",\\"colour\\":" << jsonString(option.colourKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.colourKey))
+        out << "{\"materialKey\":" << jsonString(option.materialKey)
+            << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.materialKey))
+            << ",\"colourKey\":" << jsonString(option.colourKey)
+            << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.colourKey))
             << '}';
     }
     out << "]}";
@@ -1384,7 +1384,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
             static_cast<uint8_t>(english.lines[0][0]) == 0xEF &&
             static_cast<uint8_t>(english.lines[0][1]) == 0xBB &&
             static_cast<uint8_t>(english.lines[0][2]) == 0xBF) {
-            replacement = std::string("\\xEF\\xBB\\xBF") + value;
+            replacement = std::string("\xEF\xBB\xBF") + value;
         }
         if (english.lines[found->second] != replacement) {
             english.lines[found->second] = replacement;
@@ -1402,7 +1402,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
     }
 
     std::ostringstream out;
-    out << "{\\"ok\\":true,\\"files\\":[{\\"name\\":\\"text_en.txt\\",\\"data\\":"
+    out << "{\"ok\":true,\"files\":[{\"name\":\"text_en.txt\",\"data\":"
         << jsonString(base64Encode(updatedEnglish.data(), updatedEnglish.size()))
         << "}]}";
     return toJava(env, out.str());
