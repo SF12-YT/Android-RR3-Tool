@@ -4330,8 +4330,8 @@ class MainActivity : Activity() {
             val pageIndex = pageEditors.size
             val lineCount = maxOf(
                 1,
-                pageText.count { it == '\\n' } +
-                    if (pageText.endsWith("\\n")) 0 else 1
+                pageText.count { it == '\n' } +
+                    if (pageText.endsWith("\n")) 0 else 1
             )
             val editor = EditText(this).apply {
                 setText(pageText)
@@ -4359,13 +4359,7 @@ class MainActivity : Activity() {
             refreshFindResults?.invoke()
         }
 
-        fun checkNearBottom() {
-            if (closed || loading || reachedEnd || building) return
-            val child = editorScroll.getChildAt(0) ?: return
-            if (editorScroll.scrollY + editorScroll.height >= child.height - dp(600)) {
-                loadNextSection()
-            }
-        }
+        var checkNearBottom: (() -> Unit)? = null
 
         fun loadNextSection() {
             if (loading || reachedEnd || building || closed) return
@@ -4396,15 +4390,30 @@ class MainActivity : Activity() {
                         else -> {
                             addPage(nextPage!!)
                             loadStatus.text = "Keep scrolling; more sections load automatically."
-                            editorScroll.post { checkNearBottom() }
+                            editorScroll.post { checkNearBottom?.invoke() }
                         }
                     }
                 }
             }.start()
         }
 
+        checkNearBottom = {
+            if (!closed && !loading && !reachedEnd && !building) {
+                val child = editorScroll.getChildAt(0)
+                if (child != null &&
+                    editorScroll.scrollY + editorScroll.height >= child.height - dp(600)
+                ) {
+                    loadNextSection()
+                }
+            }
+        }
         addPage(firstPage)
-        editorScroll.viewTreeObserver.addOnScrollChangedListener { checkNearBottom() }
+        editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
+            val child = (view as ScrollView).getChildAt(0)
+            if (child != null && scrollY + view.height >= child.height - dp(600)) {
+                loadNextSection()
+            }
+        }
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -4523,7 +4532,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
         )
-        editorScroll.post { checkNearBottom() }
+        editorScroll.post { checkNearBottom?.invoke() }
     }
 
     private fun showPagedTextEditorInline(
