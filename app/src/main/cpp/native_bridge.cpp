@@ -1133,24 +1133,49 @@ std::vector<std::string> readGameTextKeys(const nfsnl::Bytes& plain) {
     std::vector<std::string> keys;
     std::set<std::string> seen;
     static const char prefix[] = "GAMETEXT_";
-    for (size_t at = 0; at + 4 + sizeof(prefix) - 1 <= plain.size(); ++at) {
-        const uint8_t* p = plain.data() + at;
-        uint32_t length = static_cast<uint32_t>(p[0]) |
-                          (static_cast<uint32_t>(p[1]) << 8) |
-                          (static_cast<uint32_t>(p[2]) << 16) |
-                          (static_cast<uint32_t>(p[3]) << 24);
-        if (length < sizeof(prefix) - 1 || length > 160 ||
-            length > plain.size() - at - 4) continue;
-        const char* value = reinterpret_cast<const char*>(p + 4);
-        if (std::memcmp(value, prefix, sizeof(prefix) - 1) != 0) continue;
-        bool printable = true;
-        for (uint32_t i = 0; i < length; ++i) {
+    const size_t prefixLength = sizeof(prefix) - 1;
+
+    auto addKey = [&](const char* value, size_t length) {
+        if (length < prefixLength || length > 160 ||
+            std::memcmp(value, prefix, prefixLength) != 0) return;
+        for (size_t i = 0; i < length; ++i) {
             const uint8_t c = static_cast<uint8_t>(value[i]);
-            if (c < 0x20 || c >= 0x7f) { printable = false; break; }
+            const bool valid = (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '_';
+            if (!valid) return;
         }
-        if (!printable) continue;
         std::string key(value, length);
         if (seen.insert(key).second) keys.push_back(std::move(key));
+    };
+
+    // Most RR3 paint tables store strings as a little-endian 32-bit length
+    // followed by the key. Keep supporting that representation.
+    for (size_t at = 0; at + 4 + prefixLength <= plain.size(); ++at) {
+        const uint8_t* p = plain.data() + at;
+        const uint32_t length = static_cast<uint32_t>(p[0]) |
+                                (static_cast<uint32_t>(p[1]) << 8) |
+                                (static_cast<uint32_t>(p[2]) << 16) |
+                                (static_cast<uint32_t>(p[3]) << 24);
+        if (length >= prefixLength && length <= 160 &&
+            length <= plain.size() - at - 4) {
+            addKey(reinterpret_cast<const char*>(p + 4), length);
+        }
+    }
+
+    // Some RR3 revisions embed the same keys as ordinary terminated ASCII
+    // strings rather than length-prefixed values. Scan those too; otherwise
+    // only the few entries using the first representation appear in the UI.
+    for (size_t at = 0; at + prefixLength <= plain.size(); ++at) {
+        if (std::memcmp(plain.data() + at, prefix, prefixLength) != 0) continue;
+        size_t end = at;
+        while (end < plain.size() && end - at < 160) {
+            const uint8_t c = plain[end];
+            const bool valid = (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '_';
+            if (!valid) break;
+            ++end;
+        }
+        addKey(reinterpret_cast<const char*>(plain.data() + at), end - at);
     }
     return keys;
 }
