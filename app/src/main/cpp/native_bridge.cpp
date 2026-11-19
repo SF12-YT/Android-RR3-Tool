@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <map>
 #include <new>
 #include <sstream>
 #include <string>
@@ -1116,17 +1117,136 @@ std::string base64Encode(const uint8_t* data, size_t length) {
     return out;
 }
 
-bool loadRr3EnglishTexts(const nfsnl::Bytes& gameText,
-                         const nfsnl::Bytes& englishText,
-                         nfsnl::Rr3Texts& texts) {
-    std::vector<std::string> names = {"gametext.txt", "text_en.txt"};
-    auto read = [&](const std::string& name, nfsnl::Bytes& bytes) -> bool {
-        if (name == "gametext.txt") bytes = gameText;
-        else if (name == "text_en.txt") bytes = englishText;
-        else return false;
-        return !bytes.empty();
-    };
-    return texts.load(names, read);
+struct Rr3TextDocument {
+    bool encrypted = false;
+    std::vector<std::string> lines;
+    std::vector<std::string> endings; // exact line ending after each line
+};
+
+bool rr3ReadTextDocument(const nfsnl::Bytes& raw, Rr3TextDocument& doc) {
+    if (raw.empty()) return false;
+    doc = Rr3TextDocument();
+    doc.encrypted = !nfsnl::rr3TextIsPlain(raw.data(), raw.size());
+
+    nfsnl::Bytes decoded;
+    if (doc.encrypted) {
+        if (!nfsnl::rr3TextTransform(raw.data(), raw.size(), decoded) ||
+            decoded.size() != raw.size()) return false;
+    } else {
+        decoded = raw;
+    }
+
+    const std::string text(decoded.begin(), decoded.end());
+    size_t start = 0;
+    while (true) {
+        size_t end = start;
+        while (end < text.size() && text[end] != '\\r' && text[end] != '\\n') ++end;
+        doc.lines.push_back(text.substr(start, end - start));
+        if (end == text.size()) break;
+
+        if (text[end] == '\\r' && end + 1 < text.size() && text[end + 1] == '\\n') {
+            doc.endings.emplace_back("\\r\\n");
+            start = end + 2;
+        } else {
+            doc.endings.emplace_back(1, text[end]);
+            start = end + 1;
+        }
+        if (start == text.size()) {
+            // Keep the final empty line when the source ends with a newline.
+            doc.lines.emplace_back();
+            break;
+        }
+    }
+    return !doc.lines.empty() && doc.endings.size() + 1 == doc.lines.size();
+}
+
+std::string rr3JoinTextDocument(const Rr3TextDocument& doc) {
+    std::string text;
+    size_t reserve = 0;
+    for (const auto& line : doc.lines) reserve += line.size();
+    for (const auto& ending : doc.endings) reserve += ending.size();
+    text.reserve(reserve);
+    for (size_t i = 0; i < doc.lines.size(); ++i) {
+        text += doc.lines[i];
+        if (i < doc.endings.size()) text += doc.endings[i];
+    }
+    return text;
+}
+
+bool rr3EncodeTextDocument(const Rr3TextDocument& doc, nfsnl::Bytes& output) {
+    const std::string plain = rr3JoinTextDocument(doc);
+    nfsnl::Bytes input(plain.begin(), plain.end());
+    if (!doc.encrypted) {
+        output.swap(input);
+        return true;
+    }
+
+    if (!nfsnl::rr3TextTransform(input.data(), input.size(), output) ||
+        output.size() != input.size()) return false;
+
+    // Never emit a rebuilt language file unless the same game cipher decodes
+    // it byte-for-byte to the text we intended to write.
+    nfsnl::Bytes roundTrip;
+    if (!nfsnl::rr3TextTransform(output.data(), output.size(), roundTrip) ||
+        roundTrip != input) {
+        output.clear();
+        return false;
+    }
+    return true;
+}
+
+std::string rr3KeyWithoutBom(const std::string& line) {
+    if (line.size() >= 3 &&
+        static_cast<uint8_t>(line[0]) == 0xEF &&
+        static_cast<uint8_t>(line[1]) == 0xBB &&
+        static_cast<uint8_t>(line[2]) == 0xBF) {
+        return line.substr(3);
+    }
+    return line;
+}
+
+std::string rr3NormaliseGameTextKey(const std::string& key) {
+    return key.compare(0, 9, "GAMETEXT_") == 0 ? key : "GAMETEXT_" + key;
+}
+
+bool rr3LoadPaintTextDocuments(const nfsnl::Bytes& gameText,
+                               const nfsnl::Bytes& englishText,
+                               Rr3TextDocument& keys,
+                               Rr3TextDocument& english,
+                               std::map<std::string, size_t>& keyLines,
+                               std::string& why) {
+    if (!rr3ReadTextDocument(gameText, keys)) {
+        why = "Could not decode gametext.txt.";
+        return false;
+    }
+    if (!rr3ReadTextDocument(englishText, english)) {
+        why = "Could not decode text_en.txt.";
+        return false;
+    }
+
+    if (keys.lines.size() != english.lines.size()) {
+        why = "gametext.txt and text_en.txt have different line counts. No files were changed.";
+        return false;
+    }
+
+    keyLines.clear();
+    for (size_t i = 0; i < keys.lines.size(); ++i) {
+        const std::string key = rr3KeyWithoutBom(keys.lines[i]);
+        if (key.compare(0, 9, "GAMETEXT_") == 0) keyLines[key] = i;
+    }
+    if (keyLines.empty()) {
+        why = "No GAMETEXT keys were found in gametext.txt.";
+        return false;
+    }
+    return true;
+}
+
+std::string rr3PaintTextValue(const Rr3TextDocument& english,
+                              const std::map<std::string, size_t>& keyLines,
+                              const std::string& key) {
+    const auto found = keyLines.find(rr3NormaliseGameTextKey(key));
+    if (found == keyLines.end() || found->second >= english.lines.size()) return {};
+    return rr3KeyWithoutBom(english.lines[found->second]);
 }
 } // namespace
 
@@ -1155,9 +1275,11 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
         return toJava(env, errorJson("The paint configuration decoder failed."));
     }
 
-    nfsnl::Rr3Texts texts;
-    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
-        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    Rr3TextDocument keys, english;
+    std::map<std::string, size_t> keyLines;
+    std::string why;
+    if (!rr3LoadPaintTextDocuments(gameText, englishText, keys, english, keyLines, why)) {
+        return toJava(env, errorJson(why));
     }
 
     const auto packKeys = readGameTextKeys(packs);
@@ -1191,21 +1313,21 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
 
     std::ostringstream out;
-    out << "{\"ok\":true,\"packLabels\":[";
+    out << "{\\"ok\\":true,\\"packLabels\\":[";
     for (size_t i = 0; i < specialLabels.size(); ++i) {
         if (i) out << ',';
         const auto& key = specialLabels[i];
-        out << "{\"key\":" << jsonString(key)
-            << ",\"value\":" << jsonString(texts.get(key)) << '}';
+        out << "{\\"key\\":" << jsonString(key)
+            << ",\\"value\\":" << jsonString(rr3PaintTextValue(english, keyLines, key)) << '}';
     }
-    out << "],\"paintOptions\":[";
+    out << "],\\"paintOptions\\":[";
     for (size_t i = 0; i < options.size(); ++i) {
         if (i) out << ',';
         const auto& option = options[i];
-        out << "{\"materialKey\":" << jsonString(option.materialKey)
-            << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : texts.get(option.materialKey))
-            << ",\"colourKey\":" << jsonString(option.colourKey)
-            << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : texts.get(option.colourKey))
+        out << "{\\"materialKey\\":" << jsonString(option.materialKey)
+            << ",\\"material\\":" << jsonString(option.materialKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.materialKey))
+            << ",\\"colourKey\\":" << jsonString(option.colourKey)
+            << ",\\"colour\\":" << jsonString(option.colourKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.colourKey))
             << '}';
     }
     out << "]}";
@@ -1227,11 +1349,14 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
         return toJava(env, errorJson("Select at least one paint label to update."));
     }
 
-    nfsnl::Rr3Texts texts;
-    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
-        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    Rr3TextDocument keys, english;
+    std::map<std::string, size_t> keyLines;
+    std::string why;
+    if (!rr3LoadPaintTextDocuments(gameText, englishText, keys, english, keyLines, why)) {
+        return toJava(env, errorJson(why));
     }
 
+    bool changed = false;
     for (jsize i = 0; i < keyCount; ++i) {
         auto keyObject = static_cast<jstring>(env->GetObjectArrayElement(keyArray, i));
         auto valueObject = static_cast<jstring>(env->GetObjectArrayElement(valueArray, i));
@@ -1240,29 +1365,46 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
             if (valueObject) env->DeleteLocalRef(valueObject);
             continue;
         }
-        const std::string key = fromJava(env, keyObject);
+        const std::string key = rr3NormaliseGameTextKey(fromJava(env, keyObject));
         const std::string value = fromJava(env, valueObject);
         env->DeleteLocalRef(keyObject);
         env->DeleteLocalRef(valueObject);
+
         if (key.empty() || value.empty()) continue;
         if (key.size() > 160 || value.size() > 160) {
             return toJava(env, errorJson("Paint labels must be no longer than 160 characters."));
         }
-        texts.set(key, value);
+        const auto found = keyLines.find(key);
+        if (found == keyLines.end() || found->second >= english.lines.size()) {
+            return toJava(env, errorJson("The paint label key " + key + " does not exist in the indexed text files. No files were changed."));
+        }
+
+        std::string replacement = value;
+        if (found->second == 0 && english.lines[0].size() >= 3 &&
+            static_cast<uint8_t>(english.lines[0][0]) == 0xEF &&
+            static_cast<uint8_t>(english.lines[0][1]) == 0xBB &&
+            static_cast<uint8_t>(english.lines[0][2]) == 0xBF) {
+            replacement = std::string("\\xEF\\xBB\\xBF") + value;
+        }
+        if (english.lines[found->second] != replacement) {
+            english.lines[found->second] = replacement;
+            changed = true;
+        }
     }
 
-    const auto changed = texts.changedFiles();
-    if (changed.empty()) return toJava(env, errorJson("No paint-label changes were made."));
-    std::ostringstream out;
-    out << "{\"ok\":true,\"files\":[";
-    for (size_t i = 0; i < changed.size(); ++i) {
-        if (i) out << ',';
-        const auto& item = changed[i];
-        out << "{\"name\":" << jsonString(item.first)
-            << ",\"data\":" << jsonString(base64Encode(item.second.data(), item.second.size()))
-            << '}';
+    if (!changed) {
+        return toJava(env, errorJson("No paint-label changes were made."));
     }
-    out << "]}";
+
+    nfsnl::Bytes updatedEnglish;
+    if (!rr3EncodeTextDocument(english, updatedEnglish) || updatedEnglish.empty()) {
+        return toJava(env, errorJson("The updated text_en.txt failed its encoding check. No files were exported."));
+    }
+
+    std::ostringstream out;
+    out << "{\\"ok\\":true,\\"files\\":[{\\"name\\":\\"text_en.txt\\",\\"data\\":"
+        << jsonString(base64Encode(updatedEnglish.data(), updatedEnglish.size()))
+        << "}]}";
     return toJava(env, out.str());
 }
 
