@@ -71,6 +71,13 @@ class MainActivity : Activity() {
         val swatchPath: String
     )
 
+    private data class PreparedBinaryDataEditorFile(
+        val formatName: String,
+        val original: ByteArray,
+        val editableText: String,
+        val reencodeNct: Boolean
+    )
+
     private data class PaintLabelField(
         val key: String,
         val label: String,
@@ -1882,11 +1889,6 @@ class MainActivity : Activity() {
             }
         }
 
-        val displayInput = addField(
-            "In-game livery / driver name",
-            item.optString("display"),
-            "Name shown by RR3 for this livery"
-        )
         val driverInput = addField(
             "Driver suit texture path",
             item.optString("driver"),
@@ -1897,15 +1899,6 @@ class MainActivity : Activity() {
             item.optString("swatch"),
             "Swatch asset path"
         )
-        content.addView(
-            text(
-                "The in-game livery/driver text is the Display name field above. The Driver suit texture field below is an asset path, not a person's name; leave it unchanged unless you intend to change the suit texture.",
-                11,
-                0xFF8499AF.toInt()
-            ),
-            matchWrap(top = 2)
-        )
-
         val dialog = AlertDialog.Builder(this)
             .setTitle("Edit livery \${liveryIndex + 1}")
             .setView(content)
@@ -1914,11 +1907,10 @@ class MainActivity : Activity() {
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val display = displayInput.text.toString().trim()
                 val driver = driverInput.text.toString().trim()
                 val swatch = swatchInput.text.toString().trim()
-                if (display.length > 160 || driver.length > 1024 || swatch.length > 1024) {
-                    liveryStatus.text = "Display name must be at most 160 characters; driver and swatch fields at most 1024."
+                if (driver.length > 1024 || swatch.length > 1024) {
+                    liveryStatus.text = "Driver and swatch fields must be at most 1024 characters."
                     return@setOnClickListener
                 }
 
@@ -1943,7 +1935,7 @@ class MainActivity : Activity() {
                         val updated = NativeBridge.nativeUpdateRr3Livery(
                             source,
                             liveryIndex,
-                            display,
+                            item.optString("display"),
                             swatch,
                             item.optString("logo"),
                             item.optString("arms"),
@@ -3228,13 +3220,19 @@ class MainActivity : Activity() {
                     return@Thread
                 }
 
-                val editable = NativeBridge.nativeOpenDataAsText(name, bytes)
-                    ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                val prepared = prepareBinaryDataEditorFile(name, bytes)
                 runOnUiThread {
                     gameFilesStatus.text = "Opened " + entry.relativePath + "."
-                    dataEditorStatus.text = "Opened " + name + "."
+                    dataEditorStatus.text = "Opened " + name +
+                        (if (prepared.reencodeNct) " (decoded RR3 NCT)." else ".")
                     selectTabFromView("Data Editor")
-                    showEditableDataEditor(name, bytes, editable)
+                    showEditableDataEditor(
+                        name,
+                        prepared.original,
+                        prepared.editableText,
+                        dataFormatName = prepared.formatName,
+                        reencodeNct = prepared.reencodeNct
+                    )
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -3613,6 +3611,64 @@ class MainActivity : Activity() {
         startActivityForResult(intent, requestEditableDataInput)
     }
 
+    /**
+     * Opens an RR3 binary table as editable text. Plain .dat/.evt/.sounddef
+     * files go straight to Monkey Tool's reversible listing. If that parser
+     * specifically identifies the bytes as encrypted, try the RR3 NCT stream
+     * and only accept the result when the native data parser recognises it.
+     * An explicit .nct suffix always means decode first and re-encode on export.
+     */
+    private fun prepareBinaryDataEditorFile(
+        sourceName: String,
+        sourceBytes: ByteArray
+    ): PreparedBinaryDataEditorFile {
+        if (sourceBytes.isEmpty()) {
+            throw IllegalArgumentException("The selected RR3 data file is empty.")
+        }
+
+        val hasNctSuffix = sourceName.endsWith(".nct", ignoreCase = true)
+        val formatName = if (hasNctSuffix) sourceName.dropLast(4) else sourceName
+        val decodedBytes = if (hasNctSuffix) {
+            NativeBridge.nativeTransformRr3Data(sourceBytes)
+                ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
+        } else {
+            sourceBytes
+        }
+
+        val editable = NativeBridge.nativeOpenDataAsText(formatName, decodedBytes)
+        if (editable != null) {
+            return PreparedBinaryDataEditorFile(
+                formatName = formatName,
+                original = decodedBytes,
+                editableText = editable,
+                reencodeNct = hasNctSuffix
+            )
+        }
+
+        val parseError = NativeBridge.nativeGetDataEditError()
+        if (hasNctSuffix || !parseError.contains("encrypted", ignoreCase = true)) {
+            throw IllegalStateException(parseError)
+        }
+
+        val nctDecoded = NativeBridge.nativeTransformRr3Data(sourceBytes)
+            ?: throw IllegalStateException(
+                "The file appears encrypted, but RR3 NCT decoding failed: " +
+                    NativeBridge.nativeGetRr3TransformError()
+            )
+        val decodedEditable = NativeBridge.nativeOpenDataAsText(formatName, nctDecoded)
+            ?: throw IllegalStateException(
+                "RR3 NCT decoding did not produce a supported $formatName data table. " +
+                    NativeBridge.nativeGetDataEditError()
+            )
+
+        return PreparedBinaryDataEditorFile(
+            formatName = formatName,
+            original = nctDecoded,
+            editableText = decodedEditable,
+            reencodeNct = true
+        )
+    }
+
     private fun openEditableDataFile(uri: Uri) {
         closeDataEditorAction?.invoke()
         dataEditorStatus.text = "Reading data file…"
@@ -3699,17 +3755,24 @@ class MainActivity : Activity() {
                     return@Thread
                 }
 
-                if (extension == "nct" || extension == "gui") {
-                    throw IllegalArgumentException("Use the RR3 Data Transform section for this .nct or .gui file.")
+                if (extension == "gui") {
+                    throw IllegalArgumentException("Use the RR3 Data Transform section for this .gui file.")
                 }
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")
-                val original = input.use { it.readBytes() }
-                val editable = NativeBridge.nativeOpenDataAsText(name, original)
-                    ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                val sourceBytes = input.use { it.readBytes() }
+                val prepared = prepareBinaryDataEditorFile(name, sourceBytes)
                 runOnUiThread {
-                    dataEditorStatus.text = "Opened " + name + " (" + original.size + " bytes)."
-                    showEditableDataEditor(name, original, editable)
+                    dataEditorStatus.text = "Opened " + name + " (" +
+                        prepared.original.size + " decoded bytes" +
+                        (if (prepared.reencodeNct) ", RR3 NCT" else "") + ")."
+                    showEditableDataEditor(
+                        name,
+                        prepared.original,
+                        prepared.editableText,
+                        dataFormatName = prepared.formatName,
+                        reencodeNct = prepared.reencodeNct
+                    )
                 }
             } catch (e: Exception) {
                 runOnUiThread { dataEditorStatus.text = e.message ?: "Could not open this data file." }
@@ -4993,7 +5056,9 @@ class MainActivity : Activity() {
     private fun showEditableDataEditor(
         name: String,
         original: ByteArray,
-        editableText: String
+        editableText: String,
+        dataFormatName: String = name,
+        reencodeNct: Boolean = false
     ) {
         val editor = EditText(this).apply {
             setText(editableText)
@@ -5058,8 +5123,26 @@ class MainActivity : Activity() {
             dataEditorStatus.text = "Rebuilding " + name + "…"
             Thread {
                 try {
-                    val output = NativeBridge.nativeBuildEditedData(name, editedText, original)
-                        ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                    val rebuiltPlain = NativeBridge.nativeBuildEditedData(
+                        dataFormatName, editedText, original
+                    ) ?: throw IllegalStateException(NativeBridge.nativeGetDataEditError())
+                    val output = if (reencodeNct) {
+                        val encoded = NativeBridge.nativeTransformRr3Data(rebuiltPlain)
+                            ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
+                        val roundTrip = NativeBridge.nativeTransformRr3Data(encoded)
+                            ?: throw IllegalStateException(
+                                "The rebuilt RR3 NCT file could not be decoded for verification: " +
+                                    NativeBridge.nativeGetRr3TransformError()
+                            )
+                        if (!roundTrip.contentEquals(rebuiltPlain)) {
+                            throw IllegalStateException(
+                                "The rebuilt RR3 NCT file failed its decode check. The original is unchanged."
+                            )
+                        }
+                        encoded
+                    } else {
+                        rebuiltPlain
+                    }
                     pendingTransformedFile?.delete()
                     pendingTransformedFile = null
                     pendingTransformedData = output
@@ -5070,7 +5153,9 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         closeDataEditorAction?.invoke()
                         dataEditorStatus.text =
-                            "Built " + output.size + " bytes. Choose a new output file."
+                            "Built " + output.size + " bytes" +
+                                (if (reencodeNct) " with RR3 NCT encoding." else ".") +
+                                " Choose a new output file."
                         launchRr3OutputPicker()
                     }
                 } catch (e: Exception) {
