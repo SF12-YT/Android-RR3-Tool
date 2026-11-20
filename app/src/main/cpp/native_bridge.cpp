@@ -2839,6 +2839,7 @@ struct Rr3ViewerSession {
     std::vector<nfsnl::Image> textures;
     std::vector<const nfsnl::Image*> meshTextures;
     float frameDistance = 5.0f;
+    std::string draftLod;
     int triangles = 0;
 };
 
@@ -3026,10 +3027,14 @@ Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
                                  &textureReport);
 
         std::string topLod;
+        std::string draftLod;
         for (const nfsnl::Mesh& mesh : session->model.meshes) {
-            if (mesh.lod.compare(0, 3, "LOD") == 0 &&
-                (topLod.empty() || mesh.lod < topLod)) topLod = mesh.lod;
+            if (mesh.lod.compare(0, 3, "LOD") == 0) {
+                if (topLod.empty() || mesh.lod < topLod) topLod = mesh.lod;
+                if (draftLod.empty() || mesh.lod > draftLod) draftLod = mesh.lod;
+            }
         }
+        session->draftLod = draftLod.empty() ? topLod : draftLod;
         session->view.lodFilter = topLod;
         session->view.twoSided = true;
         session->view.textured = true;
@@ -3114,7 +3119,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeRenderRr3ViewerFrame(
     JNIEnv* env, jobject /* thiz */, jlong handle, jint width, jint height,
-    jfloat yaw, jfloat pitch, jfloat zoom) {
+    jfloat yaw, jfloat pitch, jfloat zoom, jboolean preview) {
     gRr3ViewerError.clear();
     std::shared_ptr<Rr3ViewerSession> session;
     {
@@ -3136,6 +3141,18 @@ Java_com_sf12_rr3tool_NativeBridge_nativeRenderRr3ViewerFrame(
         view.pitch = std::isfinite(pitch) ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
         const float safeZoom = std::isfinite(zoom) ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
         view.distance = session->frameDistance / safeZoom;
+        if (preview == JNI_TRUE) {
+            // During a finger drag favour responsiveness over visual detail:
+            // use the cheapest available LOD, skip texture sampling/vertex
+            // colours, and omit the editor floor grid. ACTION_UP requests the
+            // original fully textured, highest-LOD view again.
+            if (!session->draftLod.empty()) view.lodFilter = session->draftLod;
+            view.textured = false;
+            view.vertexColors = false;
+            view.floor = false;
+            view.sky = false;
+            view.shadow = false;
+        }
 
         nfsnl::Image frame;
         nfsnl::renderModel(session->model, view, &session->meshTextures,

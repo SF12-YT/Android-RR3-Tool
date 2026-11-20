@@ -127,7 +127,8 @@ internal object NativeBridge {
         height: Int,
         yaw: Float,
         pitch: Float,
-        zoom: Float
+        zoom: Float,
+        preview: Boolean
     ): ByteArray?
 
     external fun nativeFreeRr3Viewer(handle: Long)

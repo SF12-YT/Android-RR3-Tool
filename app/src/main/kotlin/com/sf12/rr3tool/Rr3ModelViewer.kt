@@ -24,6 +24,7 @@ internal class Rr3ModelViewer(
     private val executor = Executors.newSingleThreadExecutor()
     private val rendering = AtomicBoolean(false)
     @Volatile private var renderRequested = false
+    @Volatile private var previewRequested = false
     @Volatile private var disposed = false
     @Volatile private var yaw = 0.6f
     @Volatile private var pitch = 0.25f
@@ -61,12 +62,13 @@ internal class Rr3ModelViewer(
                     }
                     lastX = event.x
                     lastY = event.y
-                    requestFrame()
+                    requestFrame(interactive = true)
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     view.parent?.requestDisallowInterceptTouchEvent(false)
                     pinchDistance = 0f
+                    requestFrame(interactive = false)
                     true
                 }
                 else -> true
@@ -100,18 +102,41 @@ internal class Rr3ModelViewer(
         return sqrt(dx * dx + dy * dy)
     }
 
-    private fun requestFrame() {
+    private fun requestFrame(interactive: Boolean = false) {
         if (disposed || width <= 0 || height <= 0) return
+        previewRequested = interactive
         renderRequested = true
         if (!rendering.compareAndSet(false, true)) return
         executor.execute {
+            var lastFrameStartNanos = 0L
             try {
                 while (renderRequested && !disposed) {
                     renderRequested = false
-                    val frameWidth = width.coerceIn(240, 900)
-                    val frameHeight = height.coerceIn(200, 700)
+                    var usePreview = previewRequested
+                    // Keep drag rendering to at most about 20 fps. Any newer touch
+                    // input replaces the pending camera state instead of queuing frames.
+                    if (usePreview && lastFrameStartNanos != 0L) {
+                        val remaining = 50_000_000L - (System.nanoTime() - lastFrameStartNanos)
+                        if (remaining > 0L) {
+                            val waitMs = ((remaining + 999_999L) / 1_000_000L).coerceAtMost(50L)
+                            Thread.sleep(waitMs)
+                        }
+                        usePreview = previewRequested
+                    }
+                    lastFrameStartNanos = System.nanoTime()
+                    val sourceWidth = width.coerceAtLeast(1)
+                    val sourceHeight = height.coerceAtLeast(1)
+                    val maxWidth = if (usePreview) 480 else 720
+                    val maxHeight = if (usePreview) 360 else 540
+                    val scale = minOf(
+                        1f,
+                        maxWidth.toFloat() / sourceWidth,
+                        maxHeight.toFloat() / sourceHeight
+                    )
+                    val frameWidth = (sourceWidth * scale).toInt().coerceIn(160, maxWidth)
+                    val frameHeight = (sourceHeight * scale).toInt().coerceIn(160, maxHeight)
                     val png = NativeBridge.nativeRenderRr3ViewerFrame(
-                        handle, frameWidth, frameHeight, yaw, pitch, zoom
+                        handle, frameWidth, frameHeight, yaw, pitch, zoom, usePreview
                     ) ?: throw IllegalStateException(
                         NativeBridge.nativeGetRr3ViewerError().ifBlank {
                             "The RR3 model renderer could not produce an image."
@@ -122,7 +147,10 @@ internal class Rr3ModelViewer(
                     post {
                         if (!disposed) {
                             image.setImageBitmap(bitmap)
-                            onFrameStatus("Rendered " + bitmap.width + " × " + bitmap.height)
+                            onFrameStatus(
+                                (if (usePreview) "Fast preview " else "Rendered ") +
+                                    bitmap.width + " × " + bitmap.height
+                            )
                         }
                     }
                 }
@@ -130,7 +158,7 @@ internal class Rr3ModelViewer(
                 post { if (!disposed) onFrameStatus(error.message ?: "The 3D frame could not be rendered.") }
             } finally {
                 rendering.set(false)
-                if (renderRequested && !disposed) requestFrame()
+                if (renderRequested && !disposed) requestFrame(previewRequested)
             }
         }
     }
