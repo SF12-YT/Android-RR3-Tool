@@ -3685,9 +3685,13 @@ class MainActivity : Activity() {
         }
         selectPoint(0)
 
+        val dialogScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Car points editor")
-            .setView(root)
+            .setView(dialogScroll)
             .setNegativeButton("Close", null)
             .setPositiveButton("Build and export", null)
             .create()
