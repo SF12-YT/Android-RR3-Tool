@@ -4705,6 +4705,14 @@ class MainActivity : Activity() {
         rootScrollView.visibility = View.VISIBLE
         closeDataEditorAction = null
     }
+    override fun onResume() {
+        super.onResume()
+        rr3ViewerSurface?.onResume()
+    }
+    override fun onPause() {
+        rr3ViewerSurface?.onPause()
+        super.onPause()
+    }
     override fun onDestroy() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
         if (shizukuBound) runCatching {
