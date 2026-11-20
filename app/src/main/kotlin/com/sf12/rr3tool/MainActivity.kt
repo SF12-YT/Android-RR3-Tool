@@ -812,8 +812,25 @@ class MainActivity : Activity() {
             ),
             matchWrap(top = 6)
         )
-        rr3ViewerCarSpinner = Spinner(this)
-        viewerCard.addView(rr3ViewerCarSpinner, matchWrap(top = 12))
+        val rr3ViewerCarPicker = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                setColor(0xFF0B1725.toInt())
+                cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), 0xFF34506B.toInt())
+            }
+            setPadding(dp(4), 0, dp(4), 0)
+            minimumHeight = dp(48)
+        }
+        rr3ViewerCarSpinner = Spinner(this).apply {
+            minimumHeight = dp(48)
+            setPadding(dp(8), 0, dp(8), 0)
+        }
+        rr3ViewerCarPicker.addView(
+            rr3ViewerCarSpinner,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48))
+        )
+        setRr3ViewerCarSpinnerItems(listOf("Index Game Data to load cars"))
+        viewerCard.addView(rr3ViewerCarPicker, matchWrap(top = 12))
         rr3ViewerLoadButton = actionButton("Load selected car") {
             val selected = rr3ViewerCars.getOrNull(rr3ViewerCarSpinner.selectedItemPosition)
             if (selected != null) loadRr3ViewerCar(selected)
@@ -1468,11 +1485,37 @@ class MainActivity : Activity() {
                 }
             }
         }
+    private fun setRr3ViewerCarSpinnerItems(labels: List<String>) {
+        val adapter = object : ArrayAdapter<String>(
+            this, android.R.layout.simple_spinner_item, labels
+        ) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                return (super.getView(position, convertView, parent) as TextView).apply {
+                    setTextColor(0xFFE6EEF8.toInt())
+                    textSize = 14f
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(8), dp(8), dp(8))
+                    setSingleLine(true)
+                }
+            }
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+                return (super.getDropDownView(position, convertView, parent) as TextView).apply {
+                    setTextColor(0xFFE6EEF8.toInt())
+                    setBackgroundColor(0xFF14263A.toInt())
+                    textSize = 14f
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    setSingleLine(true)
+                }
+            }
+        }
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        rr3ViewerCarSpinner.adapter = adapter
+    }
     private fun renderRr3ViewerCarChoices() {
         if (!::rr3ViewerCarSpinner.isInitialized || rr3ViewerCatalogLoading) return
         if (indexedGameFiles.isEmpty()) {
             rr3ViewerCars = emptyList()
-            rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, listOf("No cars indexed"))
+            setRr3ViewerCarSpinnerItems(listOf("No cars indexed"))
             rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."
             return
@@ -1482,6 +1525,7 @@ class MainActivity : Activity() {
         val appearances = indexedGameFiles.firstOrNull { normalPath(it) == "vehicles/data/carappearances.appearances.nct" }
         if (cardesc == null || appearances == null) {
             rr3ViewerCars = emptyList()
+            setRr3ViewerCarSpinnerItems(listOf("RR3 car registry files not indexed"))
             rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = "RR3 car registry files are missing from the index. Re-index the .depot and make sure vehicles/data is included."
             return
@@ -1493,11 +1537,13 @@ class MainActivity : Activity() {
         }.sortedBy { normalPath(it) }
         if (carDataFiles.isEmpty()) {
             rr3ViewerCars = emptyList()
+            setRr3ViewerCarSpinnerItems(listOf("No car data records found"))
             rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = "The RR3 registries are indexed, but no vehicles/data/<id>_<car>.bin.nct records were found."
             return
         }
         rr3ViewerCatalogLoading = true
+        setRr3ViewerCarSpinnerItems(listOf("Reading RR3 car catalogue…"))
         rr3ViewerLoadButton.isEnabled = false
         rr3ViewerStatus.text = "Reading " + carDataFiles.size + " RR3 car records in small batches…"
         Thread {
@@ -1536,9 +1582,7 @@ class MainActivity : Activity() {
                     rr3ViewerCars = sorted
                     val labels = if (sorted.isEmpty()) listOf("No readable RR3 car records found") else
                         sorted.map { it.displayName + "  ·  " + it.modelFolder }
-                    rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
-                        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-                    }
+                    setRr3ViewerCarSpinnerItems(labels)
                     rr3ViewerLoadButton.isEnabled = sorted.isNotEmpty()
                     rr3ViewerStatus.text = if (sorted.isEmpty()) {
                         "Found " + carDataFiles.size + " car files and both registries, but none parsed as a readable RR3 car record."
@@ -1550,6 +1594,7 @@ class MainActivity : Activity() {
             } catch (error: Exception) {
                 runOnUiThread {
                     rr3ViewerCars = emptyList()
+                    setRr3ViewerCarSpinnerItems(listOf("Could not read RR3 car catalogue"))
                     rr3ViewerLoadButton.isEnabled = false
                     rr3ViewerStatus.text = error.message ?: "Could not read the RR3 car catalogue."
                     rr3ViewerCatalogLoading = false
@@ -1557,6 +1602,7 @@ class MainActivity : Activity() {
             } catch (error: OutOfMemoryError) {
                 runOnUiThread {
                     rr3ViewerCars = emptyList()
+                    setRr3ViewerCarSpinnerItems(listOf("Car catalogue ran out of memory"))
                     rr3ViewerLoadButton.isEnabled = false
                     rr3ViewerStatus.text = "Android ran out of memory while reading the car catalogue. Try closing other apps and re-indexing."
                     rr3ViewerCatalogLoading = false
