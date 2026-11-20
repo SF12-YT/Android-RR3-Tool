@@ -4,7 +4,9 @@ import android.content.Context
 import android.opengl.GLSurfaceView
 import android.view.MotionEvent
 import kotlin.math.sqrt
+import javax.microedition.khronos.egl.EGL10
 import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.egl.EGLDisplay
 import javax.microedition.khronos.opengles.GL10
 
 /**
@@ -78,6 +80,33 @@ internal class Rr3ModelViewer(
 
     init {
         setEGLContextClientVersion(3)
+        // GLSurfaceView's default chooser asks for an ES 2 config even when
+        // the context version is 3. Some drivers will create the context but
+        // do not provide the ES 3 framebuffer capabilities we need for the
+        // unsigned-int index buffers and GLES 3 renderer.
+        setEGLConfigChooser { egl, display ->
+            val es3Bit = 0x0040 // EGL_OPENGL_ES3_BIT_KHR
+            val configSpec = intArrayOf(
+                0x3040, es3Bit,              // EGL_RENDERABLE_TYPE
+                0x3033, 0x0004,              // EGL_SURFACE_TYPE = EGL_WINDOW_BIT
+                EGL10.EGL_RED_SIZE, 8,
+                EGL10.EGL_GREEN_SIZE, 8,
+                EGL10.EGL_BLUE_SIZE, 8,
+                EGL10.EGL_DEPTH_SIZE, 16,
+                EGL10.EGL_STENCIL_SIZE, 0,
+                EGL10.EGL_NONE
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val count = IntArray(1)
+            if (!egl.eglChooseConfig(display, configSpec, configs, 1, count) ||
+                count[0] < 1 || configs[0] == null
+            ) {
+                throw IllegalArgumentException(
+                    "This device does not expose an OpenGL ES 3 window config with a depth buffer."
+                )
+            }
+            configs[0]!!
+        }
         setPreserveEGLContextOnPause(true)
         setRenderer(viewerRenderer)
         renderMode = RENDERMODE_WHEN_DIRTY
