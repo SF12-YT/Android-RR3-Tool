@@ -887,7 +887,6 @@ class MainActivity : Activity() {
         restoreRootSaveSelection()
         updateEngineStatus()
     }
-
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
         if (handle == 0L) {
@@ -1478,48 +1477,91 @@ class MainActivity : Activity() {
             rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."
             return
         }
-        val relevant = indexedGameFiles.filter { entry ->
-            val p = entry.relativePath.replace('\\', '/').lowercase(Locale.ROOT)
-            p == "vehicles/data/cardesc.list.nct" || p == "vehicles/data/carappearances.appearances.nct" ||
-                (p.startsWith("vehicles/data/") && Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE).matches(p.substringAfterLast('/')))
-        }
-        if (relevant.none { it.relativePath.endsWith("cardesc.list.nct", true) } || relevant.none { it.relativePath.endsWith("carappearances.appearances.nct", true) }) {
-            rr3ViewerStatus.text = "RR3 cardesc or car-appearance registry is missing. Re-index the depot and check vehicles/data."
+        fun normalPath(entry: GameDataFile) = entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+        val cardesc = indexedGameFiles.firstOrNull { normalPath(it) == "vehicles/data/cardesc.list.nct" }
+        val appearances = indexedGameFiles.firstOrNull { normalPath(it) == "vehicles/data/carappearances.appearances.nct" }
+        if (cardesc == null || appearances == null) {
+            rr3ViewerCars = emptyList()
             rr3ViewerLoadButton.isEnabled = false
+            rr3ViewerStatus.text = "RR3 car registry files are missing from the index. Re-index the .depot and make sure vehicles/data is included."
+            return
+        }
+        val carDataFiles = indexedGameFiles.filter { entry ->
+            val path = normalPath(entry)
+            path.substringBeforeLast('/', "") == "vehicles/data" &&
+                Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE).matches(path.substringAfterLast('/'))
+        }.sortedBy { normalPath(it) }
+        if (carDataFiles.isEmpty()) {
+            rr3ViewerCars = emptyList()
+            rr3ViewerLoadButton.isEnabled = false
+            rr3ViewerStatus.text = "The RR3 registries are indexed, but no vehicles/data/<id>_<car>.bin.nct records were found."
             return
         }
         rr3ViewerCatalogLoading = true
         rr3ViewerLoadButton.isEnabled = false
-        rr3ViewerStatus.text = "Reading RR3 car identities and appearance-to-model mappings…"
-        val anchor = relevant.first()
+        rr3ViewerStatus.text = "Reading " + carDataFiles.size + " RR3 car records in small batches…"
         Thread {
             try {
-                val paths = ArrayList<String>(relevant.size)
-                val data = ArrayList<ByteArray>(relevant.size)
-                for (entry in relevant) { paths.add(entry.relativePath.replace('\\', '/')); data.add(readGameFile(entry)) }
-                val payload = JSONObject(NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray()))
-                if (!payload.optBoolean("ok")) throw IllegalStateException(payload.optString("error", "RR3 could not read its car registry."))
-                val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
-                val cars = ArrayList<Rr3ViewerCar>(array.length())
-                for (index in 0 until array.length()) {
-                    val item = array.optJSONObject(index) ?: continue
-                    val dataFolder = item.optString("folder").trim()
-                    val modelFolder = item.optString("modelFolder").trim()
-                    if (dataFolder.isBlank() || modelFolder.isBlank() || modelFolder.contains('/') || modelFolder.contains("..")) continue
-                    val label = listOf(item.optString("year").trim(), item.optString("make").trim(), item.optString("model").trim()).filter { it.isNotBlank() }.joinToString(" ").ifBlank { formatLiveryCarName(modelFolder) }
-                    cars.add(Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, anchor))
+                val registryPaths = arrayOf(normalPath(cardesc), normalPath(appearances))
+                val registryData = arrayOf(readGameFile(cardesc), readGameFile(appearances))
+                val carsByDataFolder = LinkedHashMap<String, Rr3ViewerCar>()
+                val batches = carDataFiles.chunked(32)
+                for ((batchIndex, batch) in batches.withIndex()) {
+                    val paths = ArrayList<String>(2 + batch.size)
+                    val data = ArrayList<ByteArray>(2 + batch.size)
+                    paths.addAll(registryPaths)
+                    data.addAll(registryData)
+                    for (entry in batch) {
+                        paths.add(normalPath(entry))
+                        data.add(readGameFile(entry))
+                    }
+                    val payload = JSONObject(NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray()))
+                    if (!payload.optBoolean("ok")) {
+                        throw IllegalStateException(payload.optString("error", "RR3 could not read car catalogue batch " + (batchIndex + 1) + "."))
+                    }
+                    val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        if (!item.optBoolean("readable")) continue
+                        val dataFolder = item.optString("folder").trim()
+                        val modelFolder = item.optString("modelFolder").trim()
+                        if (dataFolder.isBlank() || modelFolder.isBlank() || modelFolder.contains('/') || modelFolder.contains("..")) continue
+                        val label = listOf(item.optString("year").trim(), item.optString("make").trim(), item.optString("model").trim())
+                            .filter { it.isNotBlank() }.joinToString(" ").ifBlank { formatLiveryCarName(modelFolder) }
+                        carsByDataFolder.putIfAbsent(dataFolder.lowercase(Locale.ROOT), Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, cardesc))
+                    }
                 }
-                val sorted = cars.distinctBy { it.modelFolder.lowercase(Locale.ROOT) }.sortedWith(compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id }))
+                val sorted = carsByDataFolder.values.sortedWith(compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id }))
                 runOnUiThread {
                     rr3ViewerCars = sorted
-                    val labels = if (sorted.isEmpty()) listOf("No cars with model mappings found") else sorted.map { it.displayName + "  ·  " + it.modelFolder }
-                    rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                    val labels = if (sorted.isEmpty()) listOf("No readable RR3 car records found") else
+                        sorted.map { it.displayName + "  ·  " + it.modelFolder }
+                    rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
+                        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                    }
                     rr3ViewerLoadButton.isEnabled = sorted.isNotEmpty()
-                    rr3ViewerStatus.text = if (sorted.isEmpty()) "The RR3 registry returned no cars with a valid model folder." else "Found " + sorted.size + " cars from RR3's car and appearance registries."
+                    rr3ViewerStatus.text = if (sorted.isEmpty()) {
+                        "Found " + carDataFiles.size + " car files and both registries, but none parsed as a readable RR3 car record."
+                    } else {
+                        "Loaded " + sorted.size + " real car names from RR3's registry. Read " + carDataFiles.size + " data files in " + batches.size + " batches."
+                    }
                     rr3ViewerCatalogLoading = false
                 }
-            } catch (error: Exception) { runOnUiThread { rr3ViewerStatus.text = error.message ?: "Could not build the RR3 car catalogue."; rr3ViewerLoadButton.isEnabled = false; rr3ViewerCatalogLoading = false } }
-            catch (error: OutOfMemoryError) { runOnUiThread { rr3ViewerStatus.text = "Not enough memory to read the installed RR3 car catalogue."; rr3ViewerLoadButton.isEnabled = false; rr3ViewerCatalogLoading = false } }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    rr3ViewerCars = emptyList()
+                    rr3ViewerLoadButton.isEnabled = false
+                    rr3ViewerStatus.text = error.message ?: "Could not read the RR3 car catalogue."
+                    rr3ViewerCatalogLoading = false
+                }
+            } catch (error: OutOfMemoryError) {
+                runOnUiThread {
+                    rr3ViewerCars = emptyList()
+                    rr3ViewerLoadButton.isEnabled = false
+                    rr3ViewerStatus.text = "Android ran out of memory while reading the car catalogue. Try closing other apps and re-indexing."
+                    rr3ViewerCatalogLoading = false
+                }
+            }
         }.start()
     }
     private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
