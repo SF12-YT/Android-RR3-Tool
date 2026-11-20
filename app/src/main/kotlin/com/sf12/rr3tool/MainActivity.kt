@@ -3358,7 +3358,7 @@ class MainActivity : Activity() {
         )
         root.addView(
             text(
-                "Coordinates are in model units. Changes are exported as a separate file; the original remains untouched.",
+                "These are named 3D hardpoints used by the car asset, not performance settings. Tap a point, then edit its X/Y/Z position or nudge it. HINGE_ points also store orientation. Export creates a separate edited file; the original stays untouched.",
                 12, 0xFF9BAFC5.toInt()
             ),
             matchWrap(bottom = 10)
@@ -3366,7 +3366,19 @@ class MainActivity : Activity() {
 
         val listScroll = ScrollView(this).apply {
             isFillViewport = false
+            isNestedScrollingEnabled = true
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             background = rounded(0xFF091522.toInt(), dp(10).toFloat())
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        view.parent?.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
         }
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -3391,6 +3403,10 @@ class MainActivity : Activity() {
                 if (index > 0) marginStart = dp(6)
             })
         }
+        root.addView(
+            text("Selected point position · enter model coordinates", 11, 0xFF9BAFC5.toInt()),
+            matchWrap(bottom = 4)
+        )
         root.addView(coordRow, matchWrap(bottom = 8))
 
         val setRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -3408,7 +3424,7 @@ class MainActivity : Activity() {
         setRow.addView(mirrorCheck, LinearLayout.LayoutParams(-2, -2))
         root.addView(setRow, matchWrap(bottom = 8))
 
-        val nudgeHeader = text("Move point", 12, 0xFF75B9F1.toInt(), bold = true)
+        val nudgeHeader = text("Move point · choose a step, then tap an axis direction", 12, 0xFF75B9F1.toInt(), bold = true)
         root.addView(nudgeHeader, matchWrap(bottom = 4))
         val stepRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3456,7 +3472,7 @@ class MainActivity : Activity() {
         root.addView(nudgeRow1, matchWrap(bottom = 4))
         root.addView(nudgeRow2, matchWrap(bottom = 10))
 
-        val hingeTitle = text("Hinge orientation", 12, 0xFF75B9F1.toInt(), bold = true)
+        val hingeTitle = text("Hinge orientation · HINGE_ points only", 12, 0xFF75B9F1.toInt(), bold = true)
         root.addView(hingeTitle, matchWrap(bottom = 3))
         val hingeInfo = text("", 11, 0xFF9BAFC5.toInt())
         root.addView(hingeInfo, matchWrap(bottom = 5))
