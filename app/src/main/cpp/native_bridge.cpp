@@ -2846,19 +2846,6 @@ std::mutex gRr3ViewerMutex;
 std::map<jlong, std::shared_ptr<Rr3ViewerSession>> gRr3ViewerSessions;
 std::atomic<jlong> gRr3ViewerNextHandle{1};
 
-bool copyJavaByteArray(JNIEnv* env, jbyteArray input, nfsnl::Bytes& out) {
-    if (!input) return false;
-    const jsize length = env->GetArrayLength(input);
-    if (length <= 0) return false;
-    out.resize(static_cast<size_t>(length));
-    env->GetByteArrayRegion(input, 0, length, reinterpret_cast<jbyte*>(out.data()));
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        out.clear();
-        return false;
-    }
-    return true;
-}
 
 bool copyViewerInputs(JNIEnv* env, jobjectArray pathArray, jobjectArray dataArray,
                       std::vector<std::string>& paths,

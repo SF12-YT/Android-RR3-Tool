@@ -887,11 +887,7 @@ class MainActivity : Activity() {
         restoreRootSaveSelection()
         updateEngineStatus()
     }
-    override fun onDestroy() {
-        rr3ViewerSurface?.dispose()
-        rr3ViewerSurface = null
-        super.onDestroy()
-    }
+
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
         if (handle == 0L) {
@@ -4628,6 +4624,8 @@ class MainActivity : Activity() {
         }
         shizukuStorageService = null
         shizukuBound = false
+        rr3ViewerSurface?.dispose()
+        rr3ViewerSurface = null
         super.onDestroy()
     }
     @Suppress("DEPRECATION")
