@@ -17,6 +17,9 @@
 #include <set>
 #include <cerrno>
 #include <sys/stat.h>
+#include <mutex>
+#include <atomic>
+#include <memory>
 
 #include "nfsnl.h"
 #include "nfsnl_save.h"
@@ -2826,4 +2829,364 @@ Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
         gRr3ViewerError = "The 3D model preview failed unexpectedly. The original game files were not changed.";
     }
     return nullptr;
+}
+
+
+namespace {
+struct Rr3ViewerSession {
+    nfsnl::Model model;
+    nfsnl::RenderView view;
+    std::vector<nfsnl::Image> textures;
+    std::vector<const nfsnl::Image*> meshTextures;
+    float frameDistance = 5.0f;
+    int triangles = 0;
+};
+
+std::mutex gRr3ViewerMutex;
+std::map<jlong, std::shared_ptr<Rr3ViewerSession>> gRr3ViewerSessions;
+std::atomic<jlong> gRr3ViewerNextHandle{1};
+
+bool copyJavaByteArray(JNIEnv* env, jbyteArray input, nfsnl::Bytes& out) {
+    if (!input) return false;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return false;
+    out.resize(static_cast<size_t>(length));
+    env->GetByteArrayRegion(input, 0, length, reinterpret_cast<jbyte*>(out.data()));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+bool copyViewerInputs(JNIEnv* env, jobjectArray pathArray, jobjectArray dataArray,
+                      std::vector<std::string>& paths,
+                      std::map<std::string, nfsnl::Bytes>& files) {
+    if (!pathArray || !dataArray) return false;
+    const jsize pathCount = env->GetArrayLength(pathArray);
+    const jsize dataCount = env->GetArrayLength(dataArray);
+    if (pathCount != dataCount || pathCount > 10000) return false;
+
+    size_t total = 0;
+    paths.reserve(static_cast<size_t>(pathCount));
+    for (jsize i = 0; i < pathCount; ++i) {
+        auto pathObject = static_cast<jstring>(env->GetObjectArrayElement(pathArray, i));
+        auto dataObject = static_cast<jbyteArray>(env->GetObjectArrayElement(dataArray, i));
+        if (!pathObject || !dataObject) {
+            if (pathObject) env->DeleteLocalRef(pathObject);
+            if (dataObject) env->DeleteLocalRef(dataObject);
+            continue;
+        }
+        std::string path = viewerUnwrapName(fromJava(env, pathObject));
+        const jsize byteCount = env->GetArrayLength(dataObject);
+        if (path.empty() || byteCount <= 0 || static_cast<size_t>(byteCount) > (64u << 20) ||
+            total + static_cast<size_t>(byteCount) > (96u << 20)) {
+            env->DeleteLocalRef(pathObject);
+            env->DeleteLocalRef(dataObject);
+            if (total + static_cast<size_t>(std::max(0, byteCount)) > (96u << 20))
+                gRr3ViewerError = "The selected car's sidecars exceed the 96 MiB memory limit.";
+            continue;
+        }
+        nfsnl::Bytes bytes(static_cast<size_t>(byteCount));
+        env->GetByteArrayRegion(dataObject, 0, byteCount,
+                                reinterpret_cast<jbyte*>(bytes.data()));
+        env->DeleteLocalRef(pathObject);
+        env->DeleteLocalRef(dataObject);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Could not read one of the selected car's sidecar files.";
+            return false;
+        }
+        total += bytes.size();
+        std::string key = viewerLower(path);
+        paths.push_back(key);
+        files[key] = std::move(bytes);
+    }
+    return !paths.empty() || pathCount == 0;
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3CarCatalogue(
+    JNIEnv* env, jobject /* thiz */, jobjectArray pathArray, jobjectArray dataArray) {
+    gRr3ViewerError.clear();
+    std::vector<std::string> paths;
+    std::map<std::string, nfsnl::Bytes> files;
+    try {
+        if (!copyViewerInputs(env, pathArray, dataArray, paths, files))
+            return toJava(env, errorJson(gRr3ViewerError.empty()
+                ? "The RR3 car catalogue input files could not be read." : gRr3ViewerError));
+
+        auto read = [&](const std::string& path, nfsnl::Bytes& output) -> bool {
+            auto found = files.find(viewerLower(path));
+            if (found == files.end()) return false;
+            output = found->second;
+            return true;
+        };
+        const std::vector<nfsnl::Rr3CarInfo> cars = nfsnl::rr3ListCars(paths, read);
+        std::ostringstream out;
+        out << "{\"ok\":true,\"cars\":[";
+        bool first = true;
+        for (const nfsnl::Rr3CarInfo& car : cars) {
+            if (!first) out << ',';
+            first = false;
+            out << "{\"id\":" << car.id
+                << ",\"appearance\":" << car.appearance
+                << ",\"readable\":" << (car.readable ? "true" : "false")
+                << ",\"folder\":" << jsonString(car.folder)
+                << ",\"modelFolder\":" << jsonString(car.modelFolder)
+                << ",\"make\":" << jsonString(car.make)
+                << ",\"model\":" << jsonString(car.model)
+                << ",\"year\":" << jsonString(car.year)
+                << ",\"class\":" << jsonString(car.cls)
+                << ",\"drive\":" << jsonString(car.drive) << '}';
+        }
+        out << "]}";
+        return toJava(env, out.str());
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough native memory to read the RR3 car catalogue."));
+    } catch (...) {
+        return toJava(env, errorJson("The native RR3 car-catalogue reader failed unexpectedly."));
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
+    JNIEnv* env, jobject /* thiz */, jstring modelPathValue, jstring dataFolderValue,
+    jbyteArray modelInput, jobjectArray pathArray, jobjectArray dataArray) {
+    gRr3ViewerError.clear();
+    const std::string modelPath = viewerUnwrapName(fromJava(env, modelPathValue));
+    const std::string dataFolder = fromJava(env, dataFolderValue);
+    nfsnl::Bytes modelBytes;
+    std::vector<std::string> paths;
+    std::map<std::string, nfsnl::Bytes> files;
+    try {
+        if (modelPath.empty() || dataFolder.empty() || !copyJavaByteArray(env, modelInput, modelBytes))
+            return toJava(env, errorJson("The selected RR3 model input is missing or empty."));
+        if (!copyViewerInputs(env, pathArray, dataArray, paths, files))
+            return toJava(env, errorJson(gRr3ViewerError.empty()
+                ? "The selected car's model sidecars could not be read." : gRr3ViewerError));
+
+        auto session = std::make_shared<Rr3ViewerSession>();
+        session->model = nfsnl::loadModel(modelBytes.data(), modelBytes.size());
+        if (!session->model.valid || session->model.meshes.empty()) {
+            const std::string detail = session->model.warnings.empty()
+                ? "no renderable meshes" : session->model.warnings.front();
+            return toJava(env, errorJson("Monkey Tool could not parse " + modelPath + ": " + detail));
+        }
+
+        auto findFile = [&](const std::string& path) -> nfsnl::Bytes* {
+            auto found = files.find(viewerLower(path));
+            return found == files.end() ? nullptr : &found->second;
+        };
+
+        std::vector<nfsnl::Hardpoint> points;
+        const std::string pointsPath = nfsnl::rr3PointsNameFor(modelPath);
+        if (nfsnl::Bytes* pointBytes = findFile(pointsPath))
+            points = nfsnl::rr3ReadPoints(pointBytes->data(), pointBytes->size());
+
+        const std::string innerPointsPath = nfsnl::rr3InteriorPointsNameFor(modelPath);
+        if (!innerPointsPath.empty()) {
+            if (nfsnl::Bytes* innerBytes = findFile(innerPointsPath)) {
+                const auto innerPoints = nfsnl::rr3ReadPoints(innerBytes->data(), innerBytes->size());
+                if (!innerPoints.empty()) nfsnl::rr3MergeCockpitPoints(points, innerPoints);
+            }
+        }
+        if (!points.empty()) nfsnl::rr3PlaceParts(session->model, points);
+
+        const std::string sharedPath = nfsnl::rr3SharedNameFor(modelPath);
+        if (nfsnl::Bytes* sharedBytes = findFile(sharedPath)) {
+            nfsnl::Model shared = nfsnl::loadModel(sharedBytes->data(), sharedBytes->size());
+            if (shared.valid && !shared.meshes.empty())
+                nfsnl::rr3AttachWheels(session->model, shared, points);
+        }
+
+        nfsnl::NctLiveries liveries;
+        bool haveLiveries = false;
+        const std::string liveryPath =
+            "vehicles/data/liveries/" + dataFolder + ".liveries.bin.nct";
+        if (nfsnl::Bytes* raw = findFile(liveryPath)) {
+            nfsnl::Bytes plain;
+            if (nfsnl::nctTransform(raw->data(), raw->size(), plain, nullptr))
+                liveries = nfsnl::nctReadLiveries(plain.data(), plain.size());
+            haveLiveries = liveries.ok;
+        }
+
+        std::map<std::string, std::string> texturePathByStem;
+        for (const auto& item : files) {
+            const std::string leaf = nfsnl::baseName(item.first);
+            const std::string extension = viewerLower(nfsnl::extensionOf(leaf));
+            if (extension != "sba" && extension != "pvr" && extension != "dds" &&
+                extension != "png" && extension != "jpg") continue;
+            std::string stem = viewerLower(leaf.substr(0, leaf.find('.')));
+            if (stem.empty()) continue;
+            auto found = texturePathByStem.find(stem);
+            if (found == texturePathByStem.end() ||
+                (leaf.find(".etc.") != std::string::npos &&
+                 found->second.find(".etc.") == std::string::npos))
+                texturePathByStem[stem] = item.first;
+        }
+        auto lookupTexture = [&](const std::string& stem) -> std::string {
+            const std::string wanted = viewerLower(nfsnl::baseName(nfsnl::stripExtension(stem)));
+            auto found = texturePathByStem.find(wanted);
+            return found == texturePathByStem.end() ? std::string() : found->second;
+        };
+        const std::vector<std::pair<std::string, std::string>> noCommonTextures;
+        std::string textureReport;
+        nfsnl::rr3AssignTextures(session->model, modelPath, lookupTexture,
+                                 noCommonTextures, haveLiveries ? &liveries : nullptr,
+                                 &textureReport);
+
+        std::string topLod;
+        for (const nfsnl::Mesh& mesh : session->model.meshes) {
+            if (mesh.lod.compare(0, 3, "LOD") == 0 &&
+                (topLod.empty() || mesh.lod < topLod)) topLod = mesh.lod;
+        }
+        session->view.lodFilter = topLod;
+        session->view.twoSided = true;
+        session->view.textured = true;
+        session->view.vertexColors = true;
+        session->view.hideGlow = true;
+        session->view.sky = true;
+        session->view.floor = true;
+        session->view.shadow = false;
+        nfsnl::frameModel(session->model, session->view);
+        session->frameDistance = session->view.distance;
+
+        session->textures.reserve(session->model.meshes.size());
+        session->meshTextures.assign(session->model.meshes.size(), nullptr);
+        int texturedMeshes = 0;
+        int visibleMeshes = 0;
+        int triangles = 0;
+        for (size_t i = 0; i < session->model.meshes.size(); ++i) {
+            const nfsnl::Mesh& mesh = session->model.meshes[i];
+            if ((!topLod.empty() && !mesh.lod.empty() && mesh.lod != topLod) ||
+                mesh.lod == "HELPERS" || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            ++visibleMeshes;
+            triangles += static_cast<int>(mesh.indices.size() / 3);
+            if (mesh.texture.empty()) continue;
+
+            auto textureFile = files.find(viewerLower(mesh.texture));
+            if (textureFile == files.end()) {
+                const std::string leaf = viewerLower(nfsnl::baseName(mesh.texture));
+                for (auto candidate = files.begin(); candidate != files.end(); ++candidate) {
+                    if (viewerLower(nfsnl::baseName(candidate->first)) == leaf) {
+                        textureFile = candidate;
+                        break;
+                    }
+                }
+            }
+            if (textureFile == files.end()) continue;
+
+            nfsnl::Image decoded;
+            if (!nfsnl::decodeTextureFile(textureFile->second.data(),
+                                           textureFile->second.size(), decoded) ||
+                !decoded.ok()) continue;
+            decoded = nfsnl::toRgba(decoded);
+            if (decoded.width > 1024 || decoded.height > 1024) {
+                const float factor = std::min(1024.0f / decoded.width, 1024.0f / decoded.height);
+                const int textureWidth = std::max(1, static_cast<int>(decoded.width * factor));
+                const int textureHeight = std::max(1, static_cast<int>(decoded.height * factor));
+                decoded = nfsnl::resizeRgba(decoded, textureWidth, textureHeight);
+            }
+            if (!decoded.ok()) continue;
+            session->textures.push_back(std::move(decoded));
+            session->meshTextures[i] = &session->textures.back();
+            ++texturedMeshes;
+        }
+
+        if (visibleMeshes <= 0 || triangles <= 0)
+            return toJava(env, errorJson("The selected RR3 model parsed but contains no drawable exterior triangles."));
+        session->triangles = triangles;
+
+        const jlong handle = gRr3ViewerNextHandle.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+            gRr3ViewerSessions[handle] = session;
+        }
+
+        std::ostringstream out;
+        out << "{\"ok\":true,\"handle\":" << handle
+            << ",\"meshes\":" << visibleMeshes
+            << ",\"triangles\":" << triangles
+            << ",\"textures\":" << texturedMeshes
+            << ",\"lod\":" << jsonString(topLod) << '}';
+        return toJava(env, out.str());
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough native memory to assemble this RR3 car for preview.";
+    } catch (const std::exception& error) {
+        gRr3ViewerError = std::string("The RR3 3D model setup failed: ") + error.what();
+    } catch (...) {
+        gRr3ViewerError = "The RR3 3D model setup failed unexpectedly.";
+    }
+    return toJava(env, errorJson(gRr3ViewerError));
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeRenderRr3ViewerFrame(
+    JNIEnv* env, jobject /* thiz */, jlong handle, jint width, jint height,
+    jfloat yaw, jfloat pitch, jfloat zoom) {
+    gRr3ViewerError.clear();
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) {
+            gRr3ViewerError = "The RR3 viewer session has expired. Load the car again.";
+            return nullptr;
+        }
+        session = found->second;
+    }
+    if (width < 160 || width > 1200 || height < 160 || height > 900) {
+        gRr3ViewerError = "The 3D preview dimensions are outside the supported range.";
+        return nullptr;
+    }
+    try {
+        nfsnl::RenderView view = session->view;
+        view.yaw = std::isfinite(yaw) ? yaw : 0.6f;
+        view.pitch = std::isfinite(pitch) ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
+        const float safeZoom = std::isfinite(zoom) ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
+        view.distance = session->frameDistance / safeZoom;
+
+        nfsnl::Image frame;
+        nfsnl::renderModel(session->model, view, &session->meshTextures,
+                           width, height, frame);
+        if (!frame.ok() || frame.pixels.empty()) {
+            gRr3ViewerError = "Monkey Tool returned an empty frame for this RR3 model.";
+            return nullptr;
+        }
+        nfsnl::Bytes png = nfsnl::encodePng(frame);
+        if (png.empty() || png.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+            gRr3ViewerError = "The rendered RR3 frame could not be encoded as a PNG.";
+            return nullptr;
+        }
+        jbyteArray result = env->NewByteArray(static_cast<jsize>(png.size()));
+        if (!result) {
+            gRr3ViewerError = "Android could not allocate the rendered RR3 frame.";
+            return nullptr;
+        }
+        env->SetByteArrayRegion(result, 0, static_cast<jsize>(png.size()),
+                                reinterpret_cast<const jbyte*>(png.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            env->DeleteLocalRef(result);
+            gRr3ViewerError = "Android could not receive the rendered RR3 frame.";
+            return nullptr;
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough native memory to render this RR3 frame. Reduce the preview size.";
+    } catch (...) {
+        gRr3ViewerError = "The RR3 software renderer failed while drawing this frame.";
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeFreeRr3Viewer(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
+    std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+    gRr3ViewerSessions.erase(handle);
 }

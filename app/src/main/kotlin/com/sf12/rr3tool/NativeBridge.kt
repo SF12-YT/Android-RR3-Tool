@@ -105,13 +105,32 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3Points(input: ByteArray): String
 
-    /** Builds a read-only render packet from an installed RR3 exterior model and its sidecar assets. */
-    external fun nativeBuildRr3ViewerPacket(
+    /** Lists installed cars from RR3's cardesc and appearance registries. */
+    external fun nativeInspectRr3CarCatalogue(
+        assetPaths: Array<String>,
+        assetData: Array<ByteArray>
+    ): String
+
+    /** Creates a native Monkey Tool model/texture session for the software viewer. */
+    external fun nativeCreateRr3Viewer(
         modelPath: String,
+        dataFolder: String,
         model: ByteArray,
         assetPaths: Array<String>,
         assetData: Array<ByteArray>
+    ): String
+
+    /** Renders a frame with Monkey Tool's own camera and software rasteriser. */
+    external fun nativeRenderRr3ViewerFrame(
+        handle: Long,
+        width: Int,
+        height: Int,
+        yaw: Float,
+        pitch: Float,
+        zoom: Float
     ): ByteArray?
+
+    external fun nativeFreeRr3Viewer(handle: Long)
 
     external fun nativeGetRr3ViewerError(): String
 

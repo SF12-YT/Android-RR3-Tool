@@ -1,5 +1,4 @@
 package com.sf12.rr3tool
-
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
@@ -52,11 +51,15 @@ import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
-
 class MainActivity : Activity() {
     private data class CareerTextPage(val label: String, val text: String)
-    private data class Rr3ViewerCar(val folder: String, val displayName: String, val liveryEntry: GameDataFile)
-
+    private data class Rr3ViewerCar(
+        val id: Int,
+        val dataFolder: String,
+        val modelFolder: String,
+        val displayName: String,
+        val liveryEntry: GameDataFile
+    )
     private class GameDataTreeNode(
         val name: String,
         val relativePath: String,
@@ -64,27 +67,23 @@ class MainActivity : Activity() {
     ) {
         val children = linkedMapOf<String, GameDataTreeNode>()
     }
-
     private data class PendingLiverySwatchEdit(
         val liveryEntry: GameDataFile,
         val carFolder: String,
         val liveryIndex: Int,
         val swatchPath: String
     )
-
     private data class PreparedBinaryDataEditorFile(
         val formatName: String,
         val original: ByteArray,
         val editableText: String,
         val reencodeNct: Boolean
     )
-
     private data class PaintLabelField(
         val key: String,
         val label: String,
         val value: String
     )
-
     private data class EditableRr3Hardpoint(
         val name: String,
         var x: Float,
@@ -93,7 +92,6 @@ class MainActivity : Activity() {
         val hinge: Boolean,
         var basis: FloatArray
     )
-
     /**
      * Reads the editable career text file in small record groups. The original
      * text remains on disk; only sections requested by the scroll view are
@@ -107,7 +105,6 @@ class MainActivity : Activity() {
         private var reachedEof = false
         private val counts = mutableMapOf<String, Int>()
         private var loadedRowCount = 0
-
         init {
             while (true) {
                 val line = reader.readLine()
@@ -123,14 +120,12 @@ class MainActivity : Activity() {
                 }
             }
         }
-
         @Synchronized
         fun readNextPage(): CareerTextPage? {
             val first = takeNextRecord() ?: return null
             val type = first.substringBefore('\t')
             val rows = ArrayList<String>(pageSize)
             rows.add(first)
-
             while (rows.size < pageSize) {
                 val next = takeNextRecord() ?: break
                 if (next.substringBefore('\t') != type) {
@@ -139,7 +134,6 @@ class MainActivity : Activity() {
                 }
                 rows.add(next)
             }
-
             loadedRowCount += rows.size
             val priorCount = counts[type] ?: 0
             counts[type] = priorCount + rows.size
@@ -148,7 +142,6 @@ class MainActivity : Activity() {
             val lastIndex = if (type == "EVENT") priorCount + rows.size
                 else rows.last().split('\t').getOrNull(1)?.toIntOrNull()?.plus(1)
                     ?: priorCount + rows.size
-
             val sectionName = when (type) {
                 "SERIES" -> "SERIES"
                 "TIER" -> "TIERS"
@@ -160,7 +153,6 @@ class MainActivity : Activity() {
                 rows.joinToString("\n")
             )
         }
-
         private fun takeNextRecord(): String? {
             pendingLine?.let {
                 pendingLine = null
@@ -176,13 +168,11 @@ class MainActivity : Activity() {
                 if (line.isNotBlank() && !line.startsWith("#")) return line
             }
         }
-
         @Synchronized
         fun writeMerged(pageTexts: List<String>, output: File) {
             output.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.write(header.toString())
                 if (header.isNotEmpty() && !header.endsWith("\n")) writer.newLine()
-
                 for (page in pageTexts) {
                     val content = page.trimEnd('\r', '\n')
                     if (content.isNotEmpty()) {
@@ -190,7 +180,6 @@ class MainActivity : Activity() {
                         writer.newLine()
                     }
                 }
-
                 // Use a fresh reader for the untouched tail. Keeping the
                 // scrolling reader intact means a failed validation can be
                 // corrected and rebuilt without reopening the source file.
@@ -209,7 +198,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-
         override fun close() {
             try {
                 reader.close()
@@ -227,7 +215,6 @@ class MainActivity : Activity() {
     private val requestTrackInspectorInput = 1108
     private val requestManualLiveryInput = 1109
     private val requestLiverySwatchInput = 1110
-
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
     private lateinit var gameFilesSearch: EditText
@@ -321,6 +308,7 @@ class MainActivity : Activity() {
     private lateinit var liveryDecodedContainer: LinearLayout
     private val expandedLiveryYears = mutableSetOf<String>()
     private var rr3ViewerCars: List<Rr3ViewerCar> = emptyList()
+    private var rr3ViewerCatalogLoading = false
     private lateinit var rr3ViewerCarSpinner: Spinner
     private lateinit var rr3ViewerLoadButton: TextView
     private lateinit var rr3ViewerStatus: TextView
@@ -334,29 +322,21 @@ class MainActivity : Activity() {
     private var selectedLiverySourceName: String = ""
     private var selectedLiverySourceSize: Long = 0L
     private var pendingLiverySwatchEdit: PendingLiverySwatchEdit? = null
-
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
     }
-
     private val keysFile: File
         get() = File(filesDir, "rr3_keys.txt")
-
     private val stageDir: File
         get() = File(filesDir, "rr3_save_work")
-
     private val stagedSave: File
         get() = File(stageDir, "character.2.dat")
-
     private val stagedTempSave: File
         get() = File(stageDir, "TempSaveGame.dat")
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         window.statusBarColor = Color.rgb(9, 17, 29)
         window.navigationBarColor = Color.rgb(9, 17, 29)
-
         val appRoot = FrameLayout(this)
         val scroll = ScrollView(this).apply {
             setBackgroundColor(Color.rgb(9, 17, 29))
@@ -371,7 +351,6 @@ class MainActivity : Activity() {
         appRoot.addView(scroll, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-
         editorScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(9, 17, 29))
@@ -403,7 +382,6 @@ class MainActivity : Activity() {
         ))
         setContentView(appRoot)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
-
         page.addView(
             text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
                 letterSpacing = 0.10f
@@ -422,7 +400,6 @@ class MainActivity : Activity() {
             ),
             matchWrap(top = 5, bottom = 16)
         )
-
         val tabNames = listOf(
             "Game Data", "Save Editor", "Transform", "Data Editor",
             "Car Editor", "Liveries", "Career", "Track Inspector", "3D Viewer", "About"
@@ -445,13 +422,11 @@ class MainActivity : Activity() {
         }
         tabScroll.addView(tabBar)
         page.addView(tabScroll, matchWrap(bottom = 14))
-
         val contentHost = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
         page.addView(contentHost, matchWrap())
         tabPages.values.forEach { contentHost.addView(it, matchWrap()) }
-
         fun selectTab(selected: String) {
             tabPages.forEach { (name, content) ->
                 content.visibility = if (name == selected) View.VISIBLE else View.GONE
@@ -465,7 +440,6 @@ class MainActivity : Activity() {
                 button.setTextColor(if (active) Color.WHITE else 0xFF9BAFC5.toInt())
             }
         }
-
         for (name in tabNames) {
             val button = text(name, 12, 0xFF9BAFC5.toInt(), bold = true).apply {
                 gravity = Gravity.CENTER
@@ -486,7 +460,6 @@ class MainActivity : Activity() {
         }
         selectTabAction = { name -> selectTab(name) }
         selectTab("Game Data")
-
         val gameDataPage = tabPages.getValue("Game Data")
         val savePage = tabPages.getValue("Save Editor")
         val transformPage = tabPages.getValue("Transform")
@@ -497,7 +470,6 @@ class MainActivity : Activity() {
         val trackPage = tabPages.getValue("Track Inspector")
         val viewerPage = tabPages.getValue("3D Viewer")
         val aboutPage = tabPages.getValue("About")
-
         addSection(gameDataPage, "GAME DATA")
         val gameCard = card(gameDataPage)
         gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
@@ -542,7 +514,6 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderGameFiles()
             override fun afterTextChanged(s: Editable?) = Unit
         })
-
         addSection(savePage, "SAVE EDITOR")
         val saveCard = card(savePage)
         saveCard.addView(text("RR3 save location", 17, Color.WHITE, bold = true), matchWrap())
@@ -586,7 +557,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         saveCard.addView(saveFieldsContainer, matchWrap(top = 12))
-
         saveCard.addView(
             text("ALL FIELDS (ADVANCED)", 11, 0xFF75B9F1.toInt(), bold = true),
             matchWrap(top = 18, bottom = 8)
@@ -602,7 +572,6 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderAdvancedFields()
             override fun afterTextChanged(s: Editable?) = Unit
         })
-
         addSection(transformPage, "RR3 DATA TRANSFORM")
         val dataCard = card(transformPage)
         dataCard.addView(
@@ -623,7 +592,6 @@ class MainActivity : Activity() {
         )
         dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
         dataCard.addView(dataStatus, matchWrap(top = 10))
-
         addSection(editorPage, "RR3 DATA EDITOR")
         val editorCard = card(editorPage)
         editorCard.addView(
@@ -668,7 +636,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         carCard.addView(carFieldsContainer, matchWrap(top = 12))
-
         addSection(liveryPage, "RR3 LIVERY MANAGER")
         val liveryCard = card(liveryPage)
         liveryCard.addView(
@@ -689,7 +656,6 @@ class MainActivity : Activity() {
             0xFF9BAFC5.toInt()
         )
         liveryCard.addView(liveryStatus, matchWrap(top = 10))
-
         val liveryCarsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -730,7 +696,6 @@ class MainActivity : Activity() {
             )
         }
         liveryCard.addView(liveryModeTabs, matchWrap(top = 10))
-
         liveryCarListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -743,7 +708,6 @@ class MainActivity : Activity() {
             matchWrap(top = 12, bottom = 6)
         )
         liveryCarsPanel.addView(liverySlotsContainer, matchWrap())
-
         liveryManualStatus = text(
             "Choose a .bin.nct file to inspect its livery entries. The indexed car list remains available in the other tab.",
             12,
@@ -758,7 +722,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         liveryManualPanel.addView(liveryManualSlotsContainer, matchWrap(top = 10))
-
         liveryPaintStatus = text(
             "Edit the Motorsports label and Road Cars paint-material/colour names. Index Game Data first.",
             12,
@@ -773,7 +736,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         liveryPaintPanel.addView(liveryPaintContainer, matchWrap(top = 10))
-
         liveryCard.addView(liveryCarsPanel, matchWrap())
         liveryCard.addView(liveryManualPanel, matchWrap())
         liveryCard.addView(liveryPaintPanel, matchWrap())
@@ -789,7 +751,6 @@ class MainActivity : Activity() {
             matchWrap(top = 12)
         )
         liveryCard.addView(liveryDecodedPanel, matchWrap())
-
         addSection(careerPage, "RR3 CAREER INSPECTOR")
         val careerCard = card(careerPage)
         careerCard.addView(
@@ -814,8 +775,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         careerCard.addView(careerDetailsContainer, matchWrap(top = 12))
-
-
         addSection(trackPage, "RR3 TRACK INSPECTOR")
         val trackCard = card(trackPage)
         trackCard.addView(
@@ -840,7 +799,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         trackCard.addView(trackDetailsContainer, matchWrap(top = 12))
-
         addSection(viewerPage, "RR3 3D VIEWER")
         val viewerCard = card(viewerPage)
         viewerCard.addView(
@@ -886,7 +844,6 @@ class MainActivity : Activity() {
                 topMargin = dp(8)
             }
         )
-
         addSection(aboutPage, "NATIVE ENGINE")
         val engineCard = card(aboutPage)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -899,7 +856,6 @@ class MainActivity : Activity() {
             ),
             matchWrap(top = 12)
         )
-
         addSection(aboutPage, "PORT STATUS")
         val statusCard = card(aboutPage)
         statusCard.addView(
@@ -914,7 +870,6 @@ class MainActivity : Activity() {
             ),
             matchWrap(top = 6)
         )
-
         aboutPage.addView(
             text(
                 "Unofficial fan project  •  Not affiliated with EA",
@@ -923,7 +878,6 @@ class MainActivity : Activity() {
             ).apply { gravity = Gravity.CENTER },
             matchWrap(top = 24)
         )
-
         restoreSelection(gameDataValue, "game_data_tree")
         val savedRootGameData = preferences.getString("game_data_root_dir", null)
         if (!savedRootGameData.isNullOrBlank()) {
@@ -933,26 +887,16 @@ class MainActivity : Activity() {
         restoreRootSaveSelection()
         updateEngineStatus()
     }
-
-
-
-
-    override fun onPause() {
-        rr3ViewerSurface?.onPause()
-        super.onPause()
+    override fun onDestroy() {
+        rr3ViewerSurface?.dispose()
+        rr3ViewerSurface = null
+        super.onDestroy()
     }
-
-    override fun onResume() {
-        super.onResume()
-        rr3ViewerSurface?.onResume()
-    }
-
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
         if (handle == 0L) {
             throw IllegalStateException("Could not initialise the RR3 NCT decoder.")
         }
-
         val buffer = ByteArray(512 * 1024)
         var total = 0L
         try {
@@ -973,10 +917,8 @@ class MainActivity : Activity() {
         if (total == 0L) throw IllegalStateException("The selected RR3 NCT file is empty.")
         return total
     }
-
     private fun newCacheFile(prefix: String, suffix: String = ".tmp"): File =
         File(cacheDir, prefix + "_" + System.nanoTime() + suffix)
-
     /**
      * Game text uses its own RC4 stream. Detection reads only the first 256
      * bytes, and decoding streams to a temporary file to avoid multi-copy
@@ -1008,7 +950,6 @@ class MainActivity : Activity() {
         if (count - offset < signature.size) return false
         return signature.indices.all { prefix[offset + it] == signature[it] }
     }
-
     /**
      * RR3 game text is a separate RC4 stream. For gametext.txt, require its
      * actual key-table signature before accepting the file as plaintext;
@@ -1023,7 +964,6 @@ class MainActivity : Activity() {
         }
         val appearsPlain = NativeBridge.nativeRr3TextFileIsPlain(sourceFile.absolutePath)
         if (appearsPlain && (!isGameTextIndex || hasGameTextSignature(sourceFile))) return false
-
         val decodedFile = newCacheFile("rr3-game-text-decoded", ".txt")
         try {
             val decodedSize = NativeBridge.nativeTransformRr3TextFile(
@@ -1040,7 +980,6 @@ class MainActivity : Activity() {
                     "The decoded file did not contain a valid RR3 game-text key table. The source was left unchanged."
                 )
             }
-
             if (sourceFile.exists() && !sourceFile.delete()) {
                 throw IllegalStateException("Could not replace the encrypted temporary text copy.")
             }
@@ -1059,7 +998,6 @@ class MainActivity : Activity() {
             decodedFile.delete()
         }
     }
-
     private fun filesAreEqual(first: File, second: File): Boolean {
         if (first.length() != second.length()) return false
         val leftBuffer = ByteArray(64 * 1024)
@@ -1078,7 +1016,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun copyGameFileToFile(entry: GameDataFile, target: File) {
         target.parentFile?.mkdirs()
         val rootPath = entry.rootPath
@@ -1119,7 +1056,6 @@ class MainActivity : Activity() {
             }
             return
         }
-
         val uri = entry.uri
             ?: throw IllegalStateException("No readable location was stored for ${entry.relativePath}.")
         val source = contentResolver.openInputStream(uri)
@@ -1130,7 +1066,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun transformGameFileToCache(entry: GameDataFile, target: File): Long {
         val sourceFile = newCacheFile("rr3-encrypted")
         try {
@@ -1144,7 +1079,6 @@ class MainActivity : Activity() {
             sourceFile.delete()
         }
     }
-
     private fun transformUriToCache(uri: Uri, target: File): Long {
         val input = contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Could not open the selected RR3 file.")
@@ -1154,7 +1088,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun indexGameDataFiles() {
         val rootPath = preferences.getString("game_data_root_dir", null)
         val stored = preferences.getString("game_data_tree", null)
@@ -1167,7 +1100,6 @@ class MainActivity : Activity() {
             ensureShizukuStorageService { indexGameDataFiles() }
             return
         }
-
         indexGameFilesButton.isEnabled = false
         gameFilesStatus.text = "Indexing RR3 .depot files…"
         gameFilesContainer.removeAllViews()
@@ -1205,7 +1137,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun ensureShizukuStorageService(onReady: () -> Unit) {
         if (shizukuStorageService != null) { onReady(); return }
         pendingShizukuAction = onReady
@@ -1237,7 +1168,6 @@ class MainActivity : Activity() {
             gameFilesStatus.text = e.message ?: "Could not connect to Shizuku."
         }
     }
-
     private fun bindShizukuStorageService() {
         if (shizukuStorageService != null) {
             val ready = pendingShizukuAction
@@ -1256,7 +1186,6 @@ class MainActivity : Activity() {
             gameFilesStatus.text = e.message ?: "Could not bind the Shizuku storage service."
         }
     }
-
     private fun locateShizukuGameDataFolder() {
         gameFilesStatus.text = "Checking Shizuku and locating the installed RR3 folder…"
         ensureShizukuStorageService {
@@ -1286,7 +1215,6 @@ class MainActivity : Activity() {
             }.start()
         }
     }
-
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
         gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
@@ -1298,14 +1226,12 @@ class MainActivity : Activity() {
                         "Root access was not granted. Grant this app Superuser access, then retry."
                     )
                 }
-
                 val userId = android.os.Process.myUid() / 100000
                 val packageNames = listOf(
                     "com.ea.games.r3_row",
                     "com.ea.games.r3_na",
                     "com.ea.games.r3_cn"
                 )
-
                 // Restore the first detector's strongest clue: the RR3 save
                 // folder and depot are siblings under the same files/ folder.
                 val saveRoot = preferences.getString("save_root_dir", null)
@@ -1314,7 +1240,6 @@ class MainActivity : Activity() {
                     ?.substringBeforeLast('/', missingDelimiterValue = "")
                     ?.takeIf { it.isNotBlank() }
                     ?.let { "$it/.depot" }
-
                 // RR3 has used both the private app-data location and the
                 // external Android/data location. Root can inspect either.
                 // Keep the private paths first because the earlier working
@@ -1332,7 +1257,6 @@ class MainActivity : Activity() {
                         add("/data/media/0/Android/data/$packageName/files/.depot")
                     }
                 }.distinct()
-
                 // Match the first working version's behaviour for known
                 // RR3 paths: the directory check itself is enough. Some game
                 // versions have a delayed/partially populated depot at startup.
@@ -1341,7 +1265,6 @@ class MainActivity : Activity() {
                         "if [ -d ${shellQuote(candidate)} ]; then printf yes; fi"
                     ).substringAfterLast('\n').trim() == "yes"
                 }
-
                 // Final fallback for non-standard RR3 package IDs and storage
                 // layouts. Search the usual external roots without assuming
                 // the application ID.
@@ -1360,7 +1283,6 @@ class MainActivity : Activity() {
                             }
                         }
                     }
-
                     val checks = storageRoots.joinToString("\n") { root ->
                         val dataRoot = shellQuote(root.trimEnd('/') + "/Android/data")
                         "data_root=$dataRoot; " +
@@ -1380,7 +1302,6 @@ class MainActivity : Activity() {
                         ?.trim()
                         ?.takeIf { it.isNotEmpty() }
                 }
-
                 if (found.isNullOrBlank()) {
                     throw IllegalStateException(
                         "Root access works, but no populated RR3 .depot folder was found. " +
@@ -1388,7 +1309,6 @@ class MainActivity : Activity() {
                             "and external Android/data package folders."
                     )
                 }
-
                 preferences.edit()
                     .putString("game_data_root_dir", found)
                     .putString("game_data_backend", "root")
@@ -1411,7 +1331,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderGameFiles() {
         if (!::gameFilesContainer.isInitialized) return
         gameFilesContainer.removeAllViews()
@@ -1422,7 +1341,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         val query = gameFilesSearch.text.toString().trim().lowercase(Locale.ROOT)
         val matches = indexedGameFiles.filter {
             query.isEmpty() || it.relativePath.lowercase(Locale.ROOT).contains(query)
@@ -1434,7 +1352,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         val root = GameDataTreeNode("", "")
         for (entry in matches) {
             val parts = entry.relativePath.replace('\\', '/').split('/').filter { it.isNotBlank() }
@@ -1449,7 +1366,6 @@ class MainActivity : Activity() {
                 node = child
             }
         }
-
         fun addNode(parent: LinearLayout, node: GameDataTreeNode, depth: Int) {
             val entry = node.file
             if (entry == null) {
@@ -1498,7 +1414,6 @@ class MainActivity : Activity() {
                 )
             }
         }
-
         for (child in root.children.values.sortedWith(
             compareBy<GameDataTreeNode>({ it.file != null }, { it.name.lowercase(Locale.ROOT) })
         )) {
@@ -1510,8 +1425,6 @@ class MainActivity : Activity() {
             "Showing ${matches.size} file(s) matching “${gameFilesSearch.text}”. Matching folders are expanded."
         }
     }
-
-
     private fun scanLiveryCarAssets(liveryEntry: GameDataFile, carFolder: String): List<GameDataFile> {
         val rootPath = liveryEntry.depotRootPath
             ?: preferences.getString("game_data_root_dir", null)
@@ -1537,14 +1450,12 @@ class MainActivity : Activity() {
                 )
             }
         }
-
         val storedTree = preferences.getString("game_data_tree", null)
             ?: throw IllegalStateException("The selected RR3 depot folder is no longer available. Re-index the game files.")
         return GameDataBrowser.scanLiveryCarAssets(
             contentResolver, Uri.parse(storedTree), carFolder
         )
     }
-
     private fun formatLiveryCarName(carName: String): String =
         carName.split('_').filter { it.isNotBlank() }.joinToString(" ") { part ->
             when (part.lowercase(Locale.ROOT)) {
@@ -1562,175 +1473,131 @@ class MainActivity : Activity() {
                 }
             }
         }
-
-
-
-
     private fun renderRr3ViewerCarChoices() {
-        if (!::rr3ViewerCarSpinner.isInitialized) return
-        val marker = "vehicles/data/liveries/"
-        rr3ViewerCars = indexedGameFiles.mapNotNull { entry ->
-            val path = entry.relativePath.replace('\\', '/')
-            if (!path.startsWith(marker, ignoreCase = true) ||
-                !path.endsWith(".liveries.bin.nct", ignoreCase = true)
-            ) return@mapNotNull null
-            val folder = path.substringAfter(marker)
-                .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
-            if (folder.isBlank() || folder.equals("default", ignoreCase = true) ||
-                folder.contains('/') || folder.contains("..")
-            ) return@mapNotNull null
-            val name = folder.substringAfter('_', folder)
-            Rr3ViewerCar(folder, formatLiveryCarName(name), entry)
-        }.distinctBy { it.folder.lowercase(Locale.ROOT) }
-            .sortedWith(compareBy({ it.folder.substringBefore('_') }, { it.displayName.lowercase(Locale.ROOT) }))
-
-        val labels = if (rr3ViewerCars.isEmpty()) {
-            listOf("No cars indexed")
-        } else {
-            rr3ViewerCars.map { "\${it.displayName}  ·  \${it.folder}" }
-        }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-        rr3ViewerCarSpinner.adapter = adapter
-        rr3ViewerLoadButton.isEnabled = rr3ViewerCars.isNotEmpty()
-        rr3ViewerStatus.text = if (rr3ViewerCars.isEmpty()) {
-            "No car livery lists found. Index Game Data first; cars are discovered from vehicles/data/liveries."
-        } else {
-            "Found \${rr3ViewerCars.size} installed car(s). Choose one and load its actual model."
-        }
-    }
-
-    private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
+        if (!::rr3ViewerCarSpinner.isInitialized || rr3ViewerCatalogLoading) return
         if (indexedGameFiles.isEmpty()) {
+            rr3ViewerCars = emptyList()
+            rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, listOf("No cars indexed"))
+            rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."
             return
         }
+        val relevant = indexedGameFiles.filter { entry ->
+            val p = entry.relativePath.replace('\\', '/').lowercase(Locale.ROOT)
+            p == "vehicles/data/cardesc.list.nct" || p == "vehicles/data/carappearances.appearances.nct" ||
+                (p.startsWith("vehicles/data/") && Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE).matches(p.substringAfterLast('/')))
+        }
+        if (relevant.none { it.relativePath.endsWith("cardesc.list.nct", true) } || relevant.none { it.relativePath.endsWith("carappearances.appearances.nct", true) }) {
+            rr3ViewerStatus.text = "RR3 cardesc or car-appearance registry is missing. Re-index the depot and check vehicles/data."
+            rr3ViewerLoadButton.isEnabled = false
+            return
+        }
+        rr3ViewerCatalogLoading = true
         rr3ViewerLoadButton.isEnabled = false
-        rr3ViewerStatus.text = "Finding \${car.folder}'s exterior model and textures…"
+        rr3ViewerStatus.text = "Reading RR3 car identities and appearance-to-model mappings…"
+        val anchor = relevant.first()
         Thread {
             try {
-                val assets = scanLiveryCarAssets(car.liveryEntry, car.folder)
-                fun plainName(name: String): String =
-                    name.removeSuffixIgnoreCaseLocal(".bin")
-                        .removeSuffixIgnoreCaseLocal(".z")
-
-                val modelCandidates = assets.filter { entry ->
-                    val ext = plainName(entry.name).substringAfterLast('.', "").lowercase(Locale.ROOT)
-                    ext == "m3g" || ext == "sb3d"
-                }.filter { entry ->
-                    val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
-                    !leaf.contains("_int") && !leaf.contains("_shared") &&
-                        !leaf.contains("_wheels") && !leaf.contains("driver_lod")
+                val paths = ArrayList<String>(relevant.size)
+                val data = ArrayList<ByteArray>(relevant.size)
+                for (entry in relevant) { paths.add(entry.relativePath.replace('\\', '/')); data.add(readGameFile(entry)) }
+                val payload = JSONObject(NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray()))
+                if (!payload.optBoolean("ok")) throw IllegalStateException(payload.optString("error", "RR3 could not read its car registry."))
+                val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
+                val cars = ArrayList<Rr3ViewerCar>(array.length())
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val dataFolder = item.optString("folder").trim()
+                    val modelFolder = item.optString("modelFolder").trim()
+                    if (dataFolder.isBlank() || modelFolder.isBlank() || modelFolder.contains('/') || modelFolder.contains("..")) continue
+                    val label = listOf(item.optString("year").trim(), item.optString("make").trim(), item.optString("model").trim()).filter { it.isNotBlank() }.joinToString(" ").ifBlank { formatLiveryCarName(modelFolder) }
+                    cars.add(Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, anchor))
                 }
-                val modelEntry = modelCandidates.sortedWith(
-                    compareBy<GameDataFile> { entry ->
-                        val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
-                        when {
-                            leaf == "\${car.folder.lowercase(Locale.ROOT)}_a.m3g" -> 0
-                            leaf.endsWith("_a.m3g") -> 1
-                            leaf.endsWith("_a.sb3d") -> 2
-                            else -> 3
-                        }
-                    }.thenBy { it.relativePath.lowercase(Locale.ROOT) }
-                ).firstOrNull() ?: throw IllegalStateException(
-                    "No exterior .m3g/.sb3d model was found in vehicles/\${car.folder}. The selected car may not have its model installed in this depot."
-                )
-
+                val sorted = cars.distinctBy { it.modelFolder.lowercase(Locale.ROOT) }.sortedWith(compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id }))
+                runOnUiThread {
+                    rr3ViewerCars = sorted
+                    val labels = if (sorted.isEmpty()) listOf("No cars with model mappings found") else sorted.map { it.displayName + "  ·  " + it.modelFolder }
+                    rr3ViewerCarSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                    rr3ViewerLoadButton.isEnabled = sorted.isNotEmpty()
+                    rr3ViewerStatus.text = if (sorted.isEmpty()) "The RR3 registry returned no cars with a valid model folder." else "Found " + sorted.size + " cars from RR3's car and appearance registries."
+                    rr3ViewerCatalogLoading = false
+                }
+            } catch (error: Exception) { runOnUiThread { rr3ViewerStatus.text = error.message ?: "Could not build the RR3 car catalogue."; rr3ViewerLoadButton.isEnabled = false; rr3ViewerCatalogLoading = false } }
+            catch (error: OutOfMemoryError) { runOnUiThread { rr3ViewerStatus.text = "Not enough memory to read the installed RR3 car catalogue."; rr3ViewerLoadButton.isEnabled = false; rr3ViewerCatalogLoading = false } }
+        }.start()
+    }
+    private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
+        if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."; return }
+        rr3ViewerLoadButton.isEnabled = false
+        rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior model and sidecars…"
+        Thread {
+            try {
+                val assets = scanLiveryCarAssets(car.liveryEntry, car.modelFolder)
+                fun plainName(name: String): String = name.removeSuffixIgnoreCaseLocal(".bin").removeSuffixIgnoreCaseLocal(".z")
+                val expectedStem = car.modelFolder.lowercase(Locale.ROOT)
+                val candidates = assets.filter { entry ->
+                    val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                    val ext = leaf.substringAfterLast('.', "")
+                    (ext == "m3g" || ext == "sb3d") && !leaf.contains("_int") && !leaf.contains("_shared") && !leaf.contains("_wheels") && !leaf.contains("driver_lod")
+                }
+                val modelEntry = candidates.sortedWith(compareBy<GameDataFile> { entry ->
+                    val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                    when { leaf == expectedStem + "_a.m3g" -> 0; leaf == expectedStem + "_a.sb3d" -> 1; leaf.startsWith(expectedStem) && leaf.endsWith("_a.m3g") -> 2; leaf.startsWith(expectedStem) && leaf.endsWith(".m3g") -> 3; leaf.endsWith("_a.m3g") -> 4; else -> 5 }
+                }.thenBy { it.relativePath.lowercase(Locale.ROOT) }).firstOrNull() ?: throw IllegalStateException("No exterior model for " + car.displayName + " was found in vehicles/" + car.modelFolder + ".")
                 val modelSource = readGameFile(modelEntry)
                 val (innerModelName, modelBytes) = unwrappedGameFile(modelEntry, modelSource)
                 val modelExtension = innerModelName.substringAfterLast('.', "").lowercase(Locale.ROOT)
-                if (modelExtension != "m3g" && modelExtension != "sb3d") {
-                    throw IllegalStateException("The selected file did not unwrap to an RR3 3D model.")
-                }
+                if (modelExtension != "m3g" && modelExtension != "sb3d") throw IllegalStateException("The selected file did not unwrap to a supported RR3 3D model.")
                 val modelPath = plainName(modelEntry.relativePath)
-
                 val supportPaths = ArrayList<String>()
                 val supportData = ArrayList<ByteArray>()
                 var supportBytes = 0L
                 var skippedTextures = 0
+                val wantedLivery = "vehicles/data/liveries/" + car.dataFolder + ".liveries.bin.nct"
+                indexedGameFiles.firstOrNull { it.relativePath.equals(wantedLivery, ignoreCase = true) }?.let {
+                    val bytes = readGameFile(it); supportPaths.add(it.relativePath.replace('\\', '/')); supportData.add(bytes); supportBytes += bytes.size.toLong()
+                }
                 for (entry in assets) {
                     if (entry.relativePath == modelEntry.relativePath) continue
-                    val innerLeaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
-                    val extension = innerLeaf.substringAfterLast('.', "")
-                    val isPoint = extension == "points"
-                    val isSharedModel = extension == "m3g" && innerLeaf.contains("_shared")
-                    val isTexture = extension == "sba" || extension == "pvr" || extension == "dds"
-                    if (!isPoint && !isSharedModel && !isTexture) continue
-
+                    val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                    val ext = leaf.substringAfterLast('.', "")
+                    val isPoint = ext == "points"
+                    val isShared = ext == "m3g" && leaf.contains("_shared")
+                    val isTexture = ext in setOf("sba", "pvr", "dds", "png", "jpg", "jpeg")
+                    if (!isPoint && !isShared && !isTexture) continue
                     try {
-                        val raw = readGameFile(entry)
-                        val (innerName, bytes) = unwrappedGameFile(entry, raw)
-                        val innerExtension = innerName.substringAfterLast('.', "").lowercase(Locale.ROOT)
-                        if (innerExtension !in setOf("points", "m3g", "sba", "pvr", "dds")) continue
-                        val isTextureFile = innerExtension in setOf("sba", "pvr", "dds")
-                        if (isTextureFile && bytes.size > 16 * 1024 * 1024) {
-                            skippedTextures++
-                            continue
-                        }
-                        if (supportBytes + bytes.size > 64L * 1024L * 1024L) {
-                            if (isTextureFile) {
-                                skippedTextures++
-                                continue
-                            }
-                            throw IllegalStateException("The car's model sidecars exceed the 64 MiB preview limit.")
-                        }
-                        supportBytes += bytes.size.toLong()
-                        supportPaths.add(plainName(entry.relativePath))
-                        supportData.add(bytes)
-                    } catch (e: Exception) {
-                        if (isPoint || isSharedModel) throw e
-                        skippedTextures++
-                    }
+                        val raw = readGameFile(entry); val (innerName, bytes) = unwrappedGameFile(entry, raw)
+                        val innerExt = innerName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                        if (innerExt !in setOf("points", "m3g", "sba", "pvr", "dds", "png", "jpg", "jpeg")) continue
+                        val tex = innerExt in setOf("sba", "pvr", "dds", "png", "jpg", "jpeg")
+                        if (tex && bytes.size > 16 * 1024 * 1024) { skippedTextures++; continue }
+                        if (supportBytes + bytes.size > 64L * 1024L * 1024L) { if (tex) { skippedTextures++; continue }; throw IllegalStateException("This car's model sidecars exceed the 64 MiB preview limit.") }
+                        supportBytes += bytes.size.toLong(); supportPaths.add(plainName(entry.relativePath)); supportData.add(bytes)
+                    } catch (error: Exception) { if (isPoint || isShared) throw error; skippedTextures++ }
                 }
-
-                val packet = NativeBridge.nativeBuildRr3ViewerPacket(
-                    modelPath,
-                    modelBytes,
-                    supportPaths.toTypedArray(),
-                    supportData.toTypedArray()
-                ) ?: throw IllegalStateException(
-                    NativeBridge.nativeGetRr3ViewerError().ifBlank {
-                        "Monkey Tool could not assemble this car for the 3D viewer."
-                    }
-                )
-
+                val result = JSONObject(NativeBridge.nativeCreateRr3Viewer(modelPath, car.dataFolder, modelBytes, supportPaths.toTypedArray(), supportData.toTypedArray()))
+                if (!result.optBoolean("ok")) throw IllegalStateException(result.optString("error", "Monkey Tool could not prepare this RR3 model."))
+                val handle = result.optLong("handle", 0L)
+                if (handle == 0L) throw IllegalStateException("The native viewer did not create a model session.")
+                val meshes = result.optInt("meshes"); val triangles = result.optInt("triangles"); val textures = result.optInt("textures")
+                if (meshes <= 0 || triangles <= 0) { NativeBridge.nativeFreeRr3Viewer(handle); throw IllegalStateException("The model parser found no drawable exterior triangles in " + modelEntry.relativePath + ".") }
                 runOnUiThread {
-                    rr3ViewerSurface?.onPause()
-                    rr3ViewerSurfaceHost.removeAllViews()
-                    val surface = Rr3ModelViewer(this, packet)
+                    rr3ViewerSurface?.dispose(); rr3ViewerSurfaceHost.removeAllViews()
+                    val surface = Rr3ModelViewer(this, handle) { frameStatus ->
+                        rr3ViewerStatus.text = car.displayName + " · " + meshes + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s) · " + frameStatus + if (skippedTextures > 0) " · " + skippedTextures + " texture file(s) skipped" else ""
+                    }
                     rr3ViewerSurface = surface
-                    rr3ViewerSurfaceHost.addView(
-                        surface,
-                        FrameLayout.LayoutParams(
-                            FrameLayout.LayoutParams.MATCH_PARENT,
-                            FrameLayout.LayoutParams.MATCH_PARENT
-                        )
-                    )
-                    rr3ViewerStatus.text =
-                        "Loaded \${car.folder}: \${surface.stats.meshes} mesh(es), " +
-                        "\${surface.stats.triangles} triangles, \${surface.stats.textures} texture(s)." +
-                        if (skippedTextures > 0) " \${skippedTextures} oversized or unreadable texture(s) were skipped." else ""
+                    rr3ViewerSurfaceHost.addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    rr3ViewerStatus.text = "Model assembled. Rendering " + car.displayName + "…"
                     rr3ViewerLoadButton.isEnabled = true
                 }
-            } catch (e: OutOfMemoryError) {
-                runOnUiThread {
-                    rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."
-                    rr3ViewerLoadButton.isEnabled = true
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    rr3ViewerStatus.text = e.message ?: "Could not load this car in the 3D viewer."
-                    rr3ViewerLoadButton.isEnabled = true
-                }
-            }
+            } catch (error: Exception) { runOnUiThread { rr3ViewerStatus.text = error.message ?: "Could not load this car in the 3D viewer."; rr3ViewerLoadButton.isEnabled = true } }
+            catch (error: OutOfMemoryError) { runOnUiThread { rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."; rr3ViewerLoadButton.isEnabled = true } }
         }.start()
     }
-
     private fun renderSelectedLiveryDecodedData() {
         if (!::liveryDecodedContainer.isInitialized) return
         liveryDecodedContainer.removeAllViews()
-
         val payload = selectedLiveryPayload
         if (payload == null) {
             liveryDecodedContainer.addView(
@@ -1742,7 +1609,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         fun addDetail(parent: LinearLayout, label: String, value: String) {
             parent.addView(
                 text(label, 10, 0xFF75B9F1.toInt(), bold = true),
@@ -1755,11 +1621,9 @@ class MainActivity : Activity() {
                 matchWrap(top = 2)
             )
         }
-
         fun stringValue(item: JSONObject, key: String): String {
             return if (item.has(key) && !item.isNull(key)) item.optString(key).trim() else ""
         }
-
         val title = selectedLiverySourceName.ifBlank { "Livery NCT" }
         liveryDecodedContainer.addView(
             text(title, 15, Color.WHITE, bold = true),
@@ -1768,7 +1632,6 @@ class MainActivity : Activity() {
         addDetail(liveryDecodedContainer, "INTERNAL CAR IDENTIFIER", payload.optString("car"))
         addDetail(liveryDecodedContainer, "SOURCE FILE", title)
         addDetail(liveryDecodedContainer, "ENCRYPTED FILE SIZE", "$selectedLiverySourceSize bytes")
-
         val liveries = payload.optJSONArray("liveries")
         val count = liveries?.length() ?: 0
         addDetail(
@@ -1776,14 +1639,12 @@ class MainActivity : Activity() {
             "PARSED LIVERY RECORDS",
             payload.optInt("count", count).toString()
         )
-
         if (count == 0) {
             liveryDecodedContainer.addView(
                 text("The parser decoded the container but found no livery records.", 12, 0xFFFFC27A.toInt()),
                 matchWrap(top = 12)
             )
         }
-
         for (index in 0 until count) {
             val item = liveries?.optJSONObject(index) ?: continue
             val red = item.optInt("red").coerceIn(0, 255)
@@ -1804,7 +1665,6 @@ class MainActivity : Activity() {
                 ),
                 matchWrap(bottom = 3)
             )
-
             for ((key, label) in listOf(
                 "file" to "INTERNAL FILE",
                 "display" to "DISPLAY NAME",
@@ -1820,7 +1680,6 @@ class MainActivity : Activity() {
             }
             addDetail(record, "BUTTON COLOUR · RGB", "$red, $green, $blue")
             addDetail(record, "BUTTON COLOUR · HEX", hex)
-
             val overrides = item.optJSONArray("overrides")
             record.addView(
                 text(
@@ -1843,7 +1702,6 @@ class MainActivity : Activity() {
                     )
                 }
             }
-
             val materials = item.optJSONArray("materials")
             record.addView(
                 text(
@@ -1867,7 +1725,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-
         liveryDecodedContainer.addView(
             text("RAW PARSER OUTPUT · JSON", 11, 0xFF75B9F1.toInt(), bold = true),
             matchWrap(top = 18, bottom = 6)
@@ -1880,11 +1737,9 @@ class MainActivity : Activity() {
             matchWrap()
         )
     }
-
     private fun renderLiveryCarChoices() {
         if (!::liveryCarListContainer.isInitialized) return
         liveryCarListContainer.removeAllViews()
-
         val marker = "vehicles/data/liveries/"
         val entries = indexedGameFiles.mapNotNull { entry ->
             val path = entry.relativePath.replace('\\', '/')
@@ -1899,7 +1754,6 @@ class MainActivity : Activity() {
             val carName = if (year == "Other") carFolder else carFolder.substringAfter('_')
             Triple(entry, year, carName)
         }.sortedWith(compareBy({ it.second }, { it.third.lowercase(Locale.ROOT) }))
-
         if (entries.isEmpty()) {
             liveryStatus.text = if (indexedGameFiles.isEmpty()) {
                 "Index the RR3 .depot in Game Data first."
@@ -1912,7 +1766,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         liveryStatus.text = "Found ${entries.size} car livery list(s). Expand a year, then select a car."
         for ((year, cars) in entries.groupBy { it.second }.toSortedMap()) {
             val expanded = year in expandedLiveryYears
@@ -1934,7 +1787,6 @@ class MainActivity : Activity() {
             }
             liveryCarListContainer.addView(yearRow, matchWrap(bottom = 5))
             if (!expanded) continue
-
             for ((entry, _, carName) in cars) {
                 val carFolder = entry.relativePath.replace('\\', '/')
                     .substringAfter(marker)
@@ -1959,7 +1811,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun loadLiverySlots(
         entry: GameDataFile,
         target: LinearLayout = liverySlotsContainer
@@ -1978,7 +1829,6 @@ class MainActivity : Activity() {
             liveryStatus.text = "Could not identify the car folder from this livery list."
             return
         }
-
         selectedLiveryEntry = null
         selectedLiveryCarFolder = ""
         selectedLiveryBytes = null
@@ -1988,7 +1838,6 @@ class MainActivity : Activity() {
         selectedLiverySourceSize = 0L
         target.removeAllViews()
         liveryStatus.text = "Reading existing livery slots for $carFolder…"
-
         Thread {
             try {
                 val liveryBytes = readGameFile(entry)
@@ -1998,7 +1847,6 @@ class MainActivity : Activity() {
                 }
                 val liveryArray = payload.optJSONArray("liveries")
                     ?: throw IllegalStateException("The livery list contains no readable entries.")
-
                 runOnUiThread {
                     selectedLiveryEntry = entry
                     selectedLiveryCarFolder = carFolder
@@ -2021,7 +1869,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderLiverySlots(
         carFolder: String,
         liveryArray: org.json.JSONArray,
@@ -2033,7 +1880,6 @@ class MainActivity : Activity() {
             text("$carFolder · ${liveryArray.length()} existing slot(s)", 16, Color.WHITE, bold = true),
             matchWrap(bottom = 9)
         )
-
         if (liveryArray.length() == 0) {
             target.addView(
                 text("This car has no readable livery entries to use as a template.", 12, 0xFF9BAFC5.toInt()),
@@ -2041,7 +1887,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         for (i in 0 until liveryArray.length()) {
             val item = liveryArray.optJSONObject(i) ?: continue
             val display = item.optString("display")
@@ -2093,7 +1938,6 @@ class MainActivity : Activity() {
                 target.addView(actions, matchWrap(top = 7))
             }
         }
-
         if (allowAdd) {
             target.addView(
                 actionButton("Add a new livery slot") { prepareAddLiverySlot() },
@@ -2101,7 +1945,6 @@ class MainActivity : Activity() {
             )
         }
     }
-
     private fun showEditLiveryEntryDialog(liveryIndex: Int, target: LinearLayout) {
         val entry = selectedLiveryEntry ?: run {
             liveryStatus.text = "Select a car livery list first."
@@ -2114,7 +1957,6 @@ class MainActivity : Activity() {
         }
         val entries = selectedLiveryArray ?: return
         val item = entries.optJSONObject(liveryIndex) ?: return
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(4))
@@ -2125,7 +1967,6 @@ class MainActivity : Activity() {
                 content.addView(it, matchWrap(bottom = 9))
             }
         }
-
         val driverInput = addField(
             "Driver suit texture path",
             item.optString("driver"),
@@ -2150,7 +1991,6 @@ class MainActivity : Activity() {
                     liveryStatus.text = "Driver and swatch fields must be at most 1024 characters."
                     return@setOnClickListener
                 }
-
                 val meshes = ArrayList<Int>()
                 val materials = ArrayList<Int>()
                 val materialArray = item.optJSONArray("materials") ?: org.json.JSONArray()
@@ -2163,7 +2003,6 @@ class MainActivity : Activity() {
                         materials.add(materialId)
                     }
                 }
-
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 liveryStatus.text = "Updating livery entry \${liveryIndex + 1}…"
@@ -2204,7 +2043,6 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
-
     private fun publishUpdatedLiveryList(
         entry: GameDataFile,
         carFolder: String,
@@ -2249,7 +2087,6 @@ class MainActivity : Activity() {
             FileOutputStream(file).use { it.write(updatedBytes) }
             file
         }
-
         val payload = JSONObject(NativeBridge.nativeInspectRr3Liveries(updatedBytes))
         if (!payload.optBoolean("ok")) {
             outputFile.delete()
@@ -2257,7 +2094,6 @@ class MainActivity : Activity() {
         }
         val array = payload.optJSONArray("liveries")
             ?: throw IllegalStateException("The updated livery list has no entries.")
-
         runOnUiThread {
             selectedLiveryBytes = updatedBytes
             selectedLiveryArray = array
@@ -2284,7 +2120,6 @@ class MainActivity : Activity() {
             launchRr3OutputPicker()
         }
     }
-
     private fun chooseLiverySwatchImage(liveryIndex: Int, target: LinearLayout) {
         val entry = selectedLiveryEntry ?: run {
             liveryStatus.text = "Select a car livery list first."
@@ -2300,7 +2135,6 @@ class MainActivity : Activity() {
             liveryStatus.text = "This livery has no preview-image reference. Set one in Edit entry first."
             return
         }
-
         // Open the picker before touching the depot. A failed asset scan must
         // never make this button appear to do nothing.
         pendingLiverySwatchEdit = PendingLiverySwatchEdit(
@@ -2322,7 +2156,6 @@ class MainActivity : Activity() {
             liveryStatus.text = e.message ?: "Android could not open the image picker."
         }
     }
-
     private fun applyLiverySwatchImage(uri: Uri) {
         val pending = pendingLiverySwatchEdit ?: run {
             liveryStatus.text = "No preview image target is waiting."
@@ -2340,7 +2173,6 @@ class MainActivity : Activity() {
                         "Preview replacement needs the indexed RR3 depot. Re-index Game Data and try again."
                     )
                 }
-
                 val carAssets = scanLiveryCarAssets(pending.liveryEntry, pending.carFolder)
                 val normalised = pending.swatchPath
                     .replace('\\', '/')
@@ -2368,7 +2200,6 @@ class MainActivity : Activity() {
                             "More than one texture matches '${pending.swatchPath}'. Set a unique preview image reference in Edit entry."
                         }
                     )
-
                 val original = readGameFile(textureEntry)
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected image.")
@@ -2429,12 +2260,10 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun indexedFileByLeaf(leafName: String): GameDataFile? =
         indexedGameFiles.firstOrNull {
             it.relativePath.substringAfterLast('/').equals(leafName, ignoreCase = true)
         }
-
     private fun loadLiveryPaintLabels() {
         if (indexedGameFiles.isEmpty()) {
             liveryPaintStatus.text = "Index the RR3 .depot in Game Data first."
@@ -2455,7 +2284,6 @@ class MainActivity : Activity() {
                 "Could not find ${missing.joinToString(", ")} in the indexed depot. Re-index Game Data and try again."
             return
         }
-
         liveryPaintStatus.text = "Reading paint categories and English label strings…"
         liveryPaintContainer.removeAllViews()
         Thread {
@@ -2491,19 +2319,16 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderLiveryPaintLabels(payload: JSONObject) {
         liveryPaintContainer.removeAllViews()
         val packLabels = payload.optJSONArray("packLabels") ?: org.json.JSONArray()
         val paintOptions = payload.optJSONArray("paintOptions") ?: org.json.JSONArray()
-
         fun fallbackKeyName(key: String): String =
             key.substringAfterLast('_')
                 .removeSuffix("NAME")
                 .replace('_', ' ')
                 .lowercase(Locale.ROOT)
                 .replaceFirstChar { it.uppercase() }
-
         val special = (0 until packLabels.length()).mapNotNull { i ->
             packLabels.optJSONObject(i)
         }.filter {
@@ -2543,7 +2368,6 @@ class MainActivity : Activity() {
                 liveryPaintContainer.addView(row, matchWrap(bottom = 6))
             }
         }
-
         liveryPaintContainer.addView(
             text("ROAD CARS · PAINT MATERIAL AND COLOUR", 11, 0xFF8FA4BA.toInt(), bold = true),
             matchWrap(top = 12, bottom = 6)
@@ -2592,7 +2416,6 @@ class MainActivity : Activity() {
             })
             liveryPaintContainer.addView(row, matchWrap(bottom = 6))
         }
-
         val otherPackLabels = (0 until packLabels.length()).mapNotNull { i ->
             packLabels.optJSONObject(i)
         }.filterNot { it.optString("key").endsWith("_SPECIAL", ignoreCase = true) }
@@ -2628,7 +2451,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun showPaintLabelEditDialog(title: String, fields: List<PaintLabelField>) {
         if (fields.isEmpty()) {
             liveryPaintStatus.text = "This option has no editable label fields in the available files."
@@ -2686,7 +2508,6 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
-
     private fun saveLiveryPaintLabels(
         keys: Array<String>,
         values: Array<String>,
@@ -2700,7 +2521,6 @@ class MainActivity : Activity() {
                 "gametext.txt, text_en.txt or asset_list_base.txtCache.txt is not indexed. Re-index the depot."
             return
         }
-
         liveryPaintStatus.text = "Updating the selected paint label text…"
         Thread {
             var zip: File? = null
@@ -2723,7 +2543,6 @@ class MainActivity : Activity() {
                 if (changed.length() == 0) {
                     throw IllegalStateException("No paint label changes were needed.")
                 }
-
                 var updatedAssetList = readGameFile(assetListEntry)
                 val changedFiles = ArrayList<Pair<String, ByteArray>>()
                 for (i in 0 until changed.length()) {
@@ -2747,7 +2566,6 @@ class MainActivity : Activity() {
                 if (changedFiles.isEmpty()) {
                     throw IllegalStateException("No paint label files were rebuilt.")
                 }
-
                 zip = newCacheFile("rr3-paint-label-update", ".zip")
                 ZipOutputStream(FileOutputStream(zip!!).buffered()).use { output ->
                     for ((path, bytes) in changedFiles) {
@@ -2787,7 +2605,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun chooseManualLiveryFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -2796,7 +2613,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestManualLiveryInput)
     }
-
     private fun openManualLiveryFile(uri: Uri) {
         liveryManualStatus.text = "Reading selected .bin.nct file…"
         liveryManualSlotsContainer.removeAllViews()
@@ -2878,7 +2694,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun prepareAddLiverySlot() {
         val entry = selectedLiveryEntry ?: run {
             liveryStatus.text = "Select a car first."
@@ -2897,7 +2712,6 @@ class MainActivity : Activity() {
             liveryStatus.text = "This car has no existing livery to copy as a template."
             return
         }
-
         liveryStatus.text = "Preparing the texture assets for $carFolder…"
         Thread {
             try {
@@ -2922,7 +2736,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun showAddLiverySlotDialog(
         liveryEntry: GameDataFile,
         carFolder: String,
@@ -2943,7 +2756,6 @@ class MainActivity : Activity() {
             liveryStatus.text = "No usable template livery records were found."
             return
         }
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(4))
@@ -2963,7 +2775,6 @@ class MainActivity : Activity() {
         val nameInput = editBox("Livery display name", "", numeric = false)
         content.addView(text("Display name", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
         content.addView(nameInput, matchWrap(bottom = 10))
-
         content.addView(text("Button colour · RGB (0–255)", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
         val rgbRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2981,7 +2792,6 @@ class MainActivity : Activity() {
             "The update is exported as a ZIP containing the new texture, updated livery list and refreshed asset-cache file. Apply it to a backup of the depot and test it in-game.",
             11, 0xFF8499AF.toInt()
         ), matchWrap(top = 10))
-
         val dialog = AlertDialog.Builder(this)
             .setTitle("Add livery slot")
             .setView(content)
@@ -3022,7 +2832,6 @@ class MainActivity : Activity() {
                     liveryStatus.text = "Could not find the selected template's body texture. Re-index the car's depot files."
                     return@setOnClickListener
                 }
-
                 val sourcePairs = listOf(
                     liveryEntry.relativePath to liveryEntry,
                     donorAsset.relativePath to donorAsset,
@@ -3035,7 +2844,6 @@ class MainActivity : Activity() {
                 val assetPaths = (carAssets.map { it.relativePath } + sourcePairs.map { it.first })
                     .distinct()
                     .toTypedArray()
-
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 liveryStatus.text = "Repainting the donor texture and building the new livery slot…"
@@ -3130,8 +2938,6 @@ class MainActivity : Activity() {
         }
         dialog.show()
     }
-
-
     private fun showGameFileActions(entry: GameDataFile) {
         val actions = arrayListOf("Export original file")
         val lower = entry.name.lowercase()
@@ -3159,7 +2965,6 @@ class MainActivity : Activity() {
         if (extension == "points") {
             actions.add("Edit car points")
         }
-
         AlertDialog.Builder(this)
             .setTitle(entry.name)
             .setItems(actions.toTypedArray()) { _, which ->
@@ -3179,7 +2984,6 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .show()
     }
-
     private fun readGameFile(entry: GameDataFile): ByteArray {
         val rootPath = entry.rootPath
         if (!rootPath.isNullOrBlank()) {
@@ -3201,13 +3005,11 @@ class MainActivity : Activity() {
             }
             return bytes
         }
-
         val uri = entry.uri ?: throw IllegalStateException("No readable location was stored for ${entry.relativePath}.")
         val input = contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Could not open ${entry.relativePath}.")
         return input.use { it.readBytes() }
     }
-
     private fun unwrappedGameFile(
         entry: GameDataFile,
         source: ByteArray,
@@ -3230,7 +3032,6 @@ class MainActivity : Activity() {
             .removeSuffixIgnoreCaseLocal(".z")
         return name to output
     }
-
     private fun exportGameFile(entry: GameDataFile, unwrapOnly: Boolean) {
         gameFilesStatus.text = "Reading ${entry.relativePath}…"
         Thread {
@@ -3259,7 +3060,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun decodeGameDataFile(entry: GameDataFile) {
         gameFilesStatus.text = "Decoding ${entry.relativePath}…"
         val fileExtension = entry.name.substringAfterLast('.', "").lowercase()
@@ -3332,7 +3132,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun decodeGameTextFile(entry: GameDataFile) {
         gameFilesStatus.text = "Reading RR3 game text…"
         Thread {
@@ -3359,7 +3158,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun convertGameAudio(entry: GameDataFile) {
         gameFilesStatus.text = "Converting RR3 audio to WAV…"
         Thread {
@@ -3386,7 +3184,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun extractGameAudioBank(entry: GameDataFile) {
         gameFilesStatus.text = "Extracting Wwise audio bank…"
         Thread {
@@ -3401,7 +3198,6 @@ class MainActivity : Activity() {
                             ?: NativeBridge.nativeGetRr3AudioError()
                     )
                 }
-
                 val entries = inspection.optJSONArray("entries")
                     ?: throw IllegalStateException("The Wwise bank did not return an embedded-sound list.")
                 val externalSourceCount = inspection.optJSONArray("sources")?.length() ?: 0
@@ -3413,7 +3209,6 @@ class MainActivity : Activity() {
                     }
                     throw IllegalStateException("This bank contains no embedded audio files.$detail")
                 }
-
                 val bankName = name.substringBeforeLast('.', name)
                     .substringAfterLast('/')
                     .replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -3422,7 +3217,6 @@ class MainActivity : Activity() {
                 archiveFile = outputArchive
                 val usedIds = mutableSetOf<String>()
                 var wavCount = 0
-
                 ZipOutputStream(FileOutputStream(outputArchive)).use { archive ->
                     for (index in 0 until entries.length()) {
                         val sound = entries.getJSONObject(index)
@@ -3434,7 +3228,6 @@ class MainActivity : Activity() {
                             offset > bankBytes.size.toLong() - size) {
                             throw IllegalStateException("SoundBank entry $index has an invalid data range.")
                         }
-
                         val kind = sound.optString("kind", "bin").lowercase(Locale.ROOT)
                         val extension = when (kind) {
                             "wem" -> "wem"
@@ -3450,12 +3243,10 @@ class MainActivity : Activity() {
                         val start = offset.toInt()
                         val count = size.toInt()
                         val rawName = "$bankName/$fileStem.$extension"
-
                         // Preserve the exact original payload for every bank entry.
                         archive.putNextEntry(ZipEntry(rawName))
                         archive.write(bankBytes, start, count)
                         archive.closeEntry()
-
                         // Add a WAV sidecar when the Android-native decoder supports
                         // the embedded WEM/GNSU codec. Unsupported Wwise Vorbis stays
                         // available as its original .wem file.
@@ -3473,7 +3264,6 @@ class MainActivity : Activity() {
                             }
                         }
                     }
-
                     inspection.put("sourceFile", entry.relativePath)
                     inspection.put("wavSidecars", wavCount)
                     inspection.put(
@@ -3484,12 +3274,10 @@ class MainActivity : Activity() {
                     archive.write(inspection.toString(2).toByteArray(Charsets.UTF_8))
                     archive.closeEntry()
                 }
-
                 val readyFile = outputArchive
                 if (!readyFile.isFile || readyFile.length() <= 0L) {
                     throw IllegalStateException("The extracted bank archive is empty.")
                 }
-
                 pendingTransformedFile?.delete()
                 pendingTransformedData = null
                 pendingTransformedFile = readyFile
@@ -3510,7 +3298,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun editGamePoints(entry: GameDataFile) {
         gameFilesStatus.text = "Reading car points…"
         Thread {
@@ -3557,7 +3344,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun showRr3PointsEditor(
         entry: GameDataFile,
         innerName: String,
@@ -3572,7 +3358,6 @@ class MainActivity : Activity() {
         var selected = 0
         val rowViews = ArrayList<TextView>(points.size)
         val names = points.map { it.name }.toTypedArray()
-
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(8), dp(14), dp(8))
@@ -3591,7 +3376,6 @@ class MainActivity : Activity() {
             ),
             matchWrap(bottom = 10)
         )
-
         val listScroll = ScrollView(this).apply {
             isFillViewport = false
             isNestedScrollingEnabled = true
@@ -3616,7 +3400,6 @@ class MainActivity : Activity() {
         root.addView(listScroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, dp(235)
         ).apply { bottomMargin = dp(10) })
-
         val selectedTitle = text("", 13, Color.WHITE, bold = true)
         root.addView(selectedTitle, matchWrap(bottom = 4))
         val coordRow = LinearLayout(this).apply {
@@ -3636,7 +3419,6 @@ class MainActivity : Activity() {
             matchWrap(bottom = 4)
         )
         root.addView(coordRow, matchWrap(bottom = 8))
-
         val setRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val setButton = actionButton("Apply coordinates") { }
         val mirrorCheck = android.widget.CheckBox(this).apply {
@@ -3651,7 +3433,6 @@ class MainActivity : Activity() {
         })
         setRow.addView(mirrorCheck, LinearLayout.LayoutParams(-2, -2))
         root.addView(setRow, matchWrap(bottom = 8))
-
         val nudgeHeader = text("Move point · choose a step, then tap an axis direction", 12, 0xFF75B9F1.toInt(), bold = true)
         root.addView(nudgeHeader, matchWrap(bottom = 4))
         val stepRow = LinearLayout(this).apply {
@@ -3667,7 +3448,6 @@ class MainActivity : Activity() {
         stepSpinner.setSelection(2)
         stepRow.addView(stepSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
         root.addView(stepRow, matchWrap(bottom = 4))
-
         val nudgeRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val nudgeRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val nudgeButtons = arrayOf(
@@ -3699,7 +3479,6 @@ class MainActivity : Activity() {
         }
         root.addView(nudgeRow1, matchWrap(bottom = 4))
         root.addView(nudgeRow2, matchWrap(bottom = 10))
-
         val hingeTitle = text("Hinge orientation · HINGE_ points only", 12, 0xFF75B9F1.toInt(), bold = true)
         root.addView(hingeTitle, matchWrap(bottom = 3))
         val hingeInfo = text("", 11, 0xFF9BAFC5.toInt())
@@ -3711,7 +3490,6 @@ class MainActivity : Activity() {
         )
         angleSpinner.setSelection(1)
         root.addView(angleSpinner, matchWrap(bottom = 5))
-
         val rotateRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rotateRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rotateButtons = arrayOf(
@@ -3732,7 +3510,6 @@ class MainActivity : Activity() {
         }
         root.addView(rotateRow1, matchWrap(bottom = 4))
         root.addView(rotateRow2, matchWrap(bottom = 12))
-
         fun formatCoordinate(value: Float): String = String.format(Locale.US, "%.4f", value)
         fun updateRow(index: Int) {
             val point = points[index]
@@ -3890,7 +3667,6 @@ class MainActivity : Activity() {
             val twin = twinIndex(selected)
             if (twin >= 0) updateRow(twin)
         }
-
         nudgeButtons[0].setOnClickListener { moveBy(0, -1) }
         nudgeButtons[1].setOnClickListener { moveBy(0, 1) }
         nudgeButtons[2].setOnClickListener { moveBy(1, -1) }
@@ -3903,7 +3679,6 @@ class MainActivity : Activity() {
         rotateButtons[3].setOnClickListener { rotateHinge(1, 1) }
         rotateButtons[4].setOnClickListener { rotateHinge(2, -1) }
         rotateButtons[5].setOnClickListener { rotateHinge(2, 1) }
-
         for (index in points.indices) {
             val row = text("", 12, 0xFFBDCCDC.toInt()).apply {
                 setPadding(dp(9), dp(10), dp(9), dp(10))
@@ -3915,7 +3690,6 @@ class MainActivity : Activity() {
             list.addView(row, matchWrap())
         }
         updateAllRows()
-
         setButton.setOnClickListener {
             val values = parseFields()
             if (values == null) {
@@ -3928,7 +3702,6 @@ class MainActivity : Activity() {
             }
         }
         selectPoint(0)
-
         val dialogScroll = ScrollView(this).apply {
             isFillViewport = true
             addView(root)
@@ -3971,7 +3744,6 @@ class MainActivity : Activity() {
                             return@setOnClickListener
                         }
                 } else updated
-
                 pendingTransformedFile?.delete()
                 pendingTransformedFile = null
                 pendingTransformedData = finalBytes
@@ -3991,7 +3763,6 @@ class MainActivity : Activity() {
             (resources.displayMetrics.heightPixels * 0.88f).toInt()
         )
     }
-
     private fun editGameDataFile(entry: GameDataFile) {
         closeDataEditorAction?.invoke()
         gameFilesStatus.text = "Opening " + entry.relativePath + "…"
@@ -4010,7 +3781,6 @@ class MainActivity : Activity() {
                     val lowerName = name.lowercase(Locale.ROOT)
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
-
                     textFile = newCacheFile("rr3-browser-text-source", ".txt")
                     copyGameFileToFile(entry, textFile!!)
                     var needsGameTextEncoding = false
@@ -4022,7 +3792,6 @@ class MainActivity : Activity() {
                             isGameTextIndex = lowerName == "gametext.txt"
                         )
                     }
-
                     val pager = DiskBackedTextDocument(textFile!!)
                     textPager = pager
                     val firstPage = pager.readNextPage() ?: ""
@@ -4038,7 +3807,6 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-
                 val source = readGameFile(entry)
                 val (name, bytes) = unwrappedGameFile(entry, source)
                 val lowerName = name.lowercase(Locale.ROOT)
@@ -4070,7 +3838,6 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-
                 val prepared = prepareBinaryDataEditorFile(name, bytes)
                 runOnUiThread {
                     gameFilesStatus.text = "Opened " + entry.relativePath + "."
@@ -4102,12 +3869,8 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
         if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
-
-
-
     private fun chooseTrackInspectorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4116,7 +3879,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestTrackInspectorInput)
     }
-
     private fun inspectTrackGameFile(entry: GameDataFile) {
         trackInspectorStatus.text = "Reading ${entry.relativePath}…"
         Thread {
@@ -4136,7 +3898,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun openTrackInspectorFile(uri: Uri) {
         trackInspectorStatus.text = "Reading track data file…"
         Thread {
@@ -4161,7 +3922,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderTrackDetails(name: String, size: Int, payload: JSONObject) {
         trackDetailsContainer.removeAllViews()
         val values = listOf(
@@ -4185,7 +3945,6 @@ class MainActivity : Activity() {
             row.addView(text(value.ifBlank { "—" }, 14, Color.WHITE), matchWrap(top = 3))
         }
     }
-
     private fun chooseCarEditorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4194,7 +3953,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestCarEditorInput)
     }
-
     private fun chooseCareerInspectorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4203,7 +3961,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestCareerInspectorInput)
     }
-
     private fun inspectCarGameFile(entry: GameDataFile) {
         carEditorStatus.text = "Reading ${entry.relativePath}…"
         Thread {
@@ -4227,7 +3984,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun inspectCareerGameFile(entry: GameDataFile) {
         careerInspectorStatus.text = "Streaming and inspecting ${entry.relativePath}…"
         Thread {
@@ -4252,7 +4008,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun openCarEditorFile(uri: Uri) {
         carEditorStatus.text = "Reading car data file…"
         Thread {
@@ -4281,7 +4036,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderCarFields(payload: JSONObject) {
         carFieldsContainer.removeAllViews()
         carFieldInputs.clear()
@@ -4315,7 +4069,6 @@ class MainActivity : Activity() {
             matchWrap(top = 8)
         )
     }
-
     private fun buildCarEditorOutput() {
         val original = currentCarOriginal ?: run {
             carEditorStatus.text = "Open a car data file first."
@@ -4330,7 +4083,6 @@ class MainActivity : Activity() {
             carEditorStatus.text = "No changes detected. Edit at least one field before building."
             return
         }
-
         carEditorStatus.text = "Rebuilding " + changedValues.size + " changed field(s)…"
         Thread {
             try {
@@ -4364,7 +4116,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun openCareerInspectorFile(uri: Uri) {
         careerInspectorStatus.text = "Streaming and inspecting career file…"
         Thread {
@@ -4392,7 +4143,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun renderCareerDetails(name: String, size: Int, payload: JSONObject) {
         careerDetailsContainer.removeAllViews()
         val summary = text(
@@ -4448,11 +4198,9 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun selectTabFromView(name: String) {
         selectTabAction?.invoke(name)
     }
-
     private fun chooseEditableDataFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4461,7 +4209,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestEditableDataInput)
     }
-
     /**
      * Opens an RR3 binary table as editable text. Plain .dat/.evt/.sounddef
      * files go straight to Monkey Tool's reversible listing. If that parser
@@ -4476,7 +4223,6 @@ class MainActivity : Activity() {
         if (sourceBytes.isEmpty()) {
             throw IllegalArgumentException("The selected RR3 data file is empty.")
         }
-
         val hasNctSuffix = sourceName.endsWith(".nct", ignoreCase = true)
         val formatName = if (hasNctSuffix) sourceName.dropLast(4) else sourceName
         val decodedBytes = if (hasNctSuffix) {
@@ -4485,7 +4231,6 @@ class MainActivity : Activity() {
         } else {
             sourceBytes
         }
-
         val editable = NativeBridge.nativeOpenDataAsText(formatName, decodedBytes)
         if (editable != null) {
             return PreparedBinaryDataEditorFile(
@@ -4495,12 +4240,10 @@ class MainActivity : Activity() {
                 reencodeNct = hasNctSuffix
             )
         }
-
         val parseError = NativeBridge.nativeGetDataEditError()
         if (hasNctSuffix || !parseError.contains("encrypted", ignoreCase = true)) {
             throw IllegalStateException(parseError)
         }
-
         val nctDecoded = NativeBridge.nativeTransformRr3Data(sourceBytes)
             ?: throw IllegalStateException(
                 "The file appears encrypted, but RR3 NCT decoding failed: " +
@@ -4511,7 +4254,6 @@ class MainActivity : Activity() {
                 "RR3 NCT decoding did not produce a supported $formatName data table. " +
                     NativeBridge.nativeGetDataEditError()
             )
-
         return PreparedBinaryDataEditorFile(
             formatName = formatName,
             original = nctDecoded,
@@ -4519,7 +4261,6 @@ class MainActivity : Activity() {
             reencodeNct = true
         )
     }
-
     private fun openEditableDataFile(uri: Uri) {
         closeDataEditorAction?.invoke()
         dataEditorStatus.text = "Reading data file…"
@@ -4570,7 +4311,6 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-
                 val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
                 if (extension == "txt") {
                     val input = contentResolver.openInputStream(uri)
@@ -4580,7 +4320,6 @@ class MainActivity : Activity() {
                             source.copyTo(destination, 256 * 1024)
                         }
                     }
-
                     val isGameText = lowerName == "gametext.txt" ||
                         (lowerName.startsWith("text_") && lowerName.endsWith(".txt"))
                     val needsGameTextEncoding = if (isGameText) {
@@ -4591,7 +4330,6 @@ class MainActivity : Activity() {
                     } else {
                         false
                     }
-
                     val pager = DiskBackedTextDocument(plainTextFile)
                     plainTextPager = pager
                     val firstPage = pager.readNextPage() ?: ""
@@ -4605,7 +4343,6 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-
                 if (extension == "gui") {
                     throw IllegalArgumentException("Use the RR3 Data Transform section for this .gui file.")
                 }
@@ -4645,7 +4382,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun keepOuterPageFromStealingEditorTouch(editor: EditText) {
         editor.setOnTouchListener { _, event ->
             when (event.actionMasked) {
@@ -4656,7 +4392,6 @@ class MainActivity : Activity() {
             false
         }
     }
-
     /**
      * Let a vertical finger drag scroll the paging viewport instead of moving
      * the EditText caret. Screen coordinates stay stable while the ScrollView
@@ -4669,7 +4404,6 @@ class MainActivity : Activity() {
         var downRawY = 0f
         var lastRawY = 0f
         var scrolling = false
-
         editor.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -4680,7 +4414,6 @@ class MainActivity : Activity() {
                     viewport.requestDisallowInterceptTouchEvent(true)
                     false
                 }
-
                 MotionEvent.ACTION_MOVE -> {
                     val totalX = event.rawX - downRawX
                     val totalY = event.rawY - downRawY
@@ -4688,14 +4421,12 @@ class MainActivity : Activity() {
                         editor.selectionStart >= 0 &&
                             editor.selectionEnd >= 0 &&
                             editor.selectionStart != editor.selectionEnd
-
                     if (!scrolling && !hasActiveTextSelection &&
                         kotlin.math.abs(totalY) > touchSlop &&
                         kotlin.math.abs(totalY) > kotlin.math.abs(totalX)
                     ) {
                         scrolling = true
                     }
-
                     if (scrolling) {
                         viewport.scrollBy(0, (lastRawY - event.rawY).toInt())
                         lastRawY = event.rawY
@@ -4704,25 +4435,21 @@ class MainActivity : Activity() {
                         false
                     }
                 }
-
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val consumed = scrolling
                     scrolling = false
                     viewport.requestDisallowInterceptTouchEvent(false)
                     consumed
                 }
-
                 else -> scrolling
             }
         }
     }
-
     private data class PagedTextMatch(
         val editor: EditText,
         val start: Int,
         val end: Int
     )
-
     /**
      * Search every section currently materialised in the paged editor.
      * Typing is debounced by one second, and Previous/Next navigate matches
@@ -4745,7 +4472,6 @@ class MainActivity : Activity() {
         controls.addView(queryInput, LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
         ).apply { marginEnd = dp(6) })
-
         val matches = mutableListOf<PagedTextMatch>()
         val watchedEditors = HashSet<EditText>()
         var selectedMatch = -1
@@ -4759,7 +4485,6 @@ class MainActivity : Activity() {
         )
         val handler = Handler(Looper.getMainLooper())
         lateinit var searchRunnable: Runnable
-
         fun updateStatus() {
             status.text = when {
                 queryInput.text.isNullOrBlank() -> "Enter text to find. Search runs 1 second after you stop typing."
@@ -4768,7 +4493,6 @@ class MainActivity : Activity() {
                 else -> "Match ${selectedMatch + 1} of ${matches.size} · loaded sections"
             }
         }
-
         fun goToMatch(index: Int) {
             if (matches.isEmpty()) return
             selectedMatch = ((index % matches.size) + matches.size) % matches.size
@@ -4790,7 +4514,6 @@ class MainActivity : Activity() {
             }
             updateStatus()
         }
-
         fun rebuildMatches(preserveCurrent: Boolean, jumpToFirst: Boolean) {
             val previous = if (preserveCurrent) matchAnchor else null
             matchAnchor = null
@@ -4825,7 +4548,6 @@ class MainActivity : Activity() {
                 if (jumpToFirst) goToMatch(0) else updateStatus()
             }
         }
-
         fun scheduleSearch(preserveCurrent: Boolean = false, jumpToFirst: Boolean = true) {
             if (preserveCurrent && selectedMatch in matches.indices) matchAnchor = matches[selectedMatch]
             else if (!preserveCurrent) matchAnchor = null
@@ -4842,14 +4564,12 @@ class MainActivity : Activity() {
                 updateStatus()
             } else handler.postDelayed(searchRunnable, 1000L)
         }
-
         searchRunnable = Runnable {
             val preserve = preserveAnchorOnNextSearch
             val jump = jumpToFirstOnNextSearch
             preserveAnchorOnNextSearch = false
             rebuildMatches(preserve, jump)
         }
-
         fun watchNewEditors() {
             for (editor in pageEditors) {
                 if (!watchedEditors.add(editor)) continue
@@ -4862,7 +4582,6 @@ class MainActivity : Activity() {
                 })
             }
         }
-
         queryInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -4884,20 +4603,17 @@ class MainActivity : Activity() {
         panel.addView(status, matchWrap(top = 5))
         parent.addView(panel, matchWrap(bottom = 5))
         watchNewEditors()
-
         return {
             watchNewEditors()
             if (queryInput.text.isNotBlank()) scheduleSearch(preserveCurrent = true)
         }
     }
-
     private fun openDataEditorScreen(title: String) {
         editorScreenTitle.text = title
         dataEditorWorkspace.removeAllViews()
         rootScrollView.visibility = View.GONE
         editorScreen.visibility = View.VISIBLE
     }
-
     private fun closeDataEditorScreen() {
         if (!::editorScreen.isInitialized) return
         dataEditorWorkspace.removeAllViews()
@@ -4905,7 +4621,6 @@ class MainActivity : Activity() {
         rootScrollView.visibility = View.VISIBLE
         closeDataEditorAction = null
     }
-
     override fun onDestroy() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
         if (shizukuBound) runCatching {
@@ -4915,14 +4630,12 @@ class MainActivity : Activity() {
         shizukuBound = false
         super.onDestroy()
     }
-
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         if (::editorScreen.isInitialized && editorScreen.visibility == View.VISIBLE) {
             closeDataEditorAction?.invoke() ?: closeDataEditorScreen()
         } else super.onBackPressed()
     }
-
     private fun showCareerEditableEditor(
         sourceName: String,
         sourcePlainFile: File,
@@ -4940,7 +4653,6 @@ class MainActivity : Activity() {
         var closed = false
         var buildButton: TextView? = null
         var closeButton: TextView? = null
-
         val help = text(
             "Career data · " +
                 summary.optInt("series") + " series · " +
@@ -4972,7 +4684,6 @@ class MainActivity : Activity() {
             )
         }
         val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
-
         fun addPage(page: CareerTextPage) {
             val rowEditor = EditText(this).apply {
                 setText(page.text)
@@ -4997,7 +4708,6 @@ class MainActivity : Activity() {
             pageContainer.addView(rowEditor, matchWrap())
             refreshFindResults?.invoke()
         }
-
         fun closeEditor() {
             if (building) {
                 loadStatus.text = "Wait for the rebuild to finish before closing the editor."
@@ -5010,7 +4720,6 @@ class MainActivity : Activity() {
             workingTextFile.delete()
             closeDataEditorScreen()
         }
-
         fun loadNextSection() {
             if (isLoadingPage || reachedEnd || building || closed) return
             isLoadingPage = true
@@ -5047,7 +4756,6 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         fun buildOutput() {
             if (isLoadingPage || building || closed) {
                 loadStatus.text = "Wait for the current loading operation to finish."
@@ -5059,7 +4767,6 @@ class MainActivity : Activity() {
             val editedPages = pageEditors.map { it.text.toString() }
             loadStatus.text = "Merging the edited text and rebuilding the career file…"
             dataEditorStatus.text = "Rebuilding " + sourceName + "…"
-
             Thread {
                 val mergedTextFile = newCacheFile("rr3-career-merged", ".txt")
                 val rebuiltPlain = newCacheFile("rr3-career-built")
@@ -5132,7 +4839,6 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         addPage(firstPage)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -5165,7 +4871,6 @@ class MainActivity : Activity() {
             )
             addView(actions, matchWrap())
         }
-
         editorScroll.setOnScrollChangeListener { view: View, _, scrollY: Int, _, _ ->
             val child = (view as ScrollView).getChildAt(0)
             if (child != null && scrollY + view.height >= child.height - dp(600)) {
@@ -5184,7 +4889,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     /**
      * Plain text and RR3 localisation files use the same section-at-a-time
      * editor interaction as events.dat.nct. The backing store remains
@@ -5204,7 +4908,6 @@ class MainActivity : Activity() {
         var building = false
         var closed = false
         var buildAction: () -> Unit = {}
-
         val help = text(
             "Text file · ${pager.pageCount} section(s) indexed. Scroll to load more; edits are saved section by section.",
             12,
@@ -5232,7 +4935,6 @@ class MainActivity : Activity() {
             )
         }
         val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
-
         fun disposeEditor() {
             if (closed) return
             closed = true
@@ -5241,7 +4943,6 @@ class MainActivity : Activity() {
             sourceFile.delete()
             closeDataEditorScreen()
         }
-
         fun closeEditor() {
             if (building) {
                 loadStatus.text = "Wait for the rebuild to finish before closing the editor."
@@ -5249,7 +4950,6 @@ class MainActivity : Activity() {
             }
             disposeEditor()
         }
-
         fun addPage(pageText: String) {
             val pageIndex = pageEditors.size
             val lineCount = maxOf(
@@ -5282,9 +4982,7 @@ class MainActivity : Activity() {
             pageContainer.addView(editor, matchWrap())
             refreshFindResults?.invoke()
         }
-
         var checkNearBottom: (() -> Unit)? = null
-
         fun loadNextSection() {
             if (loading || reachedEnd || building || closed) return
             loading = true
@@ -5320,7 +5018,6 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         checkNearBottom = {
             if (!closed && !loading && !reachedEnd && !building) {
                 val child = editorScroll.getChildAt(0)
@@ -5338,7 +5035,6 @@ class MainActivity : Activity() {
                 loadNextSection()
             }
         }
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
@@ -5364,7 +5060,6 @@ class MainActivity : Activity() {
             actions.addView(closeButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(actions, matchWrap(top = 8))
         }
-
         fun buildOutput() {
             if (loading || building || closed) {
                 loadStatus.text = "Wait for the current section to finish loading."
@@ -5377,7 +5072,6 @@ class MainActivity : Activity() {
             pageEditors.forEach { it.isEnabled = false }
             loadStatus.text = "Saving edited sections and rebuilding the text file…"
             dataEditorStatus.text = "Building $sourceName…"
-
             Thread {
                 val plainOutput = newCacheFile("rr3-text-edited", ".txt")
                 var encodedOutput: File? = null
@@ -5412,7 +5106,6 @@ class MainActivity : Activity() {
                         plainOutput.delete()
                         readyFile = encodedOutput!!
                     }
-
                     pendingTransformedData = null
                     pendingTransformedFile?.delete()
                     pendingTransformedFile = readyFile
@@ -5452,7 +5145,6 @@ class MainActivity : Activity() {
             }.start()
         }
         buildAction = { buildOutput() }
-
         closeDataEditorAction = { closeEditor() }
         openDataEditorScreen(sourceName)
         dataEditorWorkspace.addView(
@@ -5464,7 +5156,6 @@ class MainActivity : Activity() {
         )
         editorScroll.post { checkNearBottom?.invoke() }
     }
-
     private fun showPagedTextEditorInline(
         sourceName: String,
         sourceFile: File,
@@ -5478,14 +5169,12 @@ class MainActivity : Activity() {
         var activeHit: TextSearchHit? = null
         var pendingSearch: Runnable? = null
         val searchHandler = Handler(Looper.getMainLooper())
-
         val help = text(
             "Virtualised text editor · " + sourceName +
                 ". 160-line pages are prepared ahead while scrolling; only a small page cache is kept in memory. Edited pages are stored separately, and Find searches the entire document.",
             12,
             0xFF9BAFC5.toInt()
         )
-
         val layoutManager = LinearLayoutManager(this)
         val editorList = RecyclerView(this).apply {
             setBackgroundColor(0xFF0B1725.toInt())
@@ -5501,22 +5190,18 @@ class MainActivity : Activity() {
                 setScrollBarSize(dp(12))
             }
         }
-
         class PageHolder(val editor: EditText) : RecyclerView.ViewHolder(editor) {
             var pageIndex: Int = RecyclerView.NO_POSITION
             var watcher: TextWatcher? = null
             var dirty: Boolean = false
         }
-
         fun saveHolder(holder: PageHolder) {
             if (!holder.dirty || holder.pageIndex == RecyclerView.NO_POSITION) return
             pager.saveEditedPage(holder.pageIndex, holder.editor.text.toString())
             holder.dirty = false
         }
-
         val adapter = object : RecyclerView.Adapter<PageHolder>() {
             override fun getItemCount(): Int = pager.pageCount
-
             override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageHolder {
                 val editor = EditText(this@MainActivity).apply {
                     layoutParams = RecyclerView.LayoutParams(
@@ -5541,7 +5226,6 @@ class MainActivity : Activity() {
                 attachVerticalSwipeScrolling(editor, editorList)
                 return PageHolder(editor)
             }
-
             override fun onBindViewHolder(holder: PageHolder, position: Int) {
                 saveHolder(holder)
                 holder.watcher?.let(holder.editor::removeTextChangedListener)
@@ -5549,7 +5233,6 @@ class MainActivity : Activity() {
                 holder.dirty = false
                 holder.editor.setText(pager.readPage(position))
                 holder.editor.hint = "Page " + (position + 1) + " of " + pager.pageCount
-
                 val watcher = object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -5560,12 +5243,10 @@ class MainActivity : Activity() {
                 holder.watcher = watcher
                 holder.editor.addTextChangedListener(watcher)
             }
-
             override fun onViewDetachedFromWindow(holder: PageHolder) {
                 saveHolder(holder)
                 super.onViewDetachedFromWindow(holder)
             }
-
             override fun onViewRecycled(holder: PageHolder) {
                 saveHolder(holder)
                 holder.watcher?.let(holder.editor::removeTextChangedListener)
@@ -5590,7 +5271,6 @@ class MainActivity : Activity() {
                 }
             }
         })
-
         fun flushAttachedEditors() {
             for (index in 0 until editorList.childCount) {
                 val child = editorList.getChildAt(index)
@@ -5598,14 +5278,12 @@ class MainActivity : Activity() {
                 saveHolder(holder)
             }
         }
-
         val queryInput = editBox("Find in the entire file…", "", numeric = false)
         val searchStatus = text(
             "Ready · " + pager.pageCount + " page(s) indexed. Search includes text not yet displayed.",
             11,
             0xFF8FA4BA.toInt()
         )
-
         fun performSearch(forward: Boolean, restart: Boolean) {
             if (closed || building) return
             val query = queryInput.text.toString()
@@ -5615,7 +5293,6 @@ class MainActivity : Activity() {
                 searchStatus.text = "Enter text to find in the entire file."
                 return
             }
-
             val generation = ++searchGeneration
             val current = activeHit
             val startPage = if (restart || current == null) {
@@ -5628,14 +5305,12 @@ class MainActivity : Activity() {
             } else {
                 if (forward) current.end else current.start - 1
             }
-
             try {
                 flushAttachedEditors()
             } catch (error: Exception) {
                 searchStatus.text = error.message ?: "Could not save the current edited page before searching."
                 return
             }
-
             searchStatus.text = "Searching the entire file…"
             Thread {
                 val outcome = try {
@@ -5651,11 +5326,9 @@ class MainActivity : Activity() {
                         searchStatus.text = outcome.second ?: "No match found in the entire file."
                         return@runOnUiThread
                     }
-
                     activeHit = result
                     searchStatus.text = "Found at line " + result.lineNumber +
                         " · page " + (result.pageIndex + 1) + " of " + pager.pageCount
-
                     layoutManager.scrollToPositionWithOffset(result.pageIndex, dp(18))
                     fun selectVisibleMatch(attempt: Int) {
                         editorList.post selectPost@{
@@ -5685,7 +5358,6 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         fun scheduleSearch() {
             pendingSearch?.let(searchHandler::removeCallbacks)
             // Invalidate a search already running on the worker thread as soon
@@ -5703,7 +5375,6 @@ class MainActivity : Activity() {
             pendingSearch = task
             searchHandler.postDelayed(task, 300L)
         }
-
         queryInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -5711,7 +5382,6 @@ class MainActivity : Activity() {
             }
             override fun afterTextChanged(s: Editable?) = Unit
         })
-
         val findButton = actionButton("Find") {
             pendingSearch?.let(searchHandler::removeCallbacks)
             performSearch(forward = true, restart = true)
@@ -5724,7 +5394,6 @@ class MainActivity : Activity() {
             pendingSearch?.let(searchHandler::removeCallbacks)
             performSearch(forward = true, restart = false)
         }
-
         val searchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -5739,7 +5408,6 @@ class MainActivity : Activity() {
             })
             addView(nextButton, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-
         fun closeEditor() {
             if (building) {
                 searchStatus.text = "Wait for the output to finish building before closing the editor."
@@ -5754,9 +5422,7 @@ class MainActivity : Activity() {
             sourceFile.delete()
             closeDataEditorScreen()
         }
-
         val closeButton = actionButton("Close editor") { closeEditor() }
-
         var buildButton: TextView? = null
         buildButton = actionButton("Build and export") {
             if (building || closed) return@actionButton
@@ -5766,7 +5432,6 @@ class MainActivity : Activity() {
                 searchStatus.text = error.message ?: "Could not save the edited pages."
                 return@actionButton
             }
-
             building = true
             buildButton?.isEnabled = false
             closeButton.isEnabled = false
@@ -5776,7 +5441,6 @@ class MainActivity : Activity() {
             queryInput.isEnabled = false
             searchStatus.text = "Merging edited pages into a new text file…"
             dataEditorStatus.text = "Building " + sourceName + "…"
-
             Thread {
                 val outputFile = newCacheFile("rr3-text-edited", ".txt")
                 var encodedFile: File? = null
@@ -5793,7 +5457,6 @@ class MainActivity : Activity() {
                         if (encodedSize < 0L || encodedSize != outputFile.length()) {
                             throw IllegalStateException("Could not encode the edited RR3 game text.")
                         }
-
                         // Verify the stream cipher by decoding the output back
                         // to a second disk file, then compare without heap copies.
                         roundTripFile = newCacheFile("rr3-text-roundtrip", ".txt")
@@ -5861,7 +5524,6 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(help, matchWrap(bottom = 8))
@@ -5885,7 +5547,6 @@ class MainActivity : Activity() {
             }
             addView(actions, matchWrap(top = 8))
         }
-
         closeDataEditorAction = { closeEditor() }
         openDataEditorScreen(sourceName)
         dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
@@ -5903,7 +5564,6 @@ class MainActivity : Activity() {
             pager.prefetchPages(1, minOf(5, pager.pageCount - 1))
         }
     }
-
     private fun showEditableDataEditor(
         name: String,
         original: ByteArray,
@@ -5951,7 +5611,6 @@ class MainActivity : Activity() {
             closeButton,
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(
@@ -5964,7 +5623,6 @@ class MainActivity : Activity() {
             addView(status, matchWrap(top = 8, bottom = 8))
             addView(actions, matchWrap())
         }
-
         closeDataEditorAction = { closeDataEditorScreen() }
         buildButton.setOnClickListener {
             buildButton.isEnabled = false
@@ -6018,13 +5676,11 @@ class MainActivity : Activity() {
                 }
             }.start()
         }
-
         openDataEditorScreen(name)
         dataEditorWorkspace.addView(content, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT
         ))
     }
-
     private fun chooseRr3DataFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -6033,7 +5689,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestRr3TransformInput)
     }
-
     private fun displayName(uri: Uri): String {
         val cursor = contentResolver.query(
             uri,
@@ -6048,7 +5703,6 @@ class MainActivity : Activity() {
         }
         return uri.lastPathSegment ?: "rr3-data.bin"
     }
-
     private fun transformRr3File(uri: Uri) {
         dataStatus.text = "Reading RR3 data file…"
         Thread {
@@ -6062,7 +5716,6 @@ class MainActivity : Activity() {
                 if (extension !in setOf("nct", "bin", "gui", "xml") && !isGameText) {
                     throw IllegalArgumentException("Choose .nct/.bin/.gui/.xml or RR3 gametext/text_<language>.txt.")
                 }
-
                 if (isGameText) {
                     // All RR3 language files now use the same disk-backed,
                     // paged editor as files opened from the Game Data browser.
@@ -6070,8 +5723,6 @@ class MainActivity : Activity() {
                     runOnUiThread { openEditableDataFile(uri) }
                     return@Thread
                 }
-
-
                 if (extension == "nct") {
                     val outputFile = newCacheFile("rr3-decoded")
                     try {
@@ -6094,11 +5745,9 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")
                 val bytes = input.use { it.readBytes() }
-
                 val alreadyPlainGui = extension == "gui" &&
                     bytes.size >= 5 &&
                     bytes.copyOfRange(0, 5).toString(Charsets.US_ASCII) == "<?xml"
@@ -6108,7 +5757,6 @@ class MainActivity : Activity() {
                     NativeBridge.nativeTransformRr3Data(bytes)
                         ?: throw IllegalStateException(NativeBridge.nativeGetRr3TransformError())
                 }
-
                 val baseName = name.substringBeforeLast('.', name)
                 pendingTransformedFile?.delete()
                 pendingTransformedFile = null
@@ -6123,7 +5771,6 @@ class MainActivity : Activity() {
                     "xml" -> baseName + ".gui"
                     else -> "rr3-data.bin"
                 }
-
                 runOnUiThread {
                     dataStatus.text = "Transformed " + transformed.size + " bytes. Choose where to save the output."
                     launchRr3OutputPicker()
@@ -6137,8 +5784,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
-
     private fun showRr3TextMode(name: String, source: ByteArray) {
         AlertDialog.Builder(this)
             .setTitle(name)
@@ -6148,7 +5793,6 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .show()
     }
-
     private fun transformRr3TextFile(name: String, source: ByteArray, encode: Boolean) {
         dataStatus.text = if (encode) "Encoding RR3 game text…" else "Decoding RR3 game text…"
         Thread {
@@ -6177,7 +5821,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun launchRr3OutputPicker() {
         val outputIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -6186,7 +5829,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(outputIntent, requestRr3TransformOutput)
     }
-
     private fun writeTransformedRr3File(uri: Uri) {
         val bytes = pendingTransformedData
         val file = pendingTransformedFile
@@ -6223,7 +5865,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun setPendingOutputStatus(message: String) {
         if (pendingOutputForCarEditor && ::carEditorStatus.isInitialized) {
             carEditorStatus.text = message
@@ -6235,14 +5876,12 @@ class MainActivity : Activity() {
             dataStatus.text = message
         }
     }
-
     private fun addSection(parent: LinearLayout, title: String) {
         parent.addView(
             text(title, 11, 0xFF75B9F1.toInt(), bold = true),
             matchWrap(top = 18, bottom = 8)
         )
     }
-
     private fun card(parent: LinearLayout): LinearLayout {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -6252,7 +5891,6 @@ class MainActivity : Activity() {
         parent.addView(box, matchWrap())
         return box
     }
-
     private fun actionButton(label: String, action: () -> Unit): TextView {
         return text(label, 14, Color.WHITE, bold = true).apply {
             gravity = Gravity.CENTER
@@ -6263,7 +5901,6 @@ class MainActivity : Activity() {
             setOnClickListener { action() }
         }
     }
-
     private fun text(
         value: String,
         size: Int,
@@ -6277,7 +5914,6 @@ class MainActivity : Activity() {
             if (bold) setTypeface(typeface, Typeface.BOLD)
         }
     }
-
     private fun editBox(hintText: String, value: String, numeric: Boolean = true): EditText {
         return EditText(this).apply {
             setSingleLine(true)
@@ -6296,14 +5932,12 @@ class MainActivity : Activity() {
             setText(value)
         }
     }
-
     private fun rounded(color: Int, radius: Float): GradientDrawable {
         return GradientDrawable().apply {
             setColor(color)
             cornerRadius = radius
         }
     }
-
     private fun matchWrap(top: Int = 0, bottom: Int = 0): LinearLayout.LayoutParams {
         return LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -6315,14 +5949,10 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
-
-
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
-
     private fun runRootCommand(command: String): String {
         val process = ProcessBuilder("su", "-c", command)
             .redirectErrorStream(true)
@@ -6336,19 +5966,16 @@ class MainActivity : Activity() {
         }
         return output.trim()
     }
-
     private fun rootFileExists(path: String): Boolean {
         val result = runRootCommand("if [ -f ${shellQuote(path)} ]; then printf yes; fi")
         return result == "yes"
     }
-
     private fun locateRootSaveFolder() {
         rootSaveValue.text = "Requesting root and locating RR3 save…"
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
                 if (uid != "0") throw IllegalStateException("Superuser access was not granted.")
-
                 val candidates = listOf(
                     "/data/user/0/com.ea.games.r3_row/files/doc",
                     "/data/data/com.ea.games.r3_row/files/doc"
@@ -6358,7 +5985,6 @@ class MainActivity : Activity() {
                 } ?: throw IllegalStateException(
                     "Root access works, but character.2.dat was not found in the standard RR3 doc folder. Select the folder manually or check the installed game package."
                 )
-
                 preferences.edit()
                     .putString("save_root_dir", found)
                     .remove("save_tree")
@@ -6375,7 +6001,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun restoreRootSaveSelection() {
         val root = preferences.getString("save_root_dir", null)
         rootSaveValue.text = if (root.isNullOrBlank()) {
@@ -6384,7 +6009,6 @@ class MainActivity : Activity() {
             "Root folder: $root"
         }
     }
-
     private fun copyFromRootPath(sourcePath: String, target: File) {
         target.parentFile?.mkdirs()
         val process = ProcessBuilder("su", "-c", "cat -- ${shellQuote(sourcePath)}").start()
@@ -6398,13 +6022,11 @@ class MainActivity : Activity() {
             throw IllegalStateException(error.trim().ifBlank { "Could not read $sourcePath with root." })
         }
     }
-
     private fun copyToRootPath(source: File, targetPath: String) {
         runRootCommand(
             "cp -- ${shellQuote(source.absolutePath)} ${shellQuote(targetPath)}"
         )
     }
-
     private fun createPersistentRootBackups(rootDir: String) {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         val backupDir = "$rootDir/save_editor_backup_$stamp"
@@ -6417,7 +6039,6 @@ class MainActivity : Activity() {
         }
         runRootCommand(commands.toString())
     }
-
     private fun chooseFolder(requestCode: Int) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -6427,7 +6048,6 @@ class MainActivity : Activity() {
         }
         startActivityForResult(intent, requestCode)
     }
-
     @Deprecated("Using the document-tree activity result to persist a folder grant")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -6441,7 +6061,6 @@ class MainActivity : Activity() {
             return
         }
         if (resultCode != RESULT_OK || data?.data == null) return
-
         val uri = data.data ?: return
         if (requestCode == requestRr3TransformInput) {
             transformRr3File(uri)
@@ -6474,13 +6093,11 @@ class MainActivity : Activity() {
         val accessFlags = data.flags and (
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
-
         try {
             contentResolver.takePersistableUriPermission(uri, accessFlags)
         } catch (_: SecurityException) {
             // Some document providers return a temporary grant only.
         }
-
         when (requestCode) {
             requestGameData -> {
                 preferences.edit()
@@ -6504,18 +6121,15 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun restoreSelection(target: TextView, key: String) {
         val saved = preferences.getString(key, null)
         if (saved.isNullOrBlank()) {
             target.text = "No folder selected"
             return
         }
-
         val uri = runCatching { Uri.parse(saved) }.getOrNull()
         target.text = if (uri == null) "Saved folder permission unavailable" else displayFolder(uri)
     }
-
     private fun displayFolder(uri: Uri): String {
         val documentId = runCatching {
             DocumentsContract.getTreeDocumentId(uri)
@@ -6523,12 +6137,10 @@ class MainActivity : Activity() {
         val relative = documentId?.substringAfter(':', documentId)?.trim('/')
         return if (relative.isNullOrBlank()) "Selected folder" else relative.substringAfterLast('/')
     }
-
     private fun updateEngineStatus() {
         engineValue.text = runCatching { NativeBridge.nativeStatus() }
             .getOrElse { "Native engine failed to load: " + (it.message ?: "unknown error") }
     }
-
     private fun runBackground(task: () -> Unit) {
         Thread {
             try {
@@ -6540,7 +6152,6 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-
     private fun loadRr3Save() {
         val rootDir = preferences.getString("save_root_dir", null)
         val stored = preferences.getString("save_tree", null)
@@ -6548,7 +6159,6 @@ class MainActivity : Activity() {
             saveStatus.text = "Choose a save folder or locate the private RR3 folder with root."
             return
         }
-
         saveStatus.text = "Reading RR3 save…"
         loadSaveButton.isEnabled = false
         runBackground {
@@ -6564,17 +6174,14 @@ class MainActivity : Activity() {
                     val saveUri = findChildDocument(treeUri, "character.2.dat")
                         ?: throw IllegalStateException("character.2.dat was not found in the selected folder.")
                     copyUriToFile(saveUri, stagedSave)
-
                     val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
                     if (tempUri != null) copyUriToFile(tempUri, stagedTempSave) else stagedTempSave.delete()
                 }
-
                 val result = NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
                 val json = JSONObject(result)
                 if (!json.optBoolean("ok")) {
                     throw IllegalStateException(json.optString("error", "Could not read the RR3 save."))
                 }
-
                 runOnUiThread {
                     saveStatus.text = "Save loaded. Calibrate hidden values once using the values shown in-game."
                     renderSavePayload(json)
@@ -6584,7 +6191,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun findChildDocument(treeUri: Uri, displayName: String): Uri? {
         val treeId = DocumentsContract.getTreeDocumentId(treeUri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeId)
@@ -6592,7 +6198,6 @@ class MainActivity : Activity() {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME
         )
-
         val cursor: Cursor = contentResolver.query(childrenUri, projection, null, null, null)
             ?: return null
         cursor.use {
@@ -6606,7 +6211,6 @@ class MainActivity : Activity() {
         }
         return null
     }
-
     private fun copyUriToFile(uri: Uri, target: File) {
         val input = contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Could not read $uri")
@@ -6614,7 +6218,6 @@ class MainActivity : Activity() {
             FileOutputStream(target).use { destination -> source.copyTo(destination) }
         }
     }
-
     private fun copyFileToUri(source: File, target: Uri) {
         val output = contentResolver.openOutputStream(target, "wt")
             ?: throw IllegalStateException("Could not write to $target")
@@ -6622,12 +6225,10 @@ class MainActivity : Activity() {
             FileInputStream(source).use { input -> input.copyTo(destination) }
         }
     }
-
     private fun createPersistentBackups(treeUri: Uri) {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         val treeId = DocumentsContract.getTreeDocumentId(treeUri)
         val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId)
-
         fun createBackup(source: File, originalName: String) {
             val backupName = originalName + ".backup_" + stamp
             val backupUri = DocumentsContract.createDocument(
@@ -6638,17 +6239,14 @@ class MainActivity : Activity() {
             ) ?: throw IllegalStateException("Could not create backup file: $backupName")
             copyFileToUri(source, backupUri)
         }
-
         createBackup(stagedSave, "character.2.dat")
         if (stagedTempSave.exists()) createBackup(stagedTempSave, "TempSaveGame.dat")
     }
-
     private fun renderSavePayload(payload: JSONObject) {
         currentSavePayload = payload
         renderHiddenFields(payload)
         renderAdvancedFields()
     }
-
     private fun renderAdvancedFields() {
         if (!::advancedFieldsContainer.isInitialized) return
         advancedFieldsContainer.removeAllViews()
@@ -6662,7 +6260,6 @@ class MainActivity : Activity() {
             )
             return
         }
-
         var shown = 0
         for (i in 0 until fields.length()) {
             val item = fields.optJSONObject(i) ?: continue
@@ -6671,7 +6268,6 @@ class MainActivity : Activity() {
             val value = item.optString("value")
             val editable = item.optBoolean("editable")
             val type = item.optInt("type", -1)
-
             val fieldCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -6679,7 +6275,6 @@ class MainActivity : Activity() {
             }
             advancedFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
             fieldCard.addView(text(name, 13, Color.WHITE, bold = true), matchWrap())
-
             if (editable) {
                 val numeric = type == 1 || type == 2 || type == 5
                 val input = editBox("Value", value, numeric)
@@ -6694,11 +6289,9 @@ class MainActivity : Activity() {
                     matchWrap(top = 5)
                 )
             }
-
             shown++
             if (shown >= 25) break
         }
-
         if (shown == 0) {
             advancedFieldsContainer.addView(
                 text("No matching fields.", 12, 0xFF7F93A9.toInt()),
@@ -6711,11 +6304,9 @@ class MainActivity : Activity() {
             )
         }
     }
-
     private fun renderHiddenFields(payload: JSONObject) {
         saveFieldsContainer.removeAllViews()
         val hidden = payload.optJSONArray("hidden") ?: return
-
         for (index in 0 until hidden.length()) {
             val item = hidden.optJSONObject(index) ?: continue
             val label = item.optString("label")
@@ -6745,7 +6336,6 @@ class MainActivity : Activity() {
                 currentValue
             )
             fieldCard.addView(valueInput, matchWrap(bottom = 9))
-
             fieldCard.addView(
                 actionButton(if (calibrated) "Save $label" else "Calibrate $label") {
                     val entered = valueInput.text.toString().trim()
@@ -6761,7 +6351,6 @@ class MainActivity : Activity() {
             )
         }
     }
-
     private fun calibrateHiddenField(index: Int, shownValue: String) {
         val rootDir = preferences.getString("save_root_dir", null)
         val stored = preferences.getString("save_tree", null)
@@ -6788,7 +6377,6 @@ class MainActivity : Activity() {
             }
         }
     }
-
     private fun updateHiddenField(field: String, value: String) {
         val rootDir = preferences.getString("save_root_dir", null)
         val stored = preferences.getString("save_tree", null)
@@ -6798,7 +6386,6 @@ class MainActivity : Activity() {
             val treeUri = if (rootDir.isNullOrBlank()) Uri.parse(stored!!) else null
             if (!rootDir.isNullOrBlank()) createPersistentRootBackups(rootDir)
             else createPersistentBackups(treeUri!!)
-
             val result = JSONObject(
                 NativeBridge.nativeSetRr3SaveField(
                     stagedSave.absolutePath,
@@ -6810,7 +6397,6 @@ class MainActivity : Activity() {
             if (!result.optBoolean("ok")) {
                 throw IllegalStateException(result.optString("error", "Could not update save."))
             }
-
             if (!rootDir.isNullOrBlank()) {
                 copyToRootPath(stagedSave, "$rootDir/character.2.dat")
                 if (stagedTempSave.exists()) {
@@ -6822,14 +6408,12 @@ class MainActivity : Activity() {
                 val saveUri = findChildDocument(treeUri!!, "character.2.dat")
                     ?: throw IllegalStateException("The save file disappeared from the selected folder.")
                 copyFileToUri(stagedSave, saveUri)
-
                 if (stagedTempSave.exists()) {
                     val tempUri = findChildDocument(treeUri, "TempSaveGame.dat")
                         ?: throw IllegalStateException("TempSaveGame.dat is missing; the main save was written, but the secondary copy could not be updated.")
                     copyFileToUri(stagedTempSave, tempUri)
                 }
             }
-
             val inspected = JSONObject(
                 NativeBridge.nativeInspectRr3Save(stagedSave.absolutePath, keysFile.absolutePath)
             )
