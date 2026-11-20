@@ -3427,12 +3427,12 @@ class MainActivity : Activity() {
         val nudgeRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val nudgeRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val nudgeButtons = arrayOf(
-            actionButton("X −") { moveBy(0, -1) },
-            actionButton("X +") { moveBy(0, 1) },
-            actionButton("Y −") { moveBy(1, -1) },
-            actionButton("Y +") { moveBy(1, 1) },
-            actionButton("Z −") { moveBy(2, -1) },
-            actionButton("Z +") { moveBy(2, 1) }
+            actionButton("X −") { },
+            actionButton("X +") { },
+            actionButton("Y −") { },
+            actionButton("Y +") { },
+            actionButton("Z −") { },
+            actionButton("Z +") { }
         )
         for (index in 0..2) {
             nudgeRow1.addView(nudgeButtons[index * 2], LinearLayout.LayoutParams(0, -2, 1f).apply {
@@ -3471,12 +3471,12 @@ class MainActivity : Activity() {
         val rotateRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rotateRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val rotateButtons = arrayOf(
-            actionButton("Rotate X −") { rotateHinge(0, -1) },
-            actionButton("Rotate X +") { rotateHinge(0, 1) },
-            actionButton("Rotate Y −") { rotateHinge(1, -1) },
-            actionButton("Rotate Y +") { rotateHinge(1, 1) },
-            actionButton("Rotate Z −") { rotateHinge(2, -1) },
-            actionButton("Rotate Z +") { rotateHinge(2, 1) }
+            actionButton("Rotate X −") { },
+            actionButton("Rotate X +") { },
+            actionButton("Rotate Y −") { },
+            actionButton("Rotate Y +") { },
+            actionButton("Rotate Z −") { },
+            actionButton("Rotate Z +") { }
         )
         for (index in listOf(0, 2, 4)) {
             rotateRow1.addView(rotateButtons[index], LinearLayout.LayoutParams(0, -2, 1f).apply {
@@ -3492,7 +3492,7 @@ class MainActivity : Activity() {
         fun formatCoordinate(value: Float): String = String.format(Locale.US, "%.4f", value)
         fun updateRow(index: Int) {
             val point = points[index]
-            rowViews[index].text = point.name + if (point.hinge) "  · hinge" else "" +
+            rowViews[index].text = point.name + (if (point.hinge) "  · hinge" else "") +
                 "     " + formatCoordinate(point.x) + ", " +
                 formatCoordinate(point.y) + ", " + formatCoordinate(point.z)
             rowViews[index].setTextColor(if (index == selected) Color.WHITE else 0xFFBDCCDC.toInt())
@@ -3646,6 +3646,19 @@ class MainActivity : Activity() {
             val twin = twinIndex(selected)
             if (twin >= 0) updateRow(twin)
         }
+
+        nudgeButtons[0].setOnClickListener { moveBy(0, -1) }
+        nudgeButtons[1].setOnClickListener { moveBy(0, 1) }
+        nudgeButtons[2].setOnClickListener { moveBy(1, -1) }
+        nudgeButtons[3].setOnClickListener { moveBy(1, 1) }
+        nudgeButtons[4].setOnClickListener { moveBy(2, -1) }
+        nudgeButtons[5].setOnClickListener { moveBy(2, 1) }
+        rotateButtons[0].setOnClickListener { rotateHinge(0, -1) }
+        rotateButtons[1].setOnClickListener { rotateHinge(0, 1) }
+        rotateButtons[2].setOnClickListener { rotateHinge(1, -1) }
+        rotateButtons[3].setOnClickListener { rotateHinge(1, 1) }
+        rotateButtons[4].setOnClickListener { rotateHinge(2, -1) }
+        rotateButtons[5].setOnClickListener { rotateHinge(2, 1) }
 
         for (index in points.indices) {
             val row = text("", 12, 0xFFBDCCDC.toInt()).apply {

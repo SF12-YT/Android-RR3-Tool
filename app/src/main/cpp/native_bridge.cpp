@@ -951,12 +951,21 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3Points(
         return nullptr;
     }
     for (jsize i = 0; i < count; ++i) {
+        const auto& point = verified[static_cast<size_t>(i)];
         for (int k = 0; k < 3; ++k) {
-            if (std::fabs(verified[static_cast<size_t>(i)].pos[k] -
-                          positions[static_cast<size_t>(i) * 3 + k]) > 0.0001f) {
+            if (std::fabs(point.pos[k] - positions[static_cast<size_t>(i) * 3 + k]) > 0.0001f) {
                 gRr3PointsError = "The saved coordinates did not pass verification for " +
-                                  verified[static_cast<size_t>(i)].name + ".";
+                                  point.name + ".";
                 return nullptr;
+            }
+        }
+        if (point.hinge) {
+            for (int k = 0; k < 9; ++k) {
+                if (std::fabs(point.basis[k] - bases[static_cast<size_t>(i) * 9 + k]) > 0.0001f) {
+                    gRr3PointsError = "The saved hinge orientation did not pass verification for " +
+                                      point.name + ".";
+                    return nullptr;
+                }
             }
         }
     }
