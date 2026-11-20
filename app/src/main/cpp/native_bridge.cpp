@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <GLES3/gl3.h>
 
 #include <algorithm>
 #include <cmath>
@@ -2833,6 +2834,26 @@ Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
 
 
 namespace {
+struct Rr3ViewerGpuMesh {
+    GLuint vao = 0;
+    GLuint texture = 0;
+    GLsizei indexCount = 0;
+    float color[4] = {1, 1, 1, 1};
+    bool textured = false;
+    bool blended = false;
+};
+
+struct Rr3ViewerGpu {
+    GLuint program = 0;
+    GLint mvpLocation = -1;
+    GLint colorLocation = -1;
+    GLint hasTextureLocation = -1;
+    GLint blendedLocation = -1;
+    GLint samplerLocation = -1;
+    std::vector<Rr3ViewerGpuMesh> meshes;
+    bool ready = false;
+};
+
 struct Rr3ViewerSession {
     nfsnl::Model model;
     nfsnl::RenderView view;
@@ -2841,12 +2862,89 @@ struct Rr3ViewerSession {
     float frameDistance = 5.0f;
     std::string draftLod;
     int triangles = 0;
+    Rr3ViewerGpu gpu;
 };
 
 std::mutex gRr3ViewerMutex;
 std::map<jlong, std::shared_ptr<Rr3ViewerSession>> gRr3ViewerSessions;
 std::atomic<jlong> gRr3ViewerNextHandle{1};
 
+GLuint compileViewerShader(GLenum type, const char* source, std::string& error) {
+    GLuint shader = glCreateShader(type);
+    if (!shader) {
+        error = "OpenGL could not allocate a shader.";
+        return 0;
+    }
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled != GL_TRUE) {
+        GLint length = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+        std::string log(static_cast<size_t>(std::max(1, length)), '\\0');
+        glGetShaderInfoLog(shader, length, nullptr, log.data());
+        error = "OpenGL shader compilation failed: " + log;
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+void multiplyViewerMatrices(const float a[16], const float b[16], float out[16]) {
+    float result[16] = {};
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            for (int k = 0; k < 4; ++k)
+                result[column * 4 + row] += a[k * 4 + row] * b[column * 4 + k];
+        }
+    }
+    std::copy(result, result + 16, out);
+}
+
+void buildViewerMvp(const Rr3ViewerSession& session, int width, int height,
+                    float yaw, float pitch, float zoom, float out[16]) {
+    const float safeYaw = std::isfinite(yaw) ? yaw : 0.6f;
+    const float safePitch = std::isfinite(pitch)
+        ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
+    const float safeZoom = std::isfinite(zoom)
+        ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
+    const float cy = std::cos(safeYaw), sy = std::sin(safeYaw);
+    const float cp = std::cos(safePitch), sp = std::sin(safePitch);
+    const float right[3] = {-cy, 0.0f, sy};
+    const float up[3] = {sy * sp, cp, cy * sp};
+    const float forward[3] = {sy * cp, -sp, cy * cp};
+    const float* centre = session.view.centre;
+    const float* modelPos = session.view.modelPos;
+    const float distance = session.frameDistance / safeZoom;
+
+    float view[16] = {};
+    view[0] = right[0]; view[4] = right[1]; view[8] = right[2];
+    view[12] = (modelPos[0] - centre[0]) * right[0] +
+               (modelPos[1] - centre[1]) * right[1] +
+               (modelPos[2] - centre[2]) * right[2] - session.view.pan[0];
+    view[1] = up[0]; view[5] = up[1]; view[9] = up[2];
+    view[13] = (modelPos[0] - centre[0]) * up[0] +
+               (modelPos[1] - centre[1]) * up[1] +
+               (modelPos[2] - centre[2]) * up[2] - session.view.pan[1];
+    view[2] = -forward[0]; view[6] = -forward[1]; view[10] = -forward[2];
+    view[14] = (centre[0] - modelPos[0]) * forward[0] +
+               (centre[1] - modelPos[1]) * forward[1] +
+               (centre[2] - modelPos[2]) * forward[2] - distance;
+    view[15] = 1.0f;
+
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
+    const float f = 1.0f / std::tan(0.5f * session.view.fovY);
+    const float nearPlane = std::max(0.01f, session.view.radius * 0.001f);
+    const float farPlane = std::max(1000.0f, distance + session.view.radius * 20.0f);
+    float projection[16] = {};
+    projection[0] = f / aspect;
+    projection[5] = f;
+    projection[10] = (farPlane + nearPlane) / (nearPlane - farPlane);
+    projection[11] = -1.0f;
+    projection[14] = (2.0f * farPlane * nearPlane) / (nearPlane - farPlane);
+    multiplyViewerMatrices(projection, view, out);
+}
 
 bool copyViewerInputs(JNIEnv* env, jobjectArray pathArray, jobjectArray dataArray,
                       std::vector<std::string>& paths,
@@ -3114,6 +3212,259 @@ Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
         gRr3ViewerError = "The RR3 3D model setup failed unexpectedly.";
     }
     return toJava(env, errorJson(gRr3ViewerError));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInitRr3ViewerGl(
+    JNIEnv* env, jobject /* thiz */, jlong handle) {
+    gRr3ViewerError.clear();
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end())
+            return toJava(env, "The RR3 viewer session has expired. Load the car again.");
+        session = found->second;
+    }
+    if (!glGetString(GL_VERSION))
+        return toJava(env, "OpenGL context is not current on the viewer thread.");
+
+    static const char* vertexSource = R"GLSL(#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUv;
+layout(location = 3) in vec4 aColor;
+uniform mat4 uMvp;
+out vec2 vUv;
+out vec4 vColor;
+out float vLight;
+void main() {
+    gl_Position = uMvp * vec4(aPosition, 1.0);
+    vUv = aUv;
+    vColor = aColor;
+    vec3 normal = dot(aNormal, aNormal) > 0.0001 ? normalize(aNormal) : vec3(0.0, 1.0, 0.0);
+    vLight = max(dot(normal, normalize(vec3(0.4, 0.8, 0.45))), 0.0);
+}
+)GLSL";
+    static const char* fragmentSource = R"GLSL(#version 300 es
+precision highp float;
+in vec2 vUv;
+in vec4 vColor;
+in float vLight;
+uniform sampler2D uTexture;
+uniform vec4 uMaterialColor;
+uniform int uHasTexture;
+uniform int uBlended;
+out vec4 fragColor;
+void main() {
+    vec4 base = uMaterialColor * vColor;
+    if (uHasTexture == 1) base *= texture(uTexture, vec2(vUv.x, 1.0 - vUv.y));
+    if (base.a < 0.12) discard;
+    float lighting = 0.58 + 0.42 * vLight;
+    fragColor = vec4(base.rgb * lighting, uBlended == 1 ? base.a : 1.0);
+}
+)GLSL";
+
+    std::string shaderError;
+    GLuint vertex = compileViewerShader(GL_VERTEX_SHADER, vertexSource, shaderError);
+    if (!vertex) return toJava(env, shaderError);
+    GLuint fragment = compileViewerShader(GL_FRAGMENT_SHADER, fragmentSource, shaderError);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return toJava(env, shaderError);
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        GLint length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+        std::string log(static_cast<size_t>(std::max(1, length)), '\\0');
+        glGetProgramInfoLog(program, length, nullptr, log.data());
+        glDeleteProgram(program);
+        return toJava(env, "OpenGL program link failed: " + log);
+    }
+
+    Rr3ViewerGpu gpu;
+    gpu.program = program;
+    gpu.mvpLocation = glGetUniformLocation(program, "uMvp");
+    gpu.colorLocation = glGetUniformLocation(program, "uMaterialColor");
+    gpu.hasTextureLocation = glGetUniformLocation(program, "uHasTexture");
+    gpu.blendedLocation = glGetUniformLocation(program, "uBlended");
+    gpu.samplerLocation = glGetUniformLocation(program, "uTexture");
+
+    const std::vector<uint8_t> visible = nfsnl::visibleMeshes(session->model, session->view);
+    std::map<const nfsnl::Image*, GLuint> uploadedTextures;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (size_t i = 0; i < session->model.meshes.size(); ++i) {
+        if (i >= visible.size() || !visible[i]) continue;
+        const nfsnl::Mesh& mesh = session->model.meshes[i];
+        const size_t vertexCount = mesh.positions.size() / 3;
+        if (vertexCount == 0 || mesh.indices.empty() ||
+            vertexCount > static_cast<size_t>(std::numeric_limits<GLsizei>::max()) ||
+            mesh.indices.size() > static_cast<size_t>(std::numeric_limits<GLsizei>::max()))
+            continue;
+
+        struct ViewerVertex {
+            float position[3];
+            float normal[3];
+            float uv[2];
+            float color[4];
+        };
+        std::vector<ViewerVertex> vertices(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v) {
+            ViewerVertex& out = vertices[v];
+            for (int k = 0; k < 3; ++k) {
+                out.position[k] = mesh.positions[v * 3 + static_cast<size_t>(k)];
+                out.normal[k] = mesh.normals.size() >= vertexCount * 3
+                    ? mesh.normals[v * 3 + static_cast<size_t>(k)]
+                    : (k == 1 ? 1.0f : 0.0f);
+            }
+            out.uv[0] = mesh.uvs.size() >= vertexCount * 2 ? mesh.uvs[v * 2] : 0.0f;
+            out.uv[1] = mesh.uvs.size() >= vertexCount * 2 ? mesh.uvs[v * 2 + 1] : 0.0f;
+            for (int k = 0; k < 4; ++k)
+                out.color[k] = mesh.colors.size() >= vertexCount * 4
+                    ? mesh.colors[v * 4 + static_cast<size_t>(k)] : 1.0f;
+        }
+
+        Rr3ViewerGpuMesh gpuMesh;
+        std::copy(mesh.color, mesh.color + 4, gpuMesh.color);
+        std::string materialName = viewerLower(mesh.material + " " + mesh.name);
+        gpuMesh.blended = materialName.find("glass") != std::string::npos ||
+                          materialName.find("window") != std::string::npos ||
+                          materialName.find("windscreen") != std::string::npos ||
+                          materialName.find("alpha") != std::string::npos;
+        if (gpuMesh.blended && gpuMesh.color[3] > 0.95f) gpuMesh.color[3] = 0.48f;
+
+        const nfsnl::Image* texture = i < session->meshTextures.size()
+            ? session->meshTextures[i] : nullptr;
+        if (texture && texture->ok()) {
+            auto existing = uploadedTextures.find(texture);
+            if (existing != uploadedTextures.end()) {
+                gpuMesh.texture = existing->second;
+                gpuMesh.textured = true;
+            } else {
+                nfsnl::Image converted;
+                const nfsnl::Image* upload = texture;
+                if (texture->channels != 4) {
+                    converted = nfsnl::toRgba(*texture);
+                    upload = &converted;
+                }
+                if (upload->ok() && upload->channels == 4) {
+                    glGenTextures(1, &gpuMesh.texture);
+                    glBindTexture(GL_TEXTURE_2D, gpuMesh.texture);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, upload->width, upload->height,
+                                 0, GL_RGBA, GL_UNSIGNED_BYTE, upload->pixels.data());
+                    glGenerateMipmap(GL_TEXTURE_2D);
+                    gpuMesh.textured = glGetError() == GL_NO_ERROR;
+                    if (gpuMesh.textured) uploadedTextures[texture] = gpuMesh.texture;
+                }
+            }
+        }
+
+        glGenVertexArrays(1, &gpuMesh.vao);
+        glBindVertexArray(gpuMesh.vao);
+        GLuint buffers[2] = {};
+        glGenBuffers(2, buffers);
+        glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(vertices.size() * sizeof(ViewerVertex)),
+                     vertices.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(uint32_t)),
+                     mesh.indices.data(), GL_STATIC_DRAW);
+        const GLsizei stride = static_cast<GLsizei>(sizeof(ViewerVertex));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, position)));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, normal)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, uv)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, color)));
+        glBindVertexArray(0);
+        gpuMesh.indexCount = static_cast<GLsizei>(mesh.indices.size());
+        gpu.meshes.push_back(gpuMesh);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (gpu.meshes.empty()) {
+        glDeleteProgram(program);
+        return toJava(env, "OpenGL could not upload any drawable RR3 meshes.");
+    }
+    gpu.ready = true;
+    session->gpu = std::move(gpu);
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    return toJava(env, std::string("OpenGL ES 3 · GPU: ") +
+        (renderer ? renderer : "unknown renderer") + " · " +
+        std::to_string(session->gpu.meshes.size()) + " GPU mesh(es)");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle, jint width, jint height,
+    jfloat yaw, jfloat pitch, jfloat zoom) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (!session->gpu.ready || session->gpu.program == 0 || width <= 0 || height <= 0) return;
+    float mvp[16];
+    buildViewerMvp(*session, width, height, yaw, pitch, zoom, mvp);
+    glViewport(0, 0, width, height);
+    glClearColor(0.055f, 0.075f, 0.10f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_CULL_FACE);
+    glUseProgram(session->gpu.program);
+    glUniformMatrix4fv(session->gpu.mvpLocation, 1, GL_FALSE, mvp);
+    glUniform1i(session->gpu.samplerLocation, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    auto drawPass = [&](bool blendedPass) {
+        for (const Rr3ViewerGpuMesh& mesh : session->gpu.meshes) {
+            if (mesh.blended != blendedPass) continue;
+            if (blendedPass) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+            } else {
+                glDisable(GL_BLEND);
+                glDepthMask(GL_TRUE);
+            }
+            glUniform4fv(session->gpu.colorLocation, 1, mesh.color);
+            glUniform1i(session->gpu.hasTextureLocation, mesh.textured ? 1 : 0);
+            glUniform1i(session->gpu.blendedLocation, blendedPass ? 1 : 0);
+            glBindTexture(GL_TEXTURE_2D, mesh.textured ? mesh.texture : 0);
+            glBindVertexArray(mesh.vao);
+            glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    };
+    drawPass(false);
+    drawPass(true);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
