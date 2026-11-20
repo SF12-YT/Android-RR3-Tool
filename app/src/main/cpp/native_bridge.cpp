@@ -2565,7 +2565,9 @@ Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
 
         const std::string modelStem = nfsnl::stripExtension(modelPath);
         std::string carStem = modelStem;
-        if (carStem.size() > 2 && carStem.compare(carStem.size() - 2, 2, "_a") == 0)
+        if (carStem.size() > 2 && carStem[carStem.size() - 2] == '_' &&
+            ((carStem.back() >= 'a' && carStem.back() <= 'z') ||
+             (carStem.back() >= 'A' && carStem.back() <= 'Z')))
             carStem.erase(carStem.size() - 2);
         const std::string pointsPath = carStem + ".points";
         const std::string innerPointsPath = nfsnl::rr3InteriorPointsNameFor(modelPath);

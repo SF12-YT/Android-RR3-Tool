@@ -6,11 +6,12 @@ An Android-native port of the Real Racing 3 parts of [Monkey Tool](https://githu
 
 The first Android releases focus on Real Racing 3. The initial port deliberately leaves out:
 
-- 3D model viewing and conversion.
+- 3D model editing, replacement and conversion workflows.
 - Texture extraction, conversion and editing (handled by a separate app).
 
 The current Android foundation includes:
 - RR3 save inspection, a searchable advanced field view, calibration for hidden currency/level values, and guarded save writes.
+- A standalone read-only 3D Viewer that loads installed car exterior models, positions available hardpoints, reads available car textures, and supports rotate/zoom camera controls.
 - Reversible .nct / .gui and .bin / .xml conversion using the upstream embedded RR3 RC4 table and key material.
 - The separate RR3 game-text cipher for `gametext.txt` and `text_<language>.txt`.
 - An editable-text data editor for supported RR3 `.sounddef`, `.evt`, table and text files, rebuilt by the upstream C++ serializer.
