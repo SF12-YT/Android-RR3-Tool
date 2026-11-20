@@ -9,6 +9,7 @@
 #include <cstring>
 #include <fstream>
 #include <cstdint>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <map>
@@ -2882,7 +2883,7 @@ GLuint compileViewerShader(GLenum type, const char* source, std::string& error) 
     if (compiled != GL_TRUE) {
         GLint length = 0;
         glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
-        std::string log(static_cast<size_t>(std::max(1, length)), '\\0');
+        std::string log(static_cast<size_t>(std::max(1, length)), static_cast<char>(0));
         glGetShaderInfoLog(shader, length, nullptr, log.data());
         error = "OpenGL shader compilation failed: " + log;
         glDeleteShader(shader);
@@ -3285,7 +3286,7 @@ void main() {
     if (linked != GL_TRUE) {
         GLint length = 0;
         glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
-        std::string log(static_cast<size_t>(std::max(1, length)), '\\0');
+        std::string log(static_cast<size_t>(std::max(1, length)), static_cast<char>(0));
         glGetProgramInfoLog(program, length, nullptr, log.data());
         glDeleteProgram(program);
         return toJava(env, "OpenGL program link failed: " + log);
