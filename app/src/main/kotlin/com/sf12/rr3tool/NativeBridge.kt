@@ -101,6 +101,8 @@ internal object NativeBridge {
 
     external fun nativeConvertRr3Audio(fileName: String, input: ByteArray): ByteArray?
 
+    external fun nativeInspectRr3AudioBank(input: ByteArray): String
+
     external fun nativeGetRr3AudioError(): String
 
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?

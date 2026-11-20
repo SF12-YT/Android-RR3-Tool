@@ -831,6 +831,80 @@ Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
 
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3AudioBank(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3AudioError.clear();
+    if (!input) {
+        gRr3AudioError = "No Wwise sound-bank data was supplied.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    const jsize length = env->GetArrayLength(input);
+    if (length < 12) {
+        gRr3AudioError = "The selected file is too small to be a Wwise sound bank.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bank bank;
+    bool parsed = false;
+    try {
+        parsed = nfsnl::readBank(source.data(), source.size(), bank);
+    } catch (...) {
+        parsed = false;
+    }
+    if (!parsed) {
+        gRr3AudioError = "This file is not a readable Wwise .bnk SoundBank.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    for (const auto& entry : bank.entries) {
+        if (entry.offset > source.size() ||
+            entry.size > source.size() - entry.offset) {
+            gRr3AudioError = "The SoundBank contains an invalid sound offset or size.";
+            return toJava(env, errorJson(gRr3AudioError));
+        }
+    }
+
+    std::ostringstream out;
+    out << "{\"ok\":true"
+        << ",\"bankId\":" << bank.id
+        << ",\"version\":" << bank.version
+        << ",\"hircObjects\":" << bank.hircObjects
+        << ",\"sections\":[";
+    for (size_t i = 0; i < bank.sections.size(); ++i) {
+        if (i) out << ",";
+        out << jsonString(bank.sections[i]);
+    }
+    out << "],\"sources\":[";
+    for (size_t i = 0; i < bank.sources.size(); ++i) {
+        if (i) out << ",";
+        out << bank.sources[i];
+    }
+    out << "],\"entries\":[";
+    for (size_t i = 0; i < bank.entries.size(); ++i) {
+        const auto& entry = bank.entries[i];
+        if (i) out << ",";
+        out << "{\"id\":" << entry.id
+            << ",\"offset\":" << static_cast<unsigned long long>(entry.offset)
+            << ",\"size\":" << static_cast<unsigned long long>(entry.size)
+            << ",\"kind\":" << jsonString(entry.kind)
+            << ",\"codec\":" << entry.codec
+            << ",\"channels\":" << entry.channels
+            << ",\"sampleRate\":" << entry.sampleRate
+            << ",\"samples\":" << entry.samples
+            << "}";
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3AudioError(
     JNIEnv* env, jobject /* thiz */) {
     return toJava(

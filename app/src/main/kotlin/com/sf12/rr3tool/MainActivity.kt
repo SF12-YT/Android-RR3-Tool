@@ -2908,12 +2908,16 @@ class MainActivity : Activity() {
             effectiveName.endsWith(".gui") || effectiveName.endsWith(".xml")) {
             actions.add("Decode / encode RR3 data")
         }
-        val extension = effectiveName.substringAfterLast('.', "").lowercase()
+        val extension = lower.removeSuffix(".z").removeSuffix(".bin")
+            .substringAfterLast('.', "").lowercase()
         if (extension in setOf("sounddef", "evt", "tbl", "table", "txt")) {
             actions.add("Open in RR3 text data editor")
         }
         if (extension == "wem" || extension == "gnsu") {
             actions.add("Convert audio to WAV")
+        }
+        if (extension == "bnk") {
+            actions.add("Extract Wwise audio bank")
         }
 
         AlertDialog.Builder(this)
@@ -2928,6 +2932,7 @@ class MainActivity : Activity() {
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
                     "Convert audio to WAV" -> convertGameAudio(entry)
+                    "Extract Wwise audio bank" -> extractGameAudioBank(entry)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -3136,6 +3141,130 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     gameFilesStatus.text = e.message ?: "RR3 audio conversion failed."
+                }
+            }
+        }.start()
+    }
+
+    private fun extractGameAudioBank(entry: GameDataFile) {
+        gameFilesStatus.text = "Extracting Wwise audio bank…"
+        Thread {
+            var archiveFile: File? = null
+            try {
+                val source = readGameFile(entry)
+                val (name, bankBytes) = unwrappedGameFile(entry, source)
+                val inspection = JSONObject(NativeBridge.nativeInspectRr3AudioBank(bankBytes))
+                if (!inspection.optBoolean("ok")) {
+                    throw IllegalStateException(
+                        inspection.optString("error").takeIf { it.isNotBlank() }
+                            ?: NativeBridge.nativeGetRr3AudioError()
+                    )
+                }
+
+                val entries = inspection.optJSONArray("entries")
+                    ?: throw IllegalStateException("The Wwise bank did not return an embedded-sound list.")
+                val externalSourceCount = inspection.optJSONArray("sources")?.length() ?: 0
+                if (entries.length() == 0) {
+                    val detail = if (externalSourceCount > 0) {
+                        " It references $externalSourceCount external media ID(s), which are stored separately in the depot."
+                    } else {
+                        ""
+                    }
+                    throw IllegalStateException("This bank contains no embedded audio files.$detail")
+                }
+
+                val bankName = name.substringBeforeLast('.', name)
+                    .substringAfterLast('/')
+                    .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .ifBlank { "rr3_audio_bank" }
+                archiveFile = File(cacheDir, "rr3-bank-${System.currentTimeMillis()}.zip")
+                val usedIds = mutableSetOf<String>()
+                var wavCount = 0
+
+                ZipOutputStream(FileOutputStream(archiveFile)).use { archive ->
+                    for (index in 0 until entries.length()) {
+                        val sound = entries.getJSONObject(index)
+                        val id = sound.optLong("id", -1L)
+                        val offset = sound.optLong("offset", -1L)
+                        val size = sound.optLong("size", -1L)
+                        if (id < 0L || offset < 0L || size <= 0L ||
+                            size > Int.MAX_VALUE.toLong() ||
+                            offset > bankBytes.size.toLong() - size) {
+                            throw IllegalStateException("SoundBank entry $index has an invalid data range.")
+                        }
+
+                        val kind = sound.optString("kind", "bin").lowercase(Locale.ROOT)
+                        val extension = when (kind) {
+                            "wem" -> "wem"
+                            "gnsu" -> "gnsu"
+                            else -> "bin"
+                        }
+                        val baseId = id.toString()
+                        val fileStem = if (usedIds.add(baseId)) {
+                            baseId
+                        } else {
+                            "$baseId-${index + 1}".also { usedIds.add(it) }
+                        }
+                        val start = offset.toInt()
+                        val count = size.toInt()
+                        val rawName = "$bankName/$fileStem.$extension"
+
+                        // Preserve the exact original payload for every bank entry.
+                        archive.putNextEntry(ZipEntry(rawName))
+                        archive.write(bankBytes, start, count)
+                        archive.closeEntry()
+
+                        // Add a WAV sidecar when the Android-native decoder supports
+                        // the embedded WEM/GNSU codec. Unsupported Wwise Vorbis stays
+                        // available as its original .wem file.
+                        if (kind == "wem" || kind == "gnsu") {
+                            val soundBytes = bankBytes.copyOfRange(start, start + count)
+                            val wav = NativeBridge.nativeConvertRr3Audio(
+                                "$fileStem.$extension",
+                                soundBytes
+                            )
+                            if (wav != null && wav.isNotEmpty()) {
+                                archive.putNextEntry(ZipEntry("$bankName/$fileStem.wav"))
+                                archive.write(wav)
+                                archive.closeEntry()
+                                wavCount++
+                            }
+                        }
+                    }
+
+                    inspection.put("sourceFile", entry.relativePath)
+                    inspection.put("wavSidecars", wavCount)
+                    inspection.put(
+                        "extractionNote",
+                        "Original embedded payloads are preserved. WAV sidecars are added only when this Android build can decode the sound codec; unsupported Wwise Vorbis remains as .wem."
+                    )
+                    archive.putNextEntry(ZipEntry("$bankName/bank-info.json"))
+                    archive.write(inspection.toString(2).toByteArray(Charsets.UTF_8))
+                    archive.closeEntry()
+                }
+
+                val readyFile = archiveFile
+                    ?: throw IllegalStateException("The extracted bank archive was not created.")
+                if (!readyFile.isFile || readyFile.length() <= 0L) {
+                    throw IllegalStateException("The extracted bank archive is empty.")
+                }
+
+                pendingTransformedFile?.delete()
+                pendingTransformedData = null
+                pendingTransformedFile = readyFile
+                pendingTransformedName = "${bankName}_sounds.zip"
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
+                runOnUiThread {
+                    gameFilesStatus.text =
+                        "Extracted ${entries.length()} embedded sound(s); created $wavCount WAV sidecar(s). Save the ZIP to keep the original audio files."
+                    launchRr3OutputPicker()
+                }
+            } catch (e: Exception) {
+                archiveFile?.delete()
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Wwise audio-bank extraction failed."
                 }
             }
         }.start()
