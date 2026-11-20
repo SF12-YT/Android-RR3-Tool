@@ -4691,11 +4691,7 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
-        rr3ViewerSurface?.onResume()
-    }
-    override fun onPause() {
-        rr3ViewerSurface?.onPause()
-        super.onPause()
+        rr3ViewerSurface?.refresh()
     }
     override fun onDestroy() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
