@@ -25,6 +25,7 @@ internal class Rr3ModelViewer(
     private val rendering = AtomicBoolean(false)
     @Volatile private var renderRequested = false
     @Volatile private var previewRequested = false
+    @Volatile private var lastFrameStartNanos = 0L
     @Volatile private var disposed = false
     @Volatile private var yaw = 0.6f
     @Volatile private var pitch = 0.25f
@@ -108,7 +109,6 @@ internal class Rr3ModelViewer(
         renderRequested = true
         if (!rendering.compareAndSet(false, true)) return
         executor.execute {
-            var lastFrameStartNanos = 0L
             try {
                 while (renderRequested && !disposed) {
                     renderRequested = false
