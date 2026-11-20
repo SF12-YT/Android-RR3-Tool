@@ -3177,11 +3177,12 @@ class MainActivity : Activity() {
                     .substringAfterLast('/')
                     .replace(Regex("[^A-Za-z0-9._-]"), "_")
                     .ifBlank { "rr3_audio_bank" }
-                archiveFile = File(cacheDir, "rr3-bank-${System.currentTimeMillis()}.zip")
+                val outputArchive = File(cacheDir, "rr3-bank-${System.currentTimeMillis()}.zip")
+                archiveFile = outputArchive
                 val usedIds = mutableSetOf<String>()
                 var wavCount = 0
 
-                ZipOutputStream(FileOutputStream(archiveFile)).use { archive ->
+                ZipOutputStream(FileOutputStream(outputArchive)).use { archive ->
                     for (index in 0 until entries.length()) {
                         val sound = entries.getJSONObject(index)
                         val id = sound.optLong("id", -1L)
@@ -3243,8 +3244,7 @@ class MainActivity : Activity() {
                     archive.closeEntry()
                 }
 
-                val readyFile = archiveFile
-                    ?: throw IllegalStateException("The extracted bank archive was not created.")
+                val readyFile = outputArchive
                 if (!readyFile.isFile || readyFile.length() <= 0L) {
                     throw IllegalStateException("The extracted bank archive is empty.")
                 }
