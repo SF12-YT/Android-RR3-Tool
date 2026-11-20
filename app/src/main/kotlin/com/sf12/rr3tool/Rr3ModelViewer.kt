@@ -28,19 +28,19 @@ internal class Rr3ModelViewer(
     private var lastY = 0f
     private var pinchDistance = 0f
 
-    private val viewerRenderer = object : Renderer {
+    private val viewerRenderer = object : GLSurfaceView.Renderer {
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
             if (disposed) return
             glReady = false
             try {
                 val status = NativeBridge.nativeInitRr3ViewerGl(handle)
                 glReady = status.startsWith("OpenGL ES 3")
-                post {
+                this@Rr3ModelViewer.post {
                     if (!disposed) onFrameStatus(
                         if (glReady) status else status.ifBlank { "GPU renderer initialisation failed." }
                     )
                 }
-                if (glReady) requestRender()
+                if (glReady) this@Rr3ModelViewer.requestRender()
             } catch (error: Exception) {
                 post {
                     if (!disposed) onFrameStatus(
@@ -51,7 +51,7 @@ internal class Rr3ModelViewer(
         }
 
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-            if (width > 0 && height > 0) requestRender()
+            if (width > 0 && height > 0) this@Rr3ModelViewer.requestRender()
         }
 
         override fun onDrawFrame(gl: GL10?) {
@@ -59,8 +59,8 @@ internal class Rr3ModelViewer(
             try {
                 NativeBridge.nativeDrawRr3ViewerGl(
                     handle,
-                    width.coerceAtLeast(1),
-                    height.coerceAtLeast(1),
+                    this@Rr3ModelViewer.width.coerceAtLeast(1),
+                    this@Rr3ModelViewer.height.coerceAtLeast(1),
                     yaw,
                     pitch,
                     zoom
