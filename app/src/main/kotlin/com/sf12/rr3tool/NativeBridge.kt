@@ -131,6 +131,19 @@ internal object NativeBridge {
         preview: Boolean
     ): ByteArray?
 
+    /** Creates GPU buffers and uploads model textures on the current OpenGL ES thread. */
+    external fun nativeInitRr3ViewerGl(handle: Long): String
+
+    /** Draws the prepared RR3 model directly into the current OpenGL framebuffer. */
+    external fun nativeDrawRr3ViewerGl(
+        handle: Long,
+        width: Int,
+        height: Int,
+        yaw: Float,
+        pitch: Float,
+        zoom: Float
+    )
+
     external fun nativeFreeRr3Viewer(handle: Long)
 
     external fun nativeGetRr3ViewerError(): String
