@@ -23,6 +23,8 @@ internal class Rr3ModelViewer(
 ) : GLSurfaceView(context) {
     @Volatile private var disposed = false
     @Volatile private var glReady = false
+    @Volatile private var surfaceWidth = 1
+    @Volatile private var surfaceHeight = 1
     @Volatile private var yaw = 0.6f
     @Volatile private var pitch = 0.25f
     @Volatile private var zoom = 1f
@@ -53,7 +55,11 @@ internal class Rr3ModelViewer(
         }
 
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-            if (width > 0 && height > 0) this@Rr3ModelViewer.requestRender()
+            if (width > 0 && height > 0) {
+                surfaceWidth = width
+                surfaceHeight = height
+                this@Rr3ModelViewer.requestRender()
+            }
         }
 
         override fun onDrawFrame(gl: GL10?) {
@@ -61,8 +67,8 @@ internal class Rr3ModelViewer(
             try {
                 NativeBridge.nativeDrawRr3ViewerGl(
                     handle,
-                    this@Rr3ModelViewer.width.coerceAtLeast(1),
-                    this@Rr3ModelViewer.height.coerceAtLeast(1),
+                    surfaceWidth,
+                    surfaceHeight,
                     yaw,
                     pitch,
                     zoom

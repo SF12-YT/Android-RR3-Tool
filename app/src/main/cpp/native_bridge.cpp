@@ -2916,28 +2916,31 @@ void buildViewerMvp(const Rr3ViewerSession& session, int width, int height,
     const float up[3] = {sy * sp, cp, cy * sp};
     const float forward[3] = {sy * cp, -sp, cy * cp};
     const float* centre = session.view.centre;
-    const float* modelPos = session.view.modelPos;
-    const float distance = session.frameDistance / safeZoom;
+    const float radius = std::max(0.05f, session.view.radius);
+    const float fovY = std::isfinite(session.view.fovY)
+        ? std::max(0.15f, std::min(2.6f, session.view.fovY)) : 0.75f;
+    const float fitDistance = radius / std::max(0.15f, std::tan(fovY * 0.5f)) * 1.15f;
+    const float distance = std::max(session.frameDistance, fitDistance) / safeZoom;
 
+    // Use a conventional look-at matrix centred on the framed model bounds.
+    // Mixing modelPos and centre could shift RR3 assets outside the camera frustum
+    // when their model origin is not at their geometric centre.
     float view[16] = {};
     view[0] = right[0]; view[4] = right[1]; view[8] = right[2];
-    view[12] = (modelPos[0] - centre[0]) * right[0] +
-               (modelPos[1] - centre[1]) * right[1] +
-               (modelPos[2] - centre[2]) * right[2] - session.view.pan[0];
+    view[12] = -(right[0] * centre[0] + right[1] * centre[1] +
+                 right[2] * centre[2]) - session.view.pan[0];
     view[1] = up[0]; view[5] = up[1]; view[9] = up[2];
-    view[13] = (modelPos[0] - centre[0]) * up[0] +
-               (modelPos[1] - centre[1]) * up[1] +
-               (modelPos[2] - centre[2]) * up[2] - session.view.pan[1];
+    view[13] = -(up[0] * centre[0] + up[1] * centre[1] +
+                 up[2] * centre[2]) - session.view.pan[1];
     view[2] = -forward[0]; view[6] = -forward[1]; view[10] = -forward[2];
-    view[14] = (centre[0] - modelPos[0]) * forward[0] +
-               (centre[1] - modelPos[1]) * forward[1] +
-               (centre[2] - modelPos[2]) * forward[2] - distance;
+    view[14] = forward[0] * centre[0] + forward[1] * centre[1] +
+               forward[2] * centre[2] - distance;
     view[15] = 1.0f;
 
     const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
-    const float f = 1.0f / std::tan(0.5f * session.view.fovY);
-    const float nearPlane = std::max(0.01f, session.view.radius * 0.001f);
-    const float farPlane = std::max(1000.0f, distance + session.view.radius * 20.0f);
+    const float f = 1.0f / std::tan(0.5f * fovY);
+    const float nearPlane = std::max(0.01f, radius * 0.001f);
+    const float farPlane = std::max(1000.0f, distance + radius * 20.0f);
     float projection[16] = {};
     projection[0] = f / aspect;
     projection[5] = f;

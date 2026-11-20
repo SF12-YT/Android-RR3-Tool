@@ -501,7 +501,7 @@ class MainActivity : Activity() {
             0xFF9BAFC5.toInt()
         )
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
-        indexGameFilesButton = actionButton("Index and browse RR3 files") { indexGameDataFiles() }
+        indexGameFilesButton = actionButton("Index all RR3 game assets") { indexGameDataFiles() }
         gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
         gameFilesSearch = editBox("Search RR3 file names and paths", "", numeric = false)
         gameCard.addView(gameFilesSearch, matchWrap(top = 10))
@@ -1113,7 +1113,7 @@ class MainActivity : Activity() {
             return
         }
         indexGameFilesButton.isEnabled = false
-        gameFilesStatus.text = "Indexing RR3 .depot files…"
+        gameFilesStatus.text = "Indexing all RR3 .depot assets (including textures and 3D models)…"
         gameFilesContainer.removeAllViews()
         Thread {
             try {
@@ -1135,7 +1135,7 @@ class MainActivity : Activity() {
                     indexedGameFiles = files
                     gameFilesSearch.setText("")
                     gameFilesStatus.text =
-                        "Indexed ${files.size} supported files. Open folders to browse the depot tree. Textures and 3D model assets are hidden."
+                        "Indexed ${files.size} files across the full RR3 .depot, including textures, 3D models, animations and sidecars."
                     renderGameFiles()
                     renderLiveryCarChoices()
                     renderRr3ViewerCarChoices()
@@ -1432,41 +1432,25 @@ class MainActivity : Activity() {
             addNode(gameFilesContainer, child, 0)
         }
         gameFilesStatus.text = if (query.isEmpty()) {
-            "Indexed ${indexedGameFiles.size} supported files. Open folders to browse the depot tree."
+            "Indexed ${indexedGameFiles.size} files across the full RR3 .depot."
         } else {
             "Showing ${matches.size} file(s) matching “${gameFilesSearch.text}”. Matching folders are expanded."
         }
     }
+    /** Returns assets from the app-wide depot index; tabs must not rescan the game folder. */
     private fun scanLiveryCarAssets(liveryEntry: GameDataFile, carFolder: String): List<GameDataFile> {
-        val rootPath = liveryEntry.depotRootPath
-            ?: preferences.getString("game_data_root_dir", null)
-        if (!rootPath.isNullOrBlank()) {
-            val backend = preferences.getString("game_data_backend", "root")
-            val useShizuku = liveryEntry.isShizuku || backend == "shizuku"
-            val carRoot = File(rootPath, "vehicles/$carFolder").absolutePath
-            val listing = if (useShizuku) {
-                val service = shizukuStorageService
-                    ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
-                val pipe = service.listFiles(carRoot)
-                    ?: throw IllegalStateException("Shizuku could not list this car's texture files.")
-                ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
-            } else {
-                runRootCommand("find ${shellQuote(carRoot)} -type f -print")
-            }
-            return GameDataBrowser.fromRootListing(
-                carRoot, listing, useShizuku = useShizuku, includeTextures = true
-            ).map {
-                it.copy(
-                    relativePath = "vehicles/$carFolder/" + it.relativePath,
-                    depotRootPath = rootPath
-                )
-            }
+        val prefix = "vehicles/" + carFolder.trim('/', '\\') + "/"
+        val assets = indexedGameFiles.filter { entry ->
+            entry.relativePath.replace('\\', '/').trimStart('/')
+                .startsWith(prefix, ignoreCase = true)
+        }.sortedBy { it.relativePath.lowercase(Locale.ROOT) }
+        if (assets.isEmpty()) {
+            throw IllegalStateException(
+                "No indexed assets were found under vehicles/$carFolder. " +
+                    "Return to Game Data and run Index all RR3 game assets."
+            )
         }
-        val storedTree = preferences.getString("game_data_tree", null)
-            ?: throw IllegalStateException("The selected RR3 depot folder is no longer available. Re-index the game files.")
-        return GameDataBrowser.scanLiveryCarAssets(
-            contentResolver, Uri.parse(storedTree), carFolder
-        )
+        return assets
     }
     private fun formatLiveryCarName(carName: String): String =
         carName.split('_').filter { it.isNotBlank() }.joinToString(" ") { part ->
