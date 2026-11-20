@@ -105,6 +105,16 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3Points(input: ByteArray): String
 
+    /** Builds a read-only render packet from an installed RR3 exterior model and its sidecar assets. */
+    external fun nativeBuildRr3ViewerPacket(
+        modelPath: String,
+        model: ByteArray,
+        assetPaths: Array<String>,
+        assetData: Array<ByteArray>
+    ): ByteArray?
+
+    external fun nativeGetRr3ViewerError(): String
+
     external fun nativeUpdateRr3Points(
         input: ByteArray,
         names: Array<String>,

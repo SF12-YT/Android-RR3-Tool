@@ -2430,3 +2430,398 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Track(
     return toJava(env, out.str());
 }
 
+
+
+namespace {
+thread_local std::string gRr3ViewerError;
+
+std::string viewerLower(std::string value) {
+    for (char& c : value) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return value;
+}
+
+std::string viewerUnwrapName(std::string value) {
+    const auto stripSuffix = [&](const char* suffix) {
+        const size_t count = std::strlen(suffix);
+        if (value.size() >= count &&
+            viewerLower(value.substr(value.size() - count)) == suffix) {
+            value.erase(value.size() - count);
+            return true;
+        }
+        return false;
+    };
+    stripSuffix(".bin");
+    stripSuffix(".z");
+    return value;
+}
+
+void viewerAppendU32(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+void viewerAppendFloat(std::vector<uint8_t>& out, float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    viewerAppendU32(out, bits);
+}
+
+void viewerAppendString(std::vector<uint8_t>& out, const std::string& value) {
+    viewerAppendU32(out, static_cast<uint32_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+}
+
+bool viewerIsHelperLod(const std::string& lod) {
+    return lod == "HELPERS" || lod == "INTCAM" || lod == "BONNETCAM" ||
+           lod == "DAMAGE" || lod == "SHADOW";
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3ViewerError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(env, gRr3ViewerError);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
+    JNIEnv* env, jobject /* thiz */, jstring modelPathValue, jbyteArray modelInput,
+    jobjectArray assetPaths, jobjectArray assetInputs) {
+    gRr3ViewerError.clear();
+    if (!modelPathValue || !modelInput || !assetPaths || !assetInputs) {
+        gRr3ViewerError = "The selected RR3 model or its asset list is missing.";
+        return nullptr;
+    }
+
+    const std::string modelPath = viewerUnwrapName(fromJava(env, modelPathValue));
+    const jsize modelLength = env->GetArrayLength(modelInput);
+    const jsize pathCount = env->GetArrayLength(assetPaths);
+    const jsize dataCount = env->GetArrayLength(assetInputs);
+    if (modelPath.empty() || modelLength <= 0 || pathCount != dataCount ||
+        pathCount > 4096) {
+        gRr3ViewerError = "The selected RR3 model has invalid input data.";
+        return nullptr;
+    }
+
+    try {
+        nfsnl::Bytes modelBytes(static_cast<size_t>(modelLength));
+        env->GetByteArrayRegion(modelInput, 0, modelLength,
+                                reinterpret_cast<jbyte*>(modelBytes.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Could not read the selected RR3 model bytes.";
+            return nullptr;
+        }
+
+        std::map<std::string, nfsnl::Bytes> files;
+        std::map<std::string, std::string> texturePathByStem;
+        size_t totalAssetBytes = 0;
+        for (jsize i = 0; i < pathCount; ++i) {
+            auto pathObject = static_cast<jstring>(env->GetObjectArrayElement(assetPaths, i));
+            auto dataObject = static_cast<jbyteArray>(env->GetObjectArrayElement(assetInputs, i));
+            if (!pathObject || !dataObject) {
+                if (pathObject) env->DeleteLocalRef(pathObject);
+                if (dataObject) env->DeleteLocalRef(dataObject);
+                continue;
+            }
+            std::string path = viewerUnwrapName(fromJava(env, pathObject));
+            const jsize length = env->GetArrayLength(dataObject);
+            if (path.empty() || length <= 0 || static_cast<size_t>(length) > (64u << 20)) {
+                env->DeleteLocalRef(pathObject);
+                env->DeleteLocalRef(dataObject);
+                continue;
+            }
+            if (totalAssetBytes + static_cast<size_t>(length) > (96u << 20)) {
+                env->DeleteLocalRef(pathObject);
+                env->DeleteLocalRef(dataObject);
+                gRr3ViewerError = "This car's texture and sidecar files exceed the 96 MiB preview limit. Try a car with smaller assets.";
+                return nullptr;
+            }
+            nfsnl::Bytes bytes(static_cast<size_t>(length));
+            env->GetByteArrayRegion(dataObject, 0, length,
+                                    reinterpret_cast<jbyte*>(bytes.data()));
+            env->DeleteLocalRef(pathObject);
+            env->DeleteLocalRef(dataObject);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                gRr3ViewerError = "Could not read one of this car's model or texture assets.";
+                return nullptr;
+            }
+            totalAssetBytes += bytes.size();
+            files[viewerLower(path)] = std::move(bytes);
+        }
+
+        nfsnl::Model model = nfsnl::loadModel(modelBytes.data(), modelBytes.size());
+        if (!model.valid || model.meshes.empty()) {
+            gRr3ViewerError = model.warnings.empty()
+                ? "Monkey Tool could not find renderable geometry in this RR3 model."
+                : "Could not load the RR3 model: " + model.warnings.front();
+            return nullptr;
+        }
+
+        const std::string modelStem = nfsnl::stripExtension(modelPath);
+        std::string carStem = modelStem;
+        if (carStem.size() > 2 && carStem.compare(carStem.size() - 2, 2, "_a") == 0)
+            carStem.erase(carStem.size() - 2);
+        const std::string pointsPath = carStem + ".points";
+        const std::string innerPointsPath = nfsnl::rr3InteriorPointsNameFor(modelPath);
+        std::vector<nfsnl::Hardpoint> points;
+        auto pointsFile = files.find(viewerLower(pointsPath));
+        if (pointsFile != files.end())
+            points = nfsnl::rr3ReadPoints(pointsFile->second.data(), pointsFile->second.size());
+        if (!innerPointsPath.empty()) {
+            auto innerFile = files.find(viewerLower(innerPointsPath));
+            if (innerFile != files.end()) {
+                auto innerPoints = nfsnl::rr3ReadPoints(innerFile->second.data(), innerFile->second.size());
+                if (!innerPoints.empty()) nfsnl::rr3MergeCockpitPoints(points, innerPoints);
+            }
+        }
+        if (!points.empty()) nfsnl::rr3PlaceParts(model, points);
+
+        const std::string sharedPath = nfsnl::rr3SharedNameFor(modelPath);
+        auto sharedFile = files.find(viewerLower(sharedPath));
+        if (sharedFile != files.end()) {
+            nfsnl::Model shared = nfsnl::loadModel(sharedFile->second.data(), sharedFile->second.size());
+            if (shared.valid && !shared.meshes.empty())
+                nfsnl::rr3AttachWheels(model, shared, points);
+        }
+
+        // Build a filename lookup for the real textures in this car's folder.
+        for (const auto& item : files) {
+            const std::string leaf = nfsnl::baseName(item.first);
+            const std::string ext = viewerLower(nfsnl::extensionOf(item.first));
+            if (ext != "sba" && ext != "pvr" && ext != "dds") continue;
+            const std::string stem = viewerLower(nfsnl::stripExtension(leaf));
+            if (!stem.empty() && !texturePathByStem.count(stem))
+                texturePathByStem[stem] = item.first;
+        }
+        auto lookupTexture = [&](const std::string& stem) -> std::string {
+            const std::string wanted = viewerLower(nfsnl::baseName(nfsnl::stripExtension(stem)));
+            auto found = texturePathByStem.find(wanted);
+            return found == texturePathByStem.end() ? std::string() : found->second;
+        };
+
+        std::vector<std::pair<std::string, std::string>> noCommonTextures;
+        std::string textureReport;
+        nfsnl::rr3AssignTextures(model, modelPath, lookupTexture,
+                                 noCommonTextures, nullptr, &textureReport);
+
+        std::string selectedLod;
+        for (const nfsnl::Mesh& mesh : model.meshes) {
+            if (viewerIsHelperLod(mesh.lod) || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            if (!mesh.lod.empty() &&
+                (selectedLod.empty() || mesh.lod < selectedLod))
+                selectedLod = mesh.lod;
+        }
+
+        std::vector<const nfsnl::Mesh*> visibleMeshes;
+        float minBounds[3] = {
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max()
+        };
+        float maxBounds[3] = {
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max()
+        };
+
+        for (const nfsnl::Mesh& mesh : model.meshes) {
+            if (viewerIsHelperLod(mesh.lod) || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            if (!selectedLod.empty() && !mesh.lod.empty() && mesh.lod != selectedLod)
+                continue;
+            const size_t vertexCount = mesh.positions.size() / 3;
+            bool validIndices = true;
+            for (uint32_t index : mesh.indices) {
+                if (index >= vertexCount) { validIndices = false; break; }
+            }
+            if (!validIndices) continue;
+            visibleMeshes.push_back(&mesh);
+            for (size_t i = 0; i + 2 < mesh.positions.size(); i += 3) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    minBounds[axis] = std::min(minBounds[axis], mesh.positions[i + axis]);
+                    maxBounds[axis] = std::max(maxBounds[axis], mesh.positions[i + axis]);
+                }
+            }
+        }
+        if (visibleMeshes.empty()) {
+            gRr3ViewerError = "The RR3 model parsed, but its exterior LOD contains no drawable triangles.";
+            return nullptr;
+        }
+
+        const float centre[3] = {
+            (minBounds[0] + maxBounds[0]) * 0.5f,
+            (minBounds[1] + maxBounds[1]) * 0.5f,
+            (minBounds[2] + maxBounds[2]) * 0.5f
+        };
+        const float extent = std::max({
+            maxBounds[0] - minBounds[0],
+            maxBounds[1] - minBounds[1],
+            maxBounds[2] - minBounds[2]
+        });
+        const float scale = extent > 0.0001f ? 2.0f / extent : 1.0f;
+
+        struct ViewerTexture {
+            std::string name;
+            nfsnl::Image image;
+        };
+        std::vector<ViewerTexture> textures;
+        std::map<std::string, uint32_t> textureIndices;
+        std::vector<uint32_t> meshTextureIndices;
+        meshTextureIndices.reserve(visibleMeshes.size());
+        size_t textureBytes = 0;
+
+        for (const nfsnl::Mesh* mesh : visibleMeshes) {
+            uint32_t textureIndex = 0xffffffffu;
+            if (!mesh->texture.empty()) {
+                const std::string texturePath = viewerLower(mesh->texture);
+                auto textureFile = files.find(texturePath);
+                if (textureFile == files.end()) {
+                    const std::string leaf = viewerLower(nfsnl::baseName(mesh->texture));
+                    for (auto it = files.begin(); it != files.end(); ++it) {
+                        if (viewerLower(nfsnl::baseName(it->first)) == leaf) {
+                            textureFile = it;
+                            break;
+                        }
+                    }
+                }
+                if (textureFile != files.end()) {
+                    const std::string key = textureFile->first;
+                    auto existing = textureIndices.find(key);
+                    if (existing != textureIndices.end()) {
+                        textureIndex = existing->second;
+                    } else {
+                        nfsnl::Image decoded;
+                        if (nfsnl::decodeTextureFile(textureFile->second.data(),
+                                                     textureFile->second.size(), decoded) &&
+                            decoded.ok()) {
+                            decoded = nfsnl::toRgba(decoded);
+                            if (decoded.width > 1024 || decoded.height > 1024) {
+                                const float factor = std::min(
+                                    1024.0f / decoded.width,
+                                    1024.0f / decoded.height
+                                );
+                                const int w = std::max(1, static_cast<int>(decoded.width * factor));
+                                const int h = std::max(1, static_cast<int>(decoded.height * factor));
+                                decoded = nfsnl::resizeRgba(decoded, w, h);
+                            }
+                            const size_t bytes = decoded.pixels.size();
+                            if (decoded.ok() && bytes >= 4 &&
+                                textureBytes + bytes <= (48u << 20)) {
+                                textureIndex = static_cast<uint32_t>(textures.size());
+                                textureIndices[key] = textureIndex;
+                                textureBytes += bytes;
+                                textures.push_back({ key, std::move(decoded) });
+                            }
+                        }
+                    }
+                }
+            }
+            meshTextureIndices.push_back(textureIndex);
+        }
+
+        std::vector<uint8_t> packet;
+        packet.reserve(16u << 20);
+        packet.insert(packet.end(), {'R', '3', 'V', '1'});
+        viewerAppendU32(packet, static_cast<uint32_t>(visibleMeshes.size()));
+        viewerAppendU32(packet, static_cast<uint32_t>(textures.size()));
+        uint64_t triangles = 0;
+        for (const nfsnl::Mesh* mesh : visibleMeshes)
+            triangles += mesh->indices.size() / 3;
+        if (triangles > std::numeric_limits<uint32_t>::max()) {
+            gRr3ViewerError = "The selected car has too many triangles for the Android viewer.";
+            return nullptr;
+        }
+        viewerAppendU32(packet, static_cast<uint32_t>(triangles));
+
+        for (const ViewerTexture& texture : textures) {
+            viewerAppendString(packet, texture.name);
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.width));
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.height));
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.pixels.size()));
+            packet.insert(packet.end(), texture.image.pixels.begin(), texture.image.pixels.end());
+        }
+
+        for (size_t meshIndex = 0; meshIndex < visibleMeshes.size(); ++meshIndex) {
+            const nfsnl::Mesh& mesh = *visibleMeshes[meshIndex];
+            const size_t vertexCount = mesh.positions.size() / 3;
+            if (vertexCount > 2'000'000 || mesh.indices.size() > 12'000'000) {
+                gRr3ViewerError = "One mesh in this car exceeds the Android viewer's geometry limit.";
+                return nullptr;
+            }
+            viewerAppendString(packet, mesh.name.substr(0, 1024));
+            viewerAppendString(packet, mesh.material.substr(0, 1024));
+            viewerAppendU32(packet, static_cast<uint32_t>(vertexCount));
+            viewerAppendU32(packet, static_cast<uint32_t>(mesh.indices.size()));
+            viewerAppendU32(packet, meshTextureIndices[meshIndex]);
+            uint32_t flags = 0;
+            if (mesh.material.find("alpha") != std::string::npos) flags |= 1u;
+            if (mesh.material.find("twosided") != std::string::npos) flags |= 2u;
+            viewerAppendU32(packet, flags);
+            for (int c = 0; c < 4; ++c)
+                viewerAppendFloat(packet, std::isfinite(mesh.color[c]) ? mesh.color[c] : 1.0f);
+
+            for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
+                const size_t p = vertex * 3;
+                for (int axis = 0; axis < 3; ++axis) {
+                    const float position = (mesh.positions[p + axis] - centre[axis]) * scale;
+                    viewerAppendFloat(packet, std::isfinite(position) ? position : 0.0f);
+                }
+                for (int axis = 0; axis < 3; ++axis) {
+                    float normal = 0.0f;
+                    if (mesh.normals.size() >= p + 3) normal = mesh.normals[p + axis];
+                    viewerAppendFloat(packet, std::isfinite(normal) ? normal : (axis == 1 ? 1.0f : 0.0f));
+                }
+                const size_t uv = vertex * 2;
+                viewerAppendFloat(packet, mesh.uvs.size() >= uv + 2 ? mesh.uvs[uv] : 0.0f);
+                viewerAppendFloat(packet, mesh.uvs.size() >= uv + 2 ? mesh.uvs[uv + 1] : 0.0f);
+                const size_t color = vertex * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    float value = mesh.colors.size() >= color + 4
+                        ? mesh.colors[color + channel] : 1.0f;
+                    if (channel < 3 && mesh.light.size() > vertex)
+                        value *= mesh.light[vertex];
+                    viewerAppendFloat(packet, std::isfinite(value) ? value : 1.0f);
+                }
+            }
+            for (uint32_t index : mesh.indices) viewerAppendU32(packet, index);
+            if (packet.size() > (160u << 20)) {
+                gRr3ViewerError = "The selected car's render data exceeds the 160 MiB Android viewer limit.";
+                return nullptr;
+            }
+        }
+
+        if (packet.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+            gRr3ViewerError = "The selected car's render data is too large for Android.";
+            return nullptr;
+        }
+        jbyteArray result = env->NewByteArray(static_cast<jsize>(packet.size()));
+        if (!result) {
+            gRr3ViewerError = "Android could not allocate the 3D model preview buffer.";
+            return nullptr;
+        }
+        env->SetByteArrayRegion(result, 0, static_cast<jsize>(packet.size()),
+                                reinterpret_cast<const jbyte*>(packet.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Android could not copy the 3D model preview buffer.";
+            env->DeleteLocalRef(result);
+            return nullptr;
+        }
+        gRr3ViewerError.clear();
+        return result;
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough memory to assemble this car for 3D preview. Close other apps and try again.";
+    } catch (const std::exception& error) {
+        gRr3ViewerError = std::string("The 3D model preview failed: ") + error.what();
+    } catch (...) {
+        gRr3ViewerError = "The 3D model preview failed unexpectedly. The original game files were not changed.";
+    }
+    return nullptr;
+}

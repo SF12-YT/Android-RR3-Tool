@@ -55,6 +55,7 @@ import java.util.zip.ZipOutputStream
 
 class MainActivity : Activity() {
     private data class CareerTextPage(val label: String, val text: String)
+    private data class Rr3ViewerCar(val folder: String, val displayName: String, val liveryEntry: GameDataFile)
 
     private class GameDataTreeNode(
         val name: String,
@@ -319,6 +320,12 @@ class MainActivity : Activity() {
     private lateinit var liveryPaintContainer: LinearLayout
     private lateinit var liveryDecodedContainer: LinearLayout
     private val expandedLiveryYears = mutableSetOf<String>()
+    private var rr3ViewerCars: List<Rr3ViewerCar> = emptyList()
+    private lateinit var rr3ViewerCarSpinner: Spinner
+    private lateinit var rr3ViewerLoadButton: TextView
+    private lateinit var rr3ViewerStatus: TextView
+    private lateinit var rr3ViewerSurfaceHost: FrameLayout
+    private var rr3ViewerSurface: Rr3ModelViewer? = null
     private var selectedLiveryEntry: GameDataFile? = null
     private var selectedLiveryCarFolder: String = ""
     private var selectedLiveryBytes: ByteArray? = null
@@ -418,7 +425,7 @@ class MainActivity : Activity() {
 
         val tabNames = listOf(
             "Game Data", "Save Editor", "Transform", "Data Editor",
-            "Car Editor", "Liveries", "Career", "Track Inspector", "About"
+            "Car Editor", "Liveries", "Career", "Track Inspector", "3D Viewer", "About"
         )
         val tabPages = linkedMapOf<String, LinearLayout>()
         for (name in tabNames) {
@@ -488,6 +495,7 @@ class MainActivity : Activity() {
         val liveryPage = tabPages.getValue("Liveries")
         val careerPage = tabPages.getValue("Career")
         val trackPage = tabPages.getValue("Track Inspector")
+        val viewerPage = tabPages.getValue("3D Viewer")
         val aboutPage = tabPages.getValue("About")
 
         addSection(gameDataPage, "GAME DATA")
@@ -833,13 +841,59 @@ class MainActivity : Activity() {
         }
         trackCard.addView(trackDetailsContainer, matchWrap(top = 12))
 
+        addSection(viewerPage, "RR3 3D VIEWER")
+        val viewerCard = card(viewerPage)
+        viewerCard.addView(
+            text("Load a car from the installed RR3 depot", 17, Color.WHITE, bold = true),
+            matchWrap()
+        )
+        viewerCard.addView(
+            text(
+                "Choose a car from the indexed RR3 car list. The viewer reads its exterior model, hardpoints and available car textures directly from the game files. Drag to rotate and pinch to zoom. This is a read-only preview.",
+                13, 0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 6)
+        )
+        rr3ViewerCarSpinner = Spinner(this)
+        viewerCard.addView(rr3ViewerCarSpinner, matchWrap(top = 12))
+        rr3ViewerLoadButton = actionButton("Load selected car") {
+            val selected = rr3ViewerCars.getOrNull(rr3ViewerCarSpinner.selectedItemPosition)
+            if (selected != null) loadRr3ViewerCar(selected)
+        }
+        viewerCard.addView(rr3ViewerLoadButton, matchWrap(top = 8))
+        viewerCard.addView(
+            actionButton("Reset camera") { rr3ViewerSurface?.resetCamera() },
+            matchWrap(top = 6)
+        )
+        rr3ViewerStatus = text(
+            "Index the RR3 .depot in Game Data, then select a car above.",
+            12, 0xFF9BAFC5.toInt()
+        )
+        viewerCard.addView(rr3ViewerStatus, matchWrap(top = 10, bottom = 8))
+        rr3ViewerSurfaceHost = FrameLayout(this).apply {
+            background = rounded(0xFF101B29.toInt(), dp(12).toFloat())
+            minimumHeight = dp(330)
+        }
+        rr3ViewerSurfaceHost.addView(
+            text("3D preview will appear here", 13, 0xFF8FA4BA.toInt()).apply {
+                gravity = Gravity.CENTER
+            },
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(330))
+        )
+        viewerCard.addView(
+            rr3ViewerSurfaceHost,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(330)).apply {
+                topMargin = dp(8)
+            }
+        )
+
         addSection(aboutPage, "NATIVE ENGINE")
         val engineCard = card(aboutPage)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
         engineCard.addView(engineValue, matchWrap())
         engineCard.addView(
             text(
-                "3D model viewing and texture extraction/conversion are intentionally excluded.",
+                "The standalone 3D Viewer reads installed RR3 car models and available textures. Model editing and replacement are separate future work.",
                 12,
                 0xFF7F93A9.toInt()
             ),
@@ -882,6 +936,16 @@ class MainActivity : Activity() {
 
 
 
+
+    override fun onPause() {
+        rr3ViewerSurface?.onPause()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        rr3ViewerSurface?.onResume()
+    }
 
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
@@ -1130,6 +1194,7 @@ class MainActivity : Activity() {
                         "Indexed ${files.size} supported files. Open folders to browse the depot tree. Textures and 3D model assets are hidden."
                     renderGameFiles()
                     renderLiveryCarChoices()
+                    renderRr3ViewerCarChoices()
                     indexGameFilesButton.isEnabled = true
                 }
             } catch (e: Exception) {
@@ -1498,6 +1563,169 @@ class MainActivity : Activity() {
             }
         }
 
+
+
+
+    private fun renderRr3ViewerCarChoices() {
+        if (!::rr3ViewerCarSpinner.isInitialized) return
+        val marker = "vehicles/data/liveries/"
+        rr3ViewerCars = indexedGameFiles.mapNotNull { entry ->
+            val path = entry.relativePath.replace('\\', '/')
+            if (!path.startsWith(marker, ignoreCase = true) ||
+                !path.endsWith(".liveries.bin.nct", ignoreCase = true)
+            ) return@mapNotNull null
+            val folder = path.substringAfter(marker)
+                .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+            if (folder.isBlank() || folder.equals("default", ignoreCase = true) ||
+                folder.contains('/') || folder.contains("..")
+            ) return@mapNotNull null
+            val name = folder.substringAfter('_', folder)
+            Rr3ViewerCar(folder, formatLiveryCarName(name), entry)
+        }.distinctBy { it.folder.lowercase(Locale.ROOT) }
+            .sortedWith(compareBy({ it.folder.substringBefore('_') }, { it.displayName.lowercase(Locale.ROOT) }))
+
+        val labels = if (rr3ViewerCars.isEmpty()) {
+            listOf("No cars indexed")
+        } else {
+            rr3ViewerCars.map { "\${it.displayName}  ·  \${it.folder}" }
+        }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        rr3ViewerCarSpinner.adapter = adapter
+        rr3ViewerLoadButton.isEnabled = rr3ViewerCars.isNotEmpty()
+        rr3ViewerStatus.text = if (rr3ViewerCars.isEmpty()) {
+            "No car livery lists found. Index Game Data first; cars are discovered from vehicles/data/liveries."
+        } else {
+            "Found \${rr3ViewerCars.size} installed car(s). Choose one and load its actual model."
+        }
+    }
+
+    private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
+        if (indexedGameFiles.isEmpty()) {
+            rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."
+            return
+        }
+        rr3ViewerLoadButton.isEnabled = false
+        rr3ViewerStatus.text = "Finding \${car.folder}'s exterior model and textures…"
+        Thread {
+            try {
+                val assets = scanLiveryCarAssets(car.liveryEntry, car.folder)
+                fun plainName(name: String): String =
+                    name.removeSuffixIgnoreCaseLocal(".bin")
+                        .removeSuffixIgnoreCaseLocal(".z")
+
+                val modelCandidates = assets.filter { entry ->
+                    val ext = plainName(entry.name).substringAfterLast('.', "").lowercase(Locale.ROOT)
+                    ext == "m3g" || ext == "sb3d"
+                }.filter { entry ->
+                    val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                    !leaf.contains("_int") && !leaf.contains("_shared") &&
+                        !leaf.contains("_wheels") && !leaf.contains("driver_lod")
+                }
+                val modelEntry = modelCandidates.sortedWith(
+                    compareBy<GameDataFile> { entry ->
+                        val leaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                        when {
+                            leaf == "\${car.folder.lowercase(Locale.ROOT)}_a.m3g" -> 0
+                            leaf.endsWith("_a.m3g") -> 1
+                            leaf.endsWith("_a.sb3d") -> 2
+                            else -> 3
+                        }
+                    }.thenBy { it.relativePath.lowercase(Locale.ROOT) }
+                ).firstOrNull() ?: throw IllegalStateException(
+                    "No exterior .m3g/.sb3d model was found in vehicles/\${car.folder}. The selected car may not have its model installed in this depot."
+                )
+
+                val modelSource = readGameFile(modelEntry)
+                val (innerModelName, modelBytes) = unwrappedGameFile(modelEntry, modelSource)
+                val modelExtension = innerModelName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                if (modelExtension != "m3g" && modelExtension != "sb3d") {
+                    throw IllegalStateException("The selected file did not unwrap to an RR3 3D model.")
+                }
+                val modelPath = plainName(modelEntry.relativePath)
+
+                val supportPaths = ArrayList<String>()
+                val supportData = ArrayList<ByteArray>()
+                var supportBytes = 0L
+                var skippedTextures = 0
+                for (entry in assets) {
+                    if (entry.relativePath == modelEntry.relativePath) continue
+                    val innerLeaf = plainName(entry.name).substringAfterLast('/').lowercase(Locale.ROOT)
+                    val extension = innerLeaf.substringAfterLast('.', "")
+                    val isPoint = extension == "points"
+                    val isSharedModel = extension == "m3g" && innerLeaf.contains("_shared")
+                    val isTexture = extension == "sba" || extension == "pvr" || extension == "dds"
+                    if (!isPoint && !isSharedModel && !isTexture) continue
+
+                    try {
+                        val raw = readGameFile(entry)
+                        val (innerName, bytes) = unwrappedGameFile(entry, raw)
+                        val innerExtension = innerName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+                        if (innerExtension !in setOf("points", "m3g", "sba", "pvr", "dds")) continue
+                        val isTextureFile = innerExtension in setOf("sba", "pvr", "dds")
+                        if (isTextureFile && bytes.size > 16 * 1024 * 1024) {
+                            skippedTextures++
+                            continue
+                        }
+                        if (supportBytes + bytes.size > 64L * 1024L * 1024L) {
+                            if (isTextureFile) {
+                                skippedTextures++
+                                continue
+                            }
+                            throw IllegalStateException("The car's model sidecars exceed the 64 MiB preview limit.")
+                        }
+                        supportBytes += bytes.size.toLong()
+                        supportPaths.add(plainName(entry.relativePath))
+                        supportData.add(bytes)
+                    } catch (e: Exception) {
+                        if (isPoint || isSharedModel) throw e
+                        skippedTextures++
+                    }
+                }
+
+                val packet = NativeBridge.nativeBuildRr3ViewerPacket(
+                    modelPath,
+                    modelBytes,
+                    supportPaths.toTypedArray(),
+                    supportData.toTypedArray()
+                ) ?: throw IllegalStateException(
+                    NativeBridge.nativeGetRr3ViewerError().ifBlank {
+                        "Monkey Tool could not assemble this car for the 3D viewer."
+                    }
+                )
+
+                runOnUiThread {
+                    rr3ViewerSurface?.onPause()
+                    rr3ViewerSurfaceHost.removeAllViews()
+                    val surface = Rr3ModelViewer(this, packet)
+                    rr3ViewerSurface = surface
+                    rr3ViewerSurfaceHost.addView(
+                        surface,
+                        FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                    rr3ViewerStatus.text =
+                        "Loaded \${car.folder}: \${surface.stats.meshes} mesh(es), " +
+                        "\${surface.stats.triangles} triangles, \${surface.stats.textures} texture(s)." +
+                        if (skippedTextures > 0) " \${skippedTextures} oversized or unreadable texture(s) were skipped." else ""
+                    rr3ViewerLoadButton.isEnabled = true
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."
+                    rr3ViewerLoadButton.isEnabled = true
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    rr3ViewerStatus.text = e.message ?: "Could not load this car in the 3D viewer."
+                    rr3ViewerLoadButton.isEnabled = true
+                }
+            }
+        }.start()
+    }
 
     private fun renderSelectedLiveryDecodedData() {
         if (!::liveryDecodedContainer.isInitialized) return
