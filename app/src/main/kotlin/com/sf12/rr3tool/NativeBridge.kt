@@ -103,6 +103,19 @@ internal object NativeBridge {
 
     external fun nativeInspectRr3AudioBank(input: ByteArray): String
 
+    external fun nativeInspectRr3Points(input: ByteArray): String
+
+    external fun nativeUpdateRr3Points(
+        input: ByteArray,
+        names: Array<String>,
+        positions: FloatArray,
+        bases: FloatArray
+    ): ByteArray?
+
+    external fun nativeWrapRr3PointsZ(input: ByteArray): ByteArray?
+
+    external fun nativeGetRr3PointsError(): String
+
     external fun nativeGetRr3AudioError(): String
 
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?

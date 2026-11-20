@@ -1,6 +1,8 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -108,6 +110,7 @@ bool verifyAgainstUpstream() {
 
 thread_local std::string gDataEditError;
 thread_local std::string gRr3AudioError;
+thread_local std::string gRr3PointsError;
 thread_local std::string gRr3TransformError;
 thread_local std::string gRr3CarError;
 thread_local std::string gRr3CareerError;
@@ -784,6 +787,230 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUnwrapRr3Asset(
         result, 0, static_cast<jsize>(output.size()),
         reinterpret_cast<const jbyte*>(output.data()));
     return result;
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Points(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3PointsError.clear();
+    if (!input) {
+        gRr3PointsError = "No RR3 .points data was supplied.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+    const jsize length = env->GetArrayLength(input);
+    if (length < 4) {
+        gRr3PointsError = "The selected .points file is too small.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<nfsnl::Hardpoint> points;
+    try {
+        points = nfsnl::rr3ReadPoints(source.data(), source.size());
+    } catch (...) {
+        points.clear();
+    }
+    if (points.empty()) {
+        gRr3PointsError = "Monkey Tool could not identify any editable points in this file.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+
+    std::ostringstream out;
+    out << std::setprecision(9)
+        << "{\"ok\":true,\"count\":" << points.size() << ",\"points\":[";
+    for (size_t i = 0; i < points.size(); ++i) {
+        const auto& point = points[i];
+        if (i) out << ",";
+        out << "{\"name\":" << jsonString(point.name)
+            << ",\"x\":" << point.pos[0]
+            << ",\"y\":" << point.pos[1]
+            << ",\"z\":" << point.pos[2]
+            << ",\"hinge\":" << (point.hinge ? "true" : "false")
+            << ",\"basis\":[";
+        for (int k = 0; k < 9; ++k) {
+            if (k) out << ",";
+            out << point.basis[k];
+        }
+        out << "]}";
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3Points(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input,
+    jobjectArray namesArray, jfloatArray positionsArray, jfloatArray basesArray) {
+    gRr3PointsError.clear();
+    if (!input || !namesArray || !positionsArray || !basesArray) {
+        gRr3PointsError = "The original points and edited values are required.";
+        return nullptr;
+    }
+    const jsize length = env->GetArrayLength(input);
+    const jsize count = env->GetArrayLength(namesArray);
+    if (length < 4 || count <= 0 || count > 4096 ||
+        env->GetArrayLength(positionsArray) != count * 3 ||
+        env->GetArrayLength(basesArray) != count * 9) {
+        gRr3PointsError = "The edited point list does not match the original file.";
+        return nullptr;
+    }
+
+    nfsnl::Bytes output(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<jfloat> positions(static_cast<size_t>(count) * 3);
+    std::vector<jfloat> bases(static_cast<size_t>(count) * 9);
+    env->GetFloatArrayRegion(positionsArray, 0, count * 3, positions.data());
+    env->GetFloatArrayRegion(basesArray, 0, count * 9, bases.data());
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<nfsnl::Hardpoint> original;
+    try {
+        original = nfsnl::rr3ReadPoints(output.data(), output.size());
+    } catch (...) {
+        original.clear();
+    }
+    if (original.size() != static_cast<size_t>(count)) {
+        gRr3PointsError = "The .points file changed or could not be parsed consistently.";
+        return nullptr;
+    }
+
+    int changed = 0;
+    for (jsize i = 0; i < count; ++i) {
+        jstring nameValue = static_cast<jstring>(env->GetObjectArrayElement(namesArray, i));
+        if (!nameValue) {
+            gRr3PointsError = "A point name is missing.";
+            return nullptr;
+        }
+        const std::string name = fromJava(env, nameValue);
+        env->DeleteLocalRef(nameValue);
+        if (env->ExceptionCheck() || name != original[static_cast<size_t>(i)].name) {
+            gRr3PointsError = "The edited point order no longer matches the source file.";
+            return nullptr;
+        }
+
+        float pos[3];
+        bool positionChanged = false;
+        for (int k = 0; k < 3; ++k) {
+            const float value = positions[static_cast<size_t>(i) * 3 + k];
+            if (!std::isfinite(value)) {
+                gRr3PointsError = "Point coordinates must be finite numbers.";
+                return nullptr;
+            }
+            pos[k] = value;
+            if (value != original[static_cast<size_t>(i)].pos[k]) positionChanged = true;
+        }
+        if (positionChanged) {
+            if (!nfsnl::rr3PointsSetPosition(output, name, pos)) {
+                gRr3PointsError = "Could not write the position for " + name + ".";
+                return nullptr;
+            }
+            ++changed;
+        }
+
+        if (original[static_cast<size_t>(i)].hinge) {
+            float basis[9];
+            bool basisChanged = false;
+            for (int k = 0; k < 9; ++k) {
+                const float value = bases[static_cast<size_t>(i) * 9 + k];
+                if (!std::isfinite(value)) {
+                    gRr3PointsError = "Hinge orientation values must be finite numbers.";
+                    return nullptr;
+                }
+                basis[k] = value;
+                if (value != original[static_cast<size_t>(i)].basis[k]) basisChanged = true;
+            }
+            if (basisChanged) {
+                if (!nfsnl::rr3PointsSetBasis(output, name, basis)) {
+                    gRr3PointsError = "Could not write the hinge orientation for " + name + ".";
+                    return nullptr;
+                }
+                ++changed;
+            }
+        }
+    }
+
+    // Re-read the built file. This catches a mismatched name or an unsupported
+    // record before any output is offered to the user.
+    std::vector<nfsnl::Hardpoint> verified;
+    try {
+        verified = nfsnl::rr3ReadPoints(output.data(), output.size());
+    } catch (...) {
+        verified.clear();
+    }
+    if (verified.size() != static_cast<size_t>(count)) {
+        gRr3PointsError = "The rebuilt .points file failed its read-back check.";
+        return nullptr;
+    }
+    for (jsize i = 0; i < count; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            if (std::fabs(verified[static_cast<size_t>(i)].pos[k] -
+                          positions[static_cast<size_t>(i) * 3 + k]) > 0.0001f) {
+                gRr3PointsError = "The saved coordinates did not pass verification for " +
+                                  verified[static_cast<size_t>(i)].name + ".";
+                return nullptr;
+            }
+        }
+    }
+
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        gRr3PointsError = "The edited .points file is too large to export.";
+        return nullptr;
+    }
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(output.size()),
+        reinterpret_cast<const jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
+}
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeWrapRr3PointsZ(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+    nfsnl::Bytes plain(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(plain.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    nfsnl::Bytes wrapped;
+    try {
+        wrapped = nfsnl::rr3WrapZ(plain);
+    } catch (...) {
+        return nullptr;
+    }
+    if (wrapped.empty() ||
+        wrapped.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(wrapped.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(wrapped.size()),
+        reinterpret_cast<const jbyte*>(wrapped.data()));
+    return result;
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3PointsError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(
+        env,
+        gRr3PointsError.empty()
+            ? "The RR3 points editor could not complete the operation."
+            : gRr3PointsError);
 }
 
 

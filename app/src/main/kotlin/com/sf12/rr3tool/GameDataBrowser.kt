@@ -44,7 +44,7 @@ internal object GameDataBrowser {
 
     private val excludedExtensions = setOf(
         "sba", "pvr", "dds", "astc", "ktx", "m3g", "sb3d",
-        "png", "jpg", "jpeg", "bmp", "tga", "points", "banim"
+        "png", "jpg", "jpeg", "bmp", "tga", "banim"
     )
 
     fun fromRootListing(

@@ -84,6 +84,15 @@ class MainActivity : Activity() {
         val value: String
     )
 
+    private data class EditableRr3Hardpoint(
+        val name: String,
+        var x: Float,
+        var y: Float,
+        var z: Float,
+        val hinge: Boolean,
+        var basis: FloatArray
+    )
+
     /**
      * Reads the editable career text file in small record groups. The original
      * text remains on disk; only sections requested by the scroll view are
@@ -2919,6 +2928,9 @@ class MainActivity : Activity() {
         if (extension == "bnk") {
             actions.add("Extract Wwise audio bank")
         }
+        if (extension == "points") {
+            actions.add("Edit car points")
+        }
 
         AlertDialog.Builder(this)
             .setTitle(entry.name)
@@ -2933,6 +2945,7 @@ class MainActivity : Activity() {
                     "Open in RR3 text data editor" -> editGameDataFile(entry)
                     "Convert audio to WAV" -> convertGameAudio(entry)
                     "Extract Wwise audio bank" -> extractGameAudioBank(entry)
+                    "Edit car points" -> editGamePoints(entry)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -3268,6 +3281,454 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun editGamePoints(entry: GameDataFile) {
+        gameFilesStatus.text = "Reading car points…"
+        Thread {
+            try {
+                val source = readGameFile(entry)
+                val (innerName, pointsBytes) = unwrappedGameFile(entry, source)
+                val inspection = JSONObject(NativeBridge.nativeInspectRr3Points(pointsBytes))
+                if (!inspection.optBoolean("ok")) {
+                    throw IllegalStateException(
+                        inspection.optString("error").takeIf { it.isNotBlank() }
+                            ?: NativeBridge.nativeGetRr3PointsError()
+                    )
+                }
+                val array = inspection.optJSONArray("points")
+                    ?: throw IllegalStateException("The .points file did not return a point list.")
+                val points = ArrayList<EditableRr3Hardpoint>(array.length())
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    val basisJson = item.optJSONArray("basis")
+                    val basis = FloatArray(9) { column ->
+                        basisJson?.optDouble(column, if (column % 4 == 0) 1.0 else 0.0)?.toFloat()
+                            ?: if (column % 4 == 0) 1f else 0f
+                    }
+                    points.add(
+                        EditableRr3Hardpoint(
+                            name = item.optString("name"),
+                            x = item.optDouble("x").toFloat(),
+                            y = item.optDouble("y").toFloat(),
+                            z = item.optDouble("z").toFloat(),
+                            hinge = item.optBoolean("hinge"),
+                            basis = basis
+                        )
+                    )
+                }
+                if (points.isEmpty()) throw IllegalStateException("No editable points were found.")
+                runOnUiThread {
+                    gameFilesStatus.text = "Loaded ${points.size} car points."
+                    showRr3PointsEditor(entry, innerName, pointsBytes, points)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    gameFilesStatus.text = e.message ?: "Could not open the car points file."
+                }
+            }
+        }.start()
+    }
+
+    private fun showRr3PointsEditor(
+        entry: GameDataFile,
+        innerName: String,
+        original: ByteArray,
+        points: ArrayList<EditableRr3Hardpoint>
+    ) {
+        val originalPoints = points.map { point ->
+            EditableRr3Hardpoint(
+                point.name, point.x, point.y, point.z, point.hinge, point.basis.copyOf()
+            )
+        }
+        var selected = 0
+        val rowViews = ArrayList<TextView>(points.size)
+        val names = points.map { it.name }.toTypedArray()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        }
+        root.addView(
+            text(
+                "${entry.relativePath} · ${points.size} points",
+                11, 0xFF75B9F1.toInt(), bold = true
+            ),
+            matchWrap(bottom = 6)
+        )
+        root.addView(
+            text(
+                "Coordinates are in model units. Changes are exported as a separate file; the original remains untouched.",
+                12, 0xFF9BAFC5.toInt()
+            ),
+            matchWrap(bottom = 10)
+        )
+
+        val listScroll = ScrollView(this).apply {
+            isFillViewport = false
+            background = rounded(0xFF091522.toInt(), dp(10).toFloat())
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        listScroll.addView(list)
+        root.addView(listScroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(235)
+        ).apply { bottomMargin = dp(10) })
+
+        val selectedTitle = text("", 13, Color.WHITE, bold = true)
+        root.addView(selectedTitle, matchWrap(bottom = 4))
+        val coordRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val xField = editBox("X", "", true)
+        val yField = editBox("Y", "", true)
+        val zField = editBox("Z", "", true)
+        for ((index, field) in listOf(xField, yField, zField).withIndex()) {
+            coordRow.addView(field, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                if (index > 0) marginStart = dp(6)
+            })
+        }
+        root.addView(coordRow, matchWrap(bottom = 8))
+
+        val setRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val setButton = actionButton("Apply coordinates") { }
+        val mirrorCheck = android.widget.CheckBox(this).apply {
+            text = "Mirror twin"
+            textSize = 12f
+            setTextColor(0xFFDCE8F5.toInt())
+            buttonTintList = android.content.res.ColorStateList.valueOf(0xFF69B9F5.toInt())
+            isChecked = true
+        }
+        setRow.addView(setButton, LinearLayout.LayoutParams(0, -2, 1f).apply {
+            marginEnd = dp(8)
+        })
+        setRow.addView(mirrorCheck, LinearLayout.LayoutParams(-2, -2))
+        root.addView(setRow, matchWrap(bottom = 8))
+
+        val nudgeHeader = text("Move point", 12, 0xFF75B9F1.toInt(), bold = true)
+        root.addView(nudgeHeader, matchWrap(bottom = 4))
+        val stepRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        stepRow.addView(text("Step", 12, 0xFF9BAFC5.toInt()), LinearLayout.LayoutParams(dp(42), -2))
+        val stepSpinner = Spinner(this)
+        val stepLabels = listOf("1 mm", "5 mm", "1 cm", "5 cm", "10 cm")
+        stepSpinner.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, stepLabels
+        )
+        stepSpinner.setSelection(2)
+        stepRow.addView(stepSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
+        root.addView(stepRow, matchWrap(bottom = 4))
+
+        val nudgeRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val nudgeRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val nudgeButtons = arrayOf(
+            actionButton("X −") { moveBy(0, -1) },
+            actionButton("X +") { moveBy(0, 1) },
+            actionButton("Y −") { moveBy(1, -1) },
+            actionButton("Y +") { moveBy(1, 1) },
+            actionButton("Z −") { moveBy(2, -1) },
+            actionButton("Z +") { moveBy(2, 1) }
+        )
+        for (index in 0..2) {
+            nudgeRow1.addView(nudgeButtons[index * 2], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+            nudgeRow2.addView(nudgeButtons[index * 2 + 1], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+        }
+        // Arrange pairs as X-/X+, Y-/Y+, Z-/Z+ in two compact rows.
+        nudgeRow1.removeAllViews()
+        nudgeRow2.removeAllViews()
+        for (index in listOf(0, 2, 4)) {
+            nudgeRow1.addView(nudgeButtons[index], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+            nudgeRow2.addView(nudgeButtons[index + 1], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+        }
+        root.addView(nudgeRow1, matchWrap(bottom = 4))
+        root.addView(nudgeRow2, matchWrap(bottom = 10))
+
+        val hingeTitle = text("Hinge orientation", 12, 0xFF75B9F1.toInt(), bold = true)
+        root.addView(hingeTitle, matchWrap(bottom = 3))
+        val hingeInfo = text("", 11, 0xFF9BAFC5.toInt())
+        root.addView(hingeInfo, matchWrap(bottom = 5))
+        val angleSpinner = Spinner(this)
+        val angleLabels = listOf("1°", "5°", "15°", "45°", "90°")
+        angleSpinner.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, angleLabels
+        )
+        angleSpinner.setSelection(1)
+        root.addView(angleSpinner, matchWrap(bottom = 5))
+
+        val rotateRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val rotateRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val rotateButtons = arrayOf(
+            actionButton("Rotate X −") { rotateHinge(0, -1) },
+            actionButton("Rotate X +") { rotateHinge(0, 1) },
+            actionButton("Rotate Y −") { rotateHinge(1, -1) },
+            actionButton("Rotate Y +") { rotateHinge(1, 1) },
+            actionButton("Rotate Z −") { rotateHinge(2, -1) },
+            actionButton("Rotate Z +") { rotateHinge(2, 1) }
+        )
+        for (index in listOf(0, 2, 4)) {
+            rotateRow1.addView(rotateButtons[index], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+            rotateRow2.addView(rotateButtons[index + 1], LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginEnd = dp(5)
+            })
+        }
+        root.addView(rotateRow1, matchWrap(bottom = 4))
+        root.addView(rotateRow2, matchWrap(bottom = 12))
+
+        fun formatCoordinate(value: Float): String = String.format(Locale.US, "%.4f", value)
+        fun updateRow(index: Int) {
+            val point = points[index]
+            rowViews[index].text = point.name + if (point.hinge) "  · hinge" else "" +
+                "     " + formatCoordinate(point.x) + ", " +
+                formatCoordinate(point.y) + ", " + formatCoordinate(point.z)
+            rowViews[index].setTextColor(if (index == selected) Color.WHITE else 0xFFBDCCDC.toInt())
+            rowViews[index].background = rounded(
+                if (index == selected) 0xFF174A75.toInt() else 0x00000000,
+                dp(7).toFloat()
+            )
+        }
+        fun updateAllRows() { for (i in points.indices) updateRow(i) }
+        fun updateHingeInfo() {
+            val point = points[selected]
+            if (!point.hinge) {
+                hingeInfo.text = "Position only. The game reads orientation only from HINGE_ records."
+                hingeInfo.alpha = 0.65f
+                for (button in rotateButtons) button.isEnabled = false
+                angleSpinner.isEnabled = false
+            } else {
+                val b = point.basis
+                val yaw = Math.toDegrees(kotlin.math.atan2((-b[0]).toDouble(), (-b[2]).toDouble()))
+                val pitch = Math.toDegrees(kotlin.math.asin(b[1].toDouble().coerceIn(-1.0, 1.0)))
+                val roll = Math.toDegrees(kotlin.math.atan2(b[4].toDouble(), b[7].toDouble()))
+                hingeInfo.text = String.format(
+                    Locale.US, "Turn: yaw %.1f°, pitch %.1f°, roll %.1f°", yaw, pitch, roll
+                )
+                hingeInfo.alpha = 1f
+                for (button in rotateButtons) button.isEnabled = true
+                angleSpinner.isEnabled = true
+            }
+        }
+        fun selectPoint(index: Int) {
+            selected = index.coerceIn(points.indices)
+            val point = points[selected]
+            selectedTitle.text = point.name
+            xField.setText(formatCoordinate(point.x))
+            yField.setText(formatCoordinate(point.y))
+            zField.setText(formatCoordinate(point.z))
+            updateAllRows()
+            updateHingeInfo()
+        }
+        fun twinIndex(index: Int): Int {
+            val name = points[index].name
+            val alternatives = listOf(
+                "LEFT" to "RIGHT", "RIGHT" to "LEFT",
+                "_FL" to "_FR", "_FR" to "_FL",
+                "_BL" to "_BR", "_BR" to "_BL",
+                "_RL" to "_RR", "_RR" to "_RL"
+            )
+            for ((from, to) in alternatives) {
+                val at = name.indexOf(from)
+                if (at >= 0) {
+                    val twinName = name.replaceRange(at, at + from.length, to)
+                    val found = points.indexOfFirst { it.name == twinName }
+                    if (found >= 0) return found
+                }
+            }
+            return -1
+        }
+        fun updateTwinPosition(index: Int, before: FloatArray, after: FloatArray) {
+            if (!mirrorCheck.isChecked) return
+            val twin = twinIndex(index)
+            if (twin < 0) return
+            points[twin].x -= after[0] - before[0]
+            points[twin].y += after[1] - before[1]
+            points[twin].z += after[2] - before[2]
+            updateRow(twin)
+        }
+        fun applyPosition(values: FloatArray) {
+            val point = points[selected]
+            val before = floatArrayOf(point.x, point.y, point.z)
+            point.x = values[0]
+            point.y = values[1]
+            point.z = values[2]
+            updateTwinPosition(selected, before, values)
+            selectPoint(selected)
+        }
+        fun parseFields(): FloatArray? {
+            val fields = listOf(xField, yField, zField)
+            val result = FloatArray(3)
+            for (i in fields.indices) {
+                val value = fields[i].text.toString().trim().toFloatOrNull()
+                if (value == null || !value.isFinite()) return null
+                result[i] = value
+            }
+            return result
+        }
+        fun moveBy(axis: Int, direction: Int) {
+            val step = listOf(0.001f, 0.005f, 0.01f, 0.05f, 0.1f)
+                .getOrElse(stepSpinner.selectedItemPosition.coerceAtLeast(0)) { 0.01f }
+            val point = points[selected]
+            val values = floatArrayOf(point.x, point.y, point.z)
+            values[axis] += step * direction
+            applyPosition(values)
+        }
+        fun rotateBasis(point: EditableRr3Hardpoint, axis: Int, direction: Int) {
+            val angle = Math.toRadians(
+                listOf(1.0, 5.0, 15.0, 45.0, 90.0)
+                    .getOrElse(angleSpinner.selectedItemPosition.coerceAtLeast(0)) { 5.0 }
+            ) * direction
+            val c = kotlin.math.cos(angle).toFloat()
+            val s = kotlin.math.sin(angle).toFloat()
+            val matrix = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
+            val i = (axis + 1) % 3
+            val j = (axis + 2) % 3
+            matrix[i * 3 + i] = c
+            matrix[i * 3 + j] = -s
+            matrix[j * 3 + i] = s
+            matrix[j * 3 + j] = c
+            val old = point.basis.copyOf()
+            for (r in 0..2) for (k in 0..2) {
+                point.basis[r * 3 + k] =
+                    matrix[k * 3] * old[r * 3] +
+                    matrix[k * 3 + 1] * old[r * 3 + 1] +
+                    matrix[k * 3 + 2] * old[r * 3 + 2]
+            }
+        }
+        fun rotateHinge(axis: Int, direction: Int) {
+            val point = points[selected]
+            if (!point.hinge) return
+            rotateBasis(point, axis, direction)
+            if (mirrorCheck.isChecked) {
+                val twin = twinIndex(selected)
+                if (twin >= 0 && points[twin].hinge) {
+                    val angle = Math.toRadians(
+                        listOf(1.0, 5.0, 15.0, 45.0, 90.0)
+                            .getOrElse(angleSpinner.selectedItemPosition.coerceAtLeast(0)) { 5.0 }
+                    ) * direction
+                    val c = kotlin.math.cos(angle).toFloat()
+                    val s = kotlin.math.sin(angle).toFloat()
+                    val matrix = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
+                    val i = (axis + 1) % 3
+                    val j = (axis + 2) % 3
+                    matrix[i * 3 + i] = c
+                    matrix[i * 3 + j] = -s
+                    matrix[j * 3 + i] = s
+                    matrix[j * 3 + j] = c
+                    for (k in 0..2) {
+                        matrix[k] = -matrix[k]
+                        matrix[k * 3] = -matrix[k * 3]
+                    }
+                    val old = points[twin].basis.copyOf()
+                    for (r in 0..2) for (k in 0..2) {
+                        points[twin].basis[r * 3 + k] =
+                            matrix[k * 3] * old[r * 3] +
+                            matrix[k * 3 + 1] * old[r * 3 + 1] +
+                            matrix[k * 3 + 2] * old[r * 3 + 2]
+                    }
+                }
+            }
+            updateHingeInfo()
+            updateRow(selected)
+            val twin = twinIndex(selected)
+            if (twin >= 0) updateRow(twin)
+        }
+
+        for (index in points.indices) {
+            val row = text("", 12, 0xFFBDCCDC.toInt()).apply {
+                setPadding(dp(9), dp(10), dp(9), dp(10))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { selectPoint(index) }
+            }
+            rowViews.add(row)
+            list.addView(row, matchWrap())
+        }
+        updateAllRows()
+
+        setButton.setOnClickListener {
+            val values = parseFields()
+            if (values == null) {
+                AlertDialog.Builder(this)
+                    .setMessage("Enter valid finite X, Y and Z numbers.")
+                    .setPositiveButton("OK", null)
+                    .show()
+            } else {
+                applyPosition(values)
+            }
+        }
+        selectPoint(0)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Car points editor")
+            .setView(root)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Build and export", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val pointNames = Array(points.size) { points[it].name }
+                val positions = FloatArray(points.size * 3)
+                val bases = FloatArray(points.size * 9)
+                for (i in points.indices) {
+                    val point = points[i]
+                    positions[i * 3] = point.x
+                    positions[i * 3 + 1] = point.y
+                    positions[i * 3 + 2] = point.z
+                    for (k in 0..8) bases[i * 9 + k] = point.basis[k]
+                }
+                val updated = NativeBridge.nativeUpdateRr3Points(
+                    original, pointNames, positions, bases
+                ) ?: run {
+                    AlertDialog.Builder(this)
+                        .setMessage(NativeBridge.nativeGetRr3PointsError())
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@setOnClickListener
+                }
+                val needsZWrap = entry.name.endsWith(".z", ignoreCase = true)
+                val finalBytes = if (needsZWrap) {
+                    NativeBridge.nativeWrapRr3PointsZ(updated)
+                        ?: run {
+                            AlertDialog.Builder(this)
+                                .setMessage("The edited points could not be rebuilt into the RR3 .z container.")
+                                .setPositiveButton("OK", null)
+                                .show()
+                            return@setOnClickListener
+                        }
+                } else updated
+
+                pendingTransformedFile?.delete()
+                pendingTransformedFile = null
+                pendingTransformedData = finalBytes
+                pendingTransformedName = if (needsZWrap) entry.name else innerName
+                pendingOutputForDataEditor = false
+                pendingOutputForBrowser = true
+                pendingOutputForCarEditor = false
+                dialog.dismiss()
+                gameFilesStatus.text =
+                    "Prepared edited car points. The rebuilt file passed its native read-back check."
+                launchRr3OutputPicker()
+            }
+        }
+        dialog.show()
+        dialog.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.96f).toInt(),
+            (resources.displayMetrics.heightPixels * 0.88f).toInt()
+        )
     }
 
     private fun editGameDataFile(entry: GameDataFile) {
