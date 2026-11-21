@@ -1391,8 +1391,9 @@ class MainActivity : Activity() {
             }
             panel.addView(ProgressBar(this), LinearLayout.LayoutParams(dp(42), dp(42)).apply { gravity = Gravity.CENTER })
             panel.addView(text("INDEXING RR3", 14, UiPalette.text, bold = true), matchWrap(top = 16, bottom = 6))
-            indexingStatusText = text(message, 12, UiPalette.textMuted).apply { gravity = Gravity.CENTER }
-            panel.addView(indexingStatusText, matchWrap())
+            val statusLabel = text(message, 12, UiPalette.textMuted).apply { gravity = Gravity.CENTER }
+            indexingStatusText = statusLabel
+            panel.addView(statusLabel, matchWrap())
             indexingDialog?.dismiss()
             indexingDialog = AlertDialog.Builder(this).setView(panel).setCancelable(false).create()
             indexingDialog?.show()
