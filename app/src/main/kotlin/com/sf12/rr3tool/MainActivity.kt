@@ -4691,7 +4691,7 @@ class MainActivity : Activity() {
             currentCamTweaksName = name
             camTweaksInputs.clear()
             camTweaksStatus = text("", 11, UiPalette.textMuted)
-            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
 
             val panel = LinearLayout(this).apply {
@@ -4721,8 +4721,16 @@ class MainActivity : Activity() {
             val recordButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             recordStrip.addView(recordButtons)
             panel.addView(recordStrip, matchWrap(bottom = 5))
-            panel.addView(camTweaksFieldsContainer, matchWrap())
-            panel.addView(camTweaksStatus, matchWrap(top = 2, bottom = 4))
+            val valuesScroll = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                clipToPadding = false
+            }
+            valuesScroll.addView(camTweaksFieldsContainer)
+            panel.addView(valuesScroll, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)
+            ))
+            camTweaksStatus.isSingleLine = true
+            panel.addView(camTweaksStatus, matchWrap(top = 1, bottom = 2))
             panel.addView(camTweaksSaveButton, matchWrap())
 
             val records = (0 until count).map { index ->
@@ -4736,26 +4744,20 @@ class MainActivity : Activity() {
                 val working = currentCamTweaksWorking
                     ?: throw IllegalStateException("Camera data is no longer available.")
                 val recordBuffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                for (rowIndex in 0..1) {
-                    val row = LinearLayout(this).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                    }
-                    for (field in rowIndex * 3 until rowIndex * 3 + 3) {
+                for (field in 0 until 6) {
                         val valueOffset = recordOffset + 4 + field * 4
                         val value = recordBuffer.getFloat(valueOffset)
                         if (!value.isFinite()) throw IllegalArgumentException(
                             "Record $cameraId contains a non-finite parameter at slot ${field + 1}."
                         )
-                        val axis = listOf("X", "Y", "Z")[field % 3]
                         val label = "Value ${field + 1}"
                         val input = editBox(label, value.toString(), numeric = true).apply {
                             textSize = 12f
                         }
-                        val params = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
-                            if (field % 3 != 2) marginEnd = dp(6)
+                        val params = LinearLayout.LayoutParams(dp(104), dp(36)).apply {
+                            marginEnd = dp(6)
                         }
-                        row.addView(input, params)
+                        camTweaksFieldsContainer.addView(input, params)
                         camTweaksInputs[valueOffset] = input
                         input.addTextChangedListener(object : TextWatcher {
                             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -4773,8 +4775,6 @@ class MainActivity : Activity() {
                                 }
                             }
                         })
-                    }
-                    camTweaksFieldsContainer.addView(row, matchWrap(bottom = 5))
                 }
                 for (i in 0 until recordButtons.childCount) {
                     val child = recordButtons.getChildAt(i) as? TextView ?: continue
@@ -4811,7 +4811,7 @@ class MainActivity : Activity() {
             if (rr3ViewerScreen.visibility == View.VISIBLE && rr3ViewerSurface != null) {
                 camTweaksOverlay = panel
                 rr3ViewerScreenHost.addView(panel, FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, dp(204), Gravity.BOTTOM
+                    FrameLayout.LayoutParams.MATCH_PARENT, dp(160), Gravity.BOTTOM
                 ).apply {
                     leftMargin = dp(8)
                     rightMargin = dp(8)
