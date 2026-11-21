@@ -2853,12 +2853,21 @@ struct Rr3ViewerGpu {
     GLint hasTextureLocation = -1;
     GLint blendedLocation = -1;
     GLint samplerLocation = -1;
+    GLuint environmentProgram = 0;
+    GLuint environmentTexture = 0;
+    GLint environmentSamplerLocation = -1;
+    GLint environmentYawLocation = -1;
+    GLint environmentFovLocation = -1;
+    GLint environmentAspectLocation = -1;
+    bool environmentEnabled = true;
     std::vector<Rr3ViewerGpuMesh> meshes;
     bool ready = false;
 };
 
 void releaseViewerGpu(Rr3ViewerGpu& gpu) {
     if (gpu.program != 0) glDeleteProgram(gpu.program);
+    if (gpu.environmentProgram != 0) glDeleteProgram(gpu.environmentProgram);
+    if (gpu.environmentTexture != 0) glDeleteTextures(1, &gpu.environmentTexture);
     std::vector<GLuint> vertexArrays;
     std::vector<GLuint> buffers;
     std::set<GLuint> textures;
@@ -2877,6 +2886,12 @@ void releaseViewerGpu(Rr3ViewerGpu& gpu) {
         glDeleteTextures(static_cast<GLsizei>(textureIds.size()), textureIds.data());
     }
     gpu.program = 0;
+    gpu.environmentProgram = 0;
+    gpu.environmentTexture = 0;
+    gpu.environmentSamplerLocation = -1;
+    gpu.environmentYawLocation = -1;
+    gpu.environmentFovLocation = -1;
+    gpu.environmentAspectLocation = -1;
     gpu.meshes.clear();
     gpu.ready = false;
 }
@@ -3449,6 +3464,122 @@ void main() {
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3ViewerEnvironment(
+    JNIEnv* env, jobject /* thiz */, jlong handle, jint width, jint height, jbyteArray rgbaInput) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (!glGetString(GL_VERSION) || width < 2 || height < 2 ||
+        width > 8192 || height > 4096 || !rgbaInput) return;
+    const jsize length = env->GetArrayLength(rgbaInput);
+    const uint64_t expected = static_cast<uint64_t>(width) *
+        static_cast<uint64_t>(height) * 4u;
+    if (expected > static_cast<uint64_t>(std::numeric_limits<jsize>::max()) ||
+        static_cast<uint64_t>(length) != expected) return;
+    jbyte* pixels = env->GetByteArrayElements(rgbaInput, nullptr);
+    if (!pixels) return;
+
+    static const char* vertexSource = R"GLSL(#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+    vec2 positions[4] = vec2[4](
+        vec2(-1.0, -1.0), vec2(1.0, -1.0),
+        vec2(-1.0, 1.0), vec2(1.0, 1.0)
+    );
+    vec2 uv[4] = vec2[4](
+        vec2(0.0, 0.0), vec2(1.0, 0.0),
+        vec2(0.0, 1.0), vec2(1.0, 1.0)
+    );
+    vUv = uv[gl_VertexID];
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+}
+)GLSL";
+    static const char* fragmentSource = R"GLSL(#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uEnvironment;
+uniform float uYaw;
+uniform float uFovY;
+uniform float uAspect;
+out vec4 fragColor;
+void main() {
+    float tangent = tan(clamp(uFovY, 0.15, 2.6) * 0.5);
+    vec2 ndc = vUv * 2.0 - 1.0;
+    vec3 direction = normalize(vec3(ndc.x * uAspect * tangent,
+                                    -ndc.y * tangent, 1.0));
+    float longitude = atan(direction.x, direction.z) + uYaw;
+    float latitude = asin(clamp(direction.y, -1.0, 1.0));
+    vec2 uv = vec2(fract(0.5 + longitude / 6.28318530718),
+                   0.5 - latitude / 3.14159265359);
+    fragColor = texture(uEnvironment, uv);
+}
+)GLSL";
+    std::string shaderError;
+    GLuint vertex = compileViewerShader(GL_VERTEX_SHADER, vertexSource, shaderError);
+    GLuint fragment = vertex ? compileViewerShader(GL_FRAGMENT_SHADER, fragmentSource, shaderError) : 0;
+    GLuint program = 0;
+    if (vertex && fragment) {
+        program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+    }
+    if (vertex) glDeleteShader(vertex);
+    if (fragment) glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    if (program) glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        if (program) glDeleteProgram(program);
+        env->ReleaseByteArrayElements(rgbaInput, pixels, JNI_ABORT);
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    env->ReleaseByteArrayElements(rgbaInput, pixels, JNI_ABORT);
+    if (!texture || glGetError() != GL_NO_ERROR) {
+        if (texture) glDeleteTextures(1, &texture);
+        glDeleteProgram(program);
+        return;
+    }
+    if (session->gpu.environmentProgram) glDeleteProgram(session->gpu.environmentProgram);
+    if (session->gpu.environmentTexture) glDeleteTextures(1, &session->gpu.environmentTexture);
+    session->gpu.environmentProgram = program;
+    session->gpu.environmentTexture = texture;
+    session->gpu.environmentSamplerLocation = glGetUniformLocation(program, "uEnvironment");
+    session->gpu.environmentYawLocation = glGetUniformLocation(program, "uYaw");
+    session->gpu.environmentFovLocation = glGetUniformLocation(program, "uFovY");
+    session->gpu.environmentAspectLocation = glGetUniformLocation(program, "uAspect");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3ViewerEnvironment(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle, jboolean enabled) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    session->gpu.environmentEnabled = enabled == JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     JNIEnv* /* env */, jobject /* thiz */, jlong handle, jint width, jint height,
     jfloat yaw, jfloat pitch, jfloat zoom) {
@@ -3465,6 +3596,24 @@ Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     glViewport(0, 0, width, height);
     glClearColor(0.0941f, 0.1020f, 0.1843f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (session->gpu.environmentEnabled && session->gpu.environmentProgram != 0 &&
+        session->gpu.environmentTexture != 0) {
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDepthMask(GL_FALSE);
+        glUseProgram(session->gpu.environmentProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, session->gpu.environmentTexture);
+        glUniform1i(session->gpu.environmentSamplerLocation, 0);
+        glUniform1f(session->gpu.environmentYawLocation, std::isfinite(yaw) ? yaw : 0.6f);
+        glUniform1f(session->gpu.environmentFovLocation,
+                    std::isfinite(session->view.fovY) ? session->view.fovY : 0.75f);
+        glUniform1f(session->gpu.environmentAspectLocation,
+                    static_cast<float>(width) / static_cast<float>(height));
+        glBindVertexArray(0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDepthMask(GL_TRUE);
+    }
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_CULL_FACE);

@@ -223,6 +223,7 @@ class MainActivity : Activity() {
     private val requestTrackInspectorInput = 1108
     private val requestManualLiveryInput = 1109
     private val requestLiverySwatchInput = 1110
+    private val requestCamTweaksInput = 1111
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
     private lateinit var setupStatus: TextView
@@ -291,6 +292,12 @@ class MainActivity : Activity() {
     private lateinit var carEditorStatus: TextView
     private lateinit var careerInspectorStatus: TextView
     private lateinit var trackInspectorStatus: TextView
+    private lateinit var camTweaksStatus: TextView
+    private lateinit var camTweaksFieldsContainer: LinearLayout
+    private lateinit var camTweaksSaveButton: TextView
+    private var currentCamTweaksOriginal: ByteArray? = null
+    private var currentCamTweaksName: String = "camTweaks.dat"
+    private val camTweaksInputs = linkedMapOf<Int, EditText>()
     private lateinit var carFieldsContainer: LinearLayout
     private lateinit var carEditorIndexedCarsContainer: LinearLayout
     private lateinit var careerDetailsContainer: LinearLayout
@@ -669,6 +676,27 @@ class MainActivity : Activity() {
         )
         dataEditorStatus = text("No data file opened.", 12, UiPalette.textMuted)
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
+        addSection(editorPage, "CAMERA TWEAKS")
+        val camTweaksCard = card(editorPage)
+        camTweaksCard.addView(text("Edit RR3 camera tweak records", 17, UiPalette.text, bold = true), matchWrap())
+        camTweaksCard.addView(
+            text(
+                "Open camTweaks.dat to edit its nine indexed records. The six float fields are shown as raw parameters because their exact in-game meanings are not yet verified. Saving preserves the header, record IDs and all remaining file data byte-for-byte.",
+                13, UiPalette.textMuted
+            ),
+            matchWrap(top = 6)
+        )
+        camTweaksCard.addView(
+            actionButton("Open camTweaks.dat") { chooseCamTweaksFile() },
+            matchWrap(top = 12)
+        )
+        camTweaksStatus = text("No camTweaks.dat file opened.", 12, UiPalette.textMuted)
+        camTweaksCard.addView(camTweaksStatus, matchWrap(top = 10))
+        camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        camTweaksCard.addView(camTweaksFieldsContainer, matchWrap(top = 10))
+        camTweaksSaveButton = actionButton("Save edited camTweaks.dat") { saveCamTweaksFile() }
+        camTweaksSaveButton.visibility = View.GONE
+        camTweaksCard.addView(camTweaksSaveButton, matchWrap(top = 10))
         addSection(carPage, "RR3 CAR EDITOR")
         val carCard = card(carPage)
         carCard.addView(
@@ -3632,6 +3660,7 @@ class MainActivity : Activity() {
         val effectiveName = lower.removeSuffix(".z")
         val isWrapped = lower.endsWith(".z") || lower.endsWith(".bin")
         if (isWrapped) actions.add("Unwrap RR3 container and export")
+        if (lower == "camtweaks.dat") actions.add("Edit camera tweaks")
         if (lower == "events.dat.nct") actions.add("Inspect RR3 career data")
         if (entry.relativePath.replace('\\', '/').lowercase().startsWith("tracks/data/") && lower.endsWith(".bin.nct")) actions.add("Inspect RR3 track data")
         if (lower.matches(Regex("""\d+_.+\.bin\.nct"""))) actions.add("Open in RR3 car editor")
@@ -3660,6 +3689,7 @@ class MainActivity : Activity() {
                     "Export original file" -> exportGameFile(entry, unwrapOnly = false)
                     "Unwrap RR3 container and export" -> exportGameFile(entry, unwrapOnly = true)
                     "Decode / encode RR3 data" -> decodeGameDataFile(entry)
+                    "Edit camera tweaks" -> openCamTweaksGameFile(entry)
                     "Inspect RR3 career data" -> inspectCareerGameFile(entry)
                     "Inspect RR3 track data" -> inspectTrackGameFile(entry)
                     "Open in RR3 car editor" -> inspectCarGameFile(entry)
@@ -4559,6 +4589,119 @@ class MainActivity : Activity() {
     }
     private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
         if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
+    private fun chooseCamTweaksFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, requestCamTweaksInput)
+    }
+
+    private fun openCamTweaksGameFile(entry: GameDataFile) {
+        camTweaksStatus.text = "Reading ${entry.relativePath}…"
+        Thread {
+            try {
+                val bytes = readGameFile(entry)
+                runOnUiThread { renderCamTweaksEditor(entry.name, bytes) }
+            } catch (error: Exception) {
+                runOnUiThread { camTweaksStatus.text = error.message ?: "Could not read camTweaks.dat." }
+            }
+        }.start()
+    }
+
+    private fun openCamTweaksFile(uri: Uri) {
+        camTweaksStatus.text = "Reading camera tweak data…"
+        Thread {
+            try {
+                val name = displayName(uri)
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open the selected camera tweak file.")
+                val bytes = input.use { it.readBytes() }
+                runOnUiThread { renderCamTweaksEditor(name, bytes) }
+            } catch (error: Exception) {
+                runOnUiThread { camTweaksStatus.text = error.message ?: "Could not open camTweaks.dat." }
+            }
+        }.start()
+    }
+
+    private fun renderCamTweaksEditor(name: String, bytes: ByteArray) {
+        try {
+            if (bytes.size < 12 ||
+                bytes[0] != 'R'.code.toByte() ||
+                bytes[1] != 'R'.code.toByte() ||
+                bytes[2] != 'C'.code.toByte() ||
+                bytes[3] != 'T'.code.toByte()
+            ) throw IllegalArgumentException("This file does not have the expected RRCT camTweaks header.")
+            val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val version = buffer.getInt(4)
+            val count = buffer.getInt(8)
+            if (version != 5) throw IllegalArgumentException("Unsupported camTweaks version $version. Expected version 5.")
+            if (count !in 1..64) throw IllegalArgumentException("The camera record count ($count) is outside the supported range.")
+            val tableEnd = 12L + count.toLong() * 28L
+            if (tableEnd > bytes.size) throw IllegalArgumentException("The camera record table extends beyond the file.")
+            currentCamTweaksOriginal = bytes.copyOf()
+            currentCamTweaksName = name
+            camTweaksInputs.clear()
+            camTweaksFieldsContainer.removeAllViews()
+            for (record in 0 until count) {
+                val recordOffset = 12 + record * 28
+                val cameraId = buffer.getInt(recordOffset)
+                val group = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(11), dp(12), dp(11))
+                    background = rounded(UiPalette.background, dp(10).toFloat())
+                }
+                camTweaksFieldsContainer.addView(group, matchWrap(bottom = 8))
+                group.addView(text("Camera record $cameraId", 14, UiPalette.text, bold = true), matchWrap())
+                for (field in 0 until 6) {
+                    val offset = recordOffset + 4 + field * 4
+                    val value = buffer.getFloat(offset)
+                    if (!value.isFinite()) throw IllegalArgumentException("Record $cameraId contains a non-finite parameter at slot ${field + 1}.")
+                    val input = editBox("Float parameter ${field + 1}", value.toString(), numeric = true)
+                    group.addView(input, matchWrap(top = 5))
+                    camTweaksInputs[offset] = input
+                }
+            }
+            camTweaksSaveButton.visibility = View.VISIBLE
+            camTweaksStatus.text =
+                "Loaded $name · version $version · $count camera records · ${bytes.size} bytes. The remaining ${bytes.size - tableEnd.toInt()} bytes are preserved."
+            selectTabFromView("Data Editor")
+        } catch (error: Exception) {
+            currentCamTweaksOriginal = null
+            camTweaksInputs.clear()
+            camTweaksFieldsContainer.removeAllViews()
+            camTweaksSaveButton.visibility = View.GONE
+            camTweaksStatus.text = error.message ?: "Could not parse camTweaks.dat."
+        }
+    }
+
+    private fun saveCamTweaksFile() {
+        val original = currentCamTweaksOriginal ?: run {
+            camTweaksStatus.text = "Open camTweaks.dat before saving."
+            return
+        }
+        val edited = original.copyOf()
+        val buffer = java.nio.ByteBuffer.wrap(edited).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for ((offset, input) in camTweaksInputs) {
+            val value = input.text.toString().trim().toFloatOrNull()
+            if (value == null || !value.isFinite() || kotlin.math.abs(value) > 100000000f) {
+                camTweaksStatus.text = "Every parameter must be a finite number within ±100,000,000. No output was created."
+                return
+            }
+            buffer.putFloat(offset, value)
+        }
+        pendingTransformedData = edited
+        pendingTransformedFile?.delete()
+        pendingTransformedFile = null
+        pendingTransformedName = currentCamTweaksName.substringBeforeLast('.', currentCamTweaksName) + "-edited.dat"
+        pendingOutputForDataEditor = true
+        pendingOutputForBrowser = false
+        pendingOutputForCarEditor = false
+        camTweaksStatus.text = "Prepared edited camera records. Choose an output location; the source file remains unchanged."
+        launchRr3OutputPicker()
+    }
+
     private fun chooseTrackInspectorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -6923,6 +7066,10 @@ class MainActivity : Activity() {
         }
         if (requestCode == requestTrackInspectorInput) {
             openTrackInspectorFile(uri)
+            return
+        }
+        if (requestCode == requestCamTweaksInput) {
+            openCamTweaksFile(uri)
             return
         }
         if (requestCode == requestManualLiveryInput) {

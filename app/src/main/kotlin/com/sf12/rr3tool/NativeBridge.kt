@@ -150,6 +150,12 @@ internal object NativeBridge {
     /** Updates preview camera pan and vertical field of view. */
     external fun nativeUpdateRr3ViewerCamera(handle: Long, panX: Float, panY: Float, fovY: Float)
 
+    /** Uploads a decoded RGBA equirectangular panorama to the current GLES context. */
+    external fun nativeSetRr3ViewerEnvironment(handle: Long, width: Int, height: Int, rgba: ByteArray)
+
+    /** Enables or disables the uploaded panorama background. */
+    external fun nativeUpdateRr3ViewerEnvironment(handle: Long, enabled: Boolean)
+
     external fun nativeFreeRr3Viewer(handle: Long)
 
     external fun nativeGetRr3ViewerError(): String
