@@ -4704,7 +4704,7 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            header.addView(text("CAMERA PREVIEW  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
+            header.addView(text("CAMERA DATA  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
                 LinearLayout.LayoutParams(0, dp(32), 1f))
             header.addView(compactOverlayButton("Close") {
                 camTweaksOverlay?.let { overlay -> (overlay.parent as? ViewGroup)?.removeView(overlay) }
@@ -4748,11 +4748,11 @@ class MainActivity : Activity() {
                             "Record $cameraId contains a non-finite parameter at slot ${field + 1}."
                         )
                         val axis = listOf("X", "Y", "Z")[field % 3]
-                        val label = if (field < 3) "Camera $axis" else "Look-at $axis"
+                        val label = "Value ${field + 1}"
                         val input = editBox(label, value.toString(), numeric = true).apply {
                             textSize = 12f
                         }
-                        val params = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                        val params = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
                             if (field % 3 != 2) marginEnd = dp(6)
                         }
                         row.addView(input, params)
@@ -4811,7 +4811,7 @@ class MainActivity : Activity() {
             if (rr3ViewerScreen.visibility == View.VISIBLE && rr3ViewerSurface != null) {
                 camTweaksOverlay = panel
                 rr3ViewerScreenHost.addView(panel, FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, dp(238), Gravity.BOTTOM
+                    FrameLayout.LayoutParams.MATCH_PARENT, dp(204), Gravity.BOTTOM
                 ).apply {
                     leftMargin = dp(8)
                     rightMargin = dp(8)
@@ -4838,16 +4838,14 @@ class MainActivity : Activity() {
     private fun applyCamTweaksPreview(recordOffset: Int) {
         val data = currentCamTweaksWorking ?: return
         if (recordOffset < 12 || recordOffset + 28 > data.size) return
-        val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        val values = FloatArray(6) { buffer.getFloat(recordOffset + 4 + it * 4) }
-        if (values.any { !it.isFinite() }) return
-        // RR3 camera records store their position and look-at point in thousandths
-        // of a model unit; the viewer itself works in model-space units.
-        val scale = 0.001f
-        rr3ViewerSurface?.setCameraPose(
-            values[0] * scale, values[1] * scale, values[2] * scale,
-            values[3] * scale, values[4] * scale, values[5] * scale
-        )
+        // The RRCT record's six float fields have not yet been mapped to the
+        // game's camera transform. Do not feed guessed eye/look-at coordinates
+        // into the renderer: that can send the model outside the view frustum.
+        // Keep the normal model-centred preview until the record semantics and
+        // coordinate scale are verified against the game implementation.
+        rr3ViewerSurface?.resetCamera()
+        camTweaksStatus.text =
+            "Record selected · camera mapping not verified; model preview kept in its normal view."
     }
 
     private fun saveCamTweaksFile() {
