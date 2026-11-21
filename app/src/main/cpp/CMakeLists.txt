@@ -83,4 +83,5 @@ set_source_files_properties(
 )
 
 find_library(ANDROID_LOG_LIB log)
-target_link_libraries(monkeytool_android PRIVATE ${ANDROID_LOG_LIB} ${CMAKE_DL_LIBS})
+find_library(ANDROID_GLESV3_LIB GLESv3)
+target_link_libraries(monkeytool_android PRIVATE ${ANDROID_LOG_LIB} ${ANDROID_GLESV3_LIB} ${CMAKE_DL_LIBS})

@@ -101,11 +101,95 @@ internal object NativeBridge {
 
     external fun nativeConvertRr3Audio(fileName: String, input: ByteArray): ByteArray?
 
+    external fun nativeInspectRr3AudioBank(input: ByteArray): String
+
+    external fun nativeInspectRr3Points(input: ByteArray): String
+
+    /** Lists installed cars from RR3's cardesc and appearance registries. */
+    external fun nativeInspectRr3CarCatalogue(
+        assetPaths: Array<String>,
+        assetData: Array<ByteArray>
+    ): String
+
+    /** Creates a native Monkey Tool model/texture session for the software viewer. */
+    external fun nativeCreateRr3Viewer(
+        modelPath: String,
+        dataFolder: String,
+        model: ByteArray,
+        assetPaths: Array<String>,
+        assetData: Array<ByteArray>
+    ): String
+
+    /** Renders a frame with Monkey Tool's own camera and software rasteriser. */
+    external fun nativeRenderRr3ViewerFrame(
+        handle: Long,
+        width: Int,
+        height: Int,
+        yaw: Float,
+        pitch: Float,
+        zoom: Float,
+        preview: Boolean
+    ): ByteArray?
+
+    /** Creates GPU buffers and uploads model textures on the current OpenGL ES thread. */
+    external fun nativeInitRr3ViewerGl(handle: Long): String
+
+    /** Draws the prepared RR3 model directly into the current OpenGL framebuffer. */
+    external fun nativeDrawRr3ViewerGl(
+        handle: Long,
+        width: Int,
+        height: Int,
+        yaw: Float,
+        pitch: Float,
+        zoom: Float
+    )
+
+    /** Releases GL objects while the viewer's EGL context is current. */
+    external fun nativeReleaseRr3ViewerGl(handle: Long)
+
+    /** Updates preview camera pan and vertical field of view. */
+    external fun nativeUpdateRr3ViewerCamera(handle: Long, panX: Float, panY: Float, fovY: Float)
+
+    /** Sets an explicit camera eye and look-at point in model-space units. */
+    external fun nativeSetRr3ViewerCameraPose(
+        handle: Long,
+        eyeX: Float, eyeY: Float, eyeZ: Float,
+        targetX: Float, targetY: Float, targetZ: Float,
+        enabled: Boolean
+    )
+
+    /** Uploads a decoded RGBA equirectangular panorama to the current GLES context. */
+    external fun nativeSetRr3ViewerEnvironment(handle: Long, width: Int, height: Int, rgba: ByteArray)
+
+    /** Enables or disables the uploaded panorama background. */
+    external fun nativeUpdateRr3ViewerEnvironment(handle: Long, enabled: Boolean)
+
+    external fun nativeFreeRr3Viewer(handle: Long)
+
+    external fun nativeGetRr3ViewerError(): String
+
+    external fun nativeUpdateRr3Points(
+        input: ByteArray,
+        names: Array<String>,
+        positions: FloatArray,
+        bases: FloatArray
+    ): ByteArray?
+
+    external fun nativeWrapRr3PointsZ(input: ByteArray): ByteArray?
+
+    external fun nativeGetRr3PointsError(): String
+
     external fun nativeGetRr3AudioError(): String
 
     external fun nativeTransformRr3Text(input: ByteArray): ByteArray?
 
     external fun nativeRr3TextIsPlain(input: ByteArray): Boolean
+
+    /** Detects a plain or encrypted RR3 text file from a small prefix only. */
+    external fun nativeRr3TextFileIsPlain(path: String): Boolean
+
+    /** Streams the RR3 text cipher from one file to another without loading it into a ByteArray. */
+    external fun nativeTransformRr3TextFile(inputPath: String, outputPath: String): Long
 
     external fun nativeInspectRr3Save(savePath: String, keysPath: String): String
 

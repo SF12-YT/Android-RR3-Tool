@@ -1,17 +1,27 @@
 #include <jni.h>
+#include <GLES3/gl3.h>
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <array>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <cstdint>
+#include <cstddef>
 #include <limits>
 #include <memory>
+#include <map>
 #include <new>
 #include <sstream>
 #include <string>
 #include <set>
 #include <cerrno>
 #include <sys/stat.h>
+#include <mutex>
+#include <atomic>
+#include <memory>
 
 #include "nfsnl.h"
 #include "nfsnl_save.h"
@@ -26,16 +36,16 @@ struct Stream {
     unsigned i = 0;
     unsigned j = 0;
 
-    Stream() {
+    Stream(const uint8_t* key = kNctRc4Key, unsigned drop = kNctRc4Drop) {
         std::memcpy(state, kNctRc4Init, 256);
         for (unsigned k = 0; k < 256; ++k) {
             uint8_t t = state[k];
-            j = (j + t + kNctRc4Key[k & 7]) & 255;
+            j = (j + t + key[k & 7]) & 255;
             state[k] = state[j];
             state[j] = t;
         }
         j = 0;
-        for (unsigned k = 0; k < kNctRc4Drop; ++k) next();
+        for (unsigned k = 0; k < drop; ++k) next();
     }
 
     uint8_t next() {
@@ -45,6 +55,41 @@ struct Stream {
         return state[(state[i] + state[j]) & 255];
     }
 };
+
+bool textFileIsPlain(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    uint8_t sample[256];
+    input.read(reinterpret_cast<char*>(sample), sizeof(sample));
+    const std::streamsize count = input.gcount();
+    return count > 0 && nfsnl::rr3TextIsPlain(sample, static_cast<size_t>(count));
+}
+
+jlong transformTextFile(const std::string& inputPath, const std::string& outputPath) {
+    if (inputPath.empty() || outputPath.empty() || inputPath == outputPath) return -1;
+    std::ifstream input(inputPath, std::ios::binary);
+    if (!input) return -1;
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output) return -1;
+
+    Stream stream(kTextRc4Key, kTextRc4Drop);
+    std::array<uint8_t, 256 * 1024> buffer{};
+    uint64_t total = 0;
+    while (input) {
+        input.read(reinterpret_cast<char*>(buffer.data()),
+                   static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize got = input.gcount();
+        if (got <= 0) break;
+        for (std::streamsize i = 0; i < got; ++i) buffer[static_cast<size_t>(i)] ^= stream.next();
+        output.write(reinterpret_cast<const char*>(buffer.data()), got);
+        if (!output) return -1;
+        total += static_cast<uint64_t>(got);
+    }
+    if (input.bad() || !input.eof() || !output) return -1;
+    output.flush();
+    if (!output || total > static_cast<uint64_t>(std::numeric_limits<jlong>::max())) return -1;
+    return static_cast<jlong>(total);
+}
 
 bool verifyAgainstUpstream() {
     nfsnl::Bytes sample(8193);
@@ -70,6 +115,7 @@ bool verifyAgainstUpstream() {
 
 thread_local std::string gDataEditError;
 thread_local std::string gRr3AudioError;
+thread_local std::string gRr3PointsError;
 thread_local std::string gRr3TransformError;
 thread_local std::string gRr3CarError;
 thread_local std::string gRr3CareerError;
@@ -633,6 +679,25 @@ Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextIsPlain(
     return nfsnl::rr3TextIsPlain(source.data(), source.size()) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeRr3TextFileIsPlain(
+    JNIEnv* env, jobject /* thiz */, jstring pathText) {
+    const std::string path = fromJava(env, pathText);
+    return android_nct::textFileIsPlain(path) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeTransformRr3TextFile(
+    JNIEnv* env, jobject /* thiz */, jstring inputPathText, jstring outputPathText) {
+    const std::string inputPath = fromJava(env, inputPathText);
+    const std::string outputPath = fromJava(env, outputPathText);
+    try {
+        return android_nct::transformTextFile(inputPath, outputPath);
+    } catch (...) {
+        return -1;
+    }
+}
+
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeOpenDataAsText(
@@ -730,6 +795,239 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUnwrapRr3Asset(
 }
 
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Points(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3PointsError.clear();
+    if (!input) {
+        gRr3PointsError = "No RR3 .points data was supplied.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+    const jsize length = env->GetArrayLength(input);
+    if (length < 4) {
+        gRr3PointsError = "The selected .points file is too small.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<nfsnl::Hardpoint> points;
+    try {
+        points = nfsnl::rr3ReadPoints(source.data(), source.size());
+    } catch (...) {
+        points.clear();
+    }
+    if (points.empty()) {
+        gRr3PointsError = "Monkey Tool could not identify any editable points in this file.";
+        return toJava(env, errorJson(gRr3PointsError));
+    }
+
+    std::ostringstream out;
+    out << std::setprecision(9)
+        << "{\"ok\":true,\"count\":" << points.size() << ",\"points\":[";
+    for (size_t i = 0; i < points.size(); ++i) {
+        const auto& point = points[i];
+        if (i) out << ",";
+        out << "{\"name\":" << jsonString(point.name)
+            << ",\"x\":" << point.pos[0]
+            << ",\"y\":" << point.pos[1]
+            << ",\"z\":" << point.pos[2]
+            << ",\"hinge\":" << (point.hinge ? "true" : "false")
+            << ",\"basis\":[";
+        for (int k = 0; k < 9; ++k) {
+            if (k) out << ",";
+            out << point.basis[k];
+        }
+        out << "]}";
+    }
+    out << "]}";
+    return toJava(env, out.str());
+}
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3Points(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input,
+    jobjectArray namesArray, jfloatArray positionsArray, jfloatArray basesArray) {
+    gRr3PointsError.clear();
+    if (!input || !namesArray || !positionsArray || !basesArray) {
+        gRr3PointsError = "The original points and edited values are required.";
+        return nullptr;
+    }
+    const jsize length = env->GetArrayLength(input);
+    const jsize count = env->GetArrayLength(namesArray);
+    if (length < 4 || count <= 0 || count > 4096 ||
+        env->GetArrayLength(positionsArray) != count * 3 ||
+        env->GetArrayLength(basesArray) != count * 9) {
+        gRr3PointsError = "The edited point list does not match the original file.";
+        return nullptr;
+    }
+
+    nfsnl::Bytes output(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<jfloat> positions(static_cast<size_t>(count) * 3);
+    std::vector<jfloat> bases(static_cast<size_t>(count) * 9);
+    env->GetFloatArrayRegion(positionsArray, 0, count * 3, positions.data());
+    env->GetFloatArrayRegion(basesArray, 0, count * 9, bases.data());
+    if (env->ExceptionCheck()) return nullptr;
+
+    std::vector<nfsnl::Hardpoint> original;
+    try {
+        original = nfsnl::rr3ReadPoints(output.data(), output.size());
+    } catch (...) {
+        original.clear();
+    }
+    if (original.size() != static_cast<size_t>(count)) {
+        gRr3PointsError = "The .points file changed or could not be parsed consistently.";
+        return nullptr;
+    }
+
+    int changed = 0;
+    for (jsize i = 0; i < count; ++i) {
+        jstring nameValue = static_cast<jstring>(env->GetObjectArrayElement(namesArray, i));
+        if (!nameValue) {
+            gRr3PointsError = "A point name is missing.";
+            return nullptr;
+        }
+        const std::string name = fromJava(env, nameValue);
+        env->DeleteLocalRef(nameValue);
+        if (env->ExceptionCheck() || name != original[static_cast<size_t>(i)].name) {
+            gRr3PointsError = "The edited point order no longer matches the source file.";
+            return nullptr;
+        }
+
+        float pos[3];
+        bool positionChanged = false;
+        for (int k = 0; k < 3; ++k) {
+            const float value = positions[static_cast<size_t>(i) * 3 + k];
+            if (!std::isfinite(value)) {
+                gRr3PointsError = "Point coordinates must be finite numbers.";
+                return nullptr;
+            }
+            pos[k] = value;
+            if (value != original[static_cast<size_t>(i)].pos[k]) positionChanged = true;
+        }
+        if (positionChanged) {
+            if (!nfsnl::rr3PointsSetPosition(output, name, pos)) {
+                gRr3PointsError = "Could not write the position for " + name + ".";
+                return nullptr;
+            }
+            ++changed;
+        }
+
+        if (original[static_cast<size_t>(i)].hinge) {
+            float basis[9];
+            bool basisChanged = false;
+            for (int k = 0; k < 9; ++k) {
+                const float value = bases[static_cast<size_t>(i) * 9 + k];
+                if (!std::isfinite(value)) {
+                    gRr3PointsError = "Hinge orientation values must be finite numbers.";
+                    return nullptr;
+                }
+                basis[k] = value;
+                if (value != original[static_cast<size_t>(i)].basis[k]) basisChanged = true;
+            }
+            if (basisChanged) {
+                if (!nfsnl::rr3PointsSetBasis(output, name, basis)) {
+                    gRr3PointsError = "Could not write the hinge orientation for " + name + ".";
+                    return nullptr;
+                }
+                ++changed;
+            }
+        }
+    }
+
+    // Re-read the built file. This catches a mismatched name or an unsupported
+    // record before any output is offered to the user.
+    std::vector<nfsnl::Hardpoint> verified;
+    try {
+        verified = nfsnl::rr3ReadPoints(output.data(), output.size());
+    } catch (...) {
+        verified.clear();
+    }
+    if (verified.size() != static_cast<size_t>(count)) {
+        gRr3PointsError = "The rebuilt .points file failed its read-back check.";
+        return nullptr;
+    }
+    for (jsize i = 0; i < count; ++i) {
+        const auto& point = verified[static_cast<size_t>(i)];
+        for (int k = 0; k < 3; ++k) {
+            if (std::fabs(point.pos[k] - positions[static_cast<size_t>(i) * 3 + k]) > 0.0001f) {
+                gRr3PointsError = "The saved coordinates did not pass verification for " +
+                                  point.name + ".";
+                return nullptr;
+            }
+        }
+        if (point.hinge) {
+            for (int k = 0; k < 9; ++k) {
+                if (std::fabs(point.basis[k] - bases[static_cast<size_t>(i) * 9 + k]) > 0.0001f) {
+                    gRr3PointsError = "The saved hinge orientation did not pass verification for " +
+                                      point.name + ".";
+                    return nullptr;
+                }
+            }
+        }
+    }
+
+    if (output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        gRr3PointsError = "The edited .points file is too large to export.";
+        return nullptr;
+    }
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(output.size()),
+        reinterpret_cast<const jbyte*>(output.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
+}
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeWrapRr3PointsZ(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    if (!input) return nullptr;
+    const jsize length = env->GetArrayLength(input);
+    if (length <= 0) return nullptr;
+    nfsnl::Bytes plain(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(plain.data()));
+    if (env->ExceptionCheck()) return nullptr;
+    nfsnl::Bytes wrapped;
+    try {
+        wrapped = nfsnl::rr3WrapZ(plain);
+    } catch (...) {
+        return nullptr;
+    }
+    if (wrapped.empty() ||
+        wrapped.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+        return nullptr;
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(wrapped.size()));
+    if (!result) return nullptr;
+    env->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(wrapped.size()),
+        reinterpret_cast<const jbyte*>(wrapped.data()));
+    return result;
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3PointsError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(
+        env,
+        gRr3PointsError.empty()
+            ? "The RR3 points editor could not complete the operation."
+            : gRr3PointsError);
+}
+
+
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
     JNIEnv* env, jobject /* thiz */, jstring fileName, jbyteArray input) {
@@ -770,6 +1068,80 @@ Java_com_sf12_rr3tool_NativeBridge_nativeConvertRr3Audio(
         result, 0, static_cast<jsize>(wav.size()),
         reinterpret_cast<const jbyte*>(wav.data()));
     return result;
+}
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3AudioBank(
+    JNIEnv* env, jobject /* thiz */, jbyteArray input) {
+    gRr3AudioError.clear();
+    if (!input) {
+        gRr3AudioError = "No Wwise sound-bank data was supplied.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    const jsize length = env->GetArrayLength(input);
+    if (length < 12) {
+        gRr3AudioError = "The selected file is too small to be a Wwise sound bank.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    nfsnl::Bytes source(static_cast<size_t>(length));
+    env->GetByteArrayRegion(
+        input, 0, length, reinterpret_cast<jbyte*>(source.data()));
+    if (env->ExceptionCheck()) return nullptr;
+
+    nfsnl::Bank bank;
+    bool parsed = false;
+    try {
+        parsed = nfsnl::readBank(source.data(), source.size(), bank);
+    } catch (...) {
+        parsed = false;
+    }
+    if (!parsed) {
+        gRr3AudioError = "This file is not a readable Wwise .bnk SoundBank.";
+        return toJava(env, errorJson(gRr3AudioError));
+    }
+
+    for (const auto& entry : bank.entries) {
+        if (entry.offset > source.size() ||
+            entry.size > source.size() - entry.offset) {
+            gRr3AudioError = "The SoundBank contains an invalid sound offset or size.";
+            return toJava(env, errorJson(gRr3AudioError));
+        }
+    }
+
+    std::ostringstream out;
+    out << "{\"ok\":true"
+        << ",\"bankId\":" << bank.id
+        << ",\"version\":" << bank.version
+        << ",\"hircObjects\":" << bank.hircObjects
+        << ",\"sections\":[";
+    for (size_t i = 0; i < bank.sections.size(); ++i) {
+        if (i) out << ",";
+        out << jsonString(bank.sections[i]);
+    }
+    out << "],\"sources\":[";
+    for (size_t i = 0; i < bank.sources.size(); ++i) {
+        if (i) out << ",";
+        out << bank.sources[i];
+    }
+    out << "],\"entries\":[";
+    for (size_t i = 0; i < bank.entries.size(); ++i) {
+        const auto& entry = bank.entries[i];
+        if (i) out << ",";
+        out << "{\"id\":" << entry.id
+            << ",\"offset\":" << static_cast<unsigned long long>(entry.offset)
+            << ",\"size\":" << static_cast<unsigned long long>(entry.size)
+            << ",\"kind\":" << jsonString(entry.kind)
+            << ",\"codec\":" << entry.codec
+            << ",\"channels\":" << entry.channels
+            << ",\"sampleRate\":" << entry.sampleRate
+            << ",\"samples\":" << entry.samples
+            << "}";
+    }
+    out << "]}";
+    return toJava(env, out.str());
 }
 
 
@@ -1076,24 +1448,83 @@ std::vector<std::string> readGameTextKeys(const nfsnl::Bytes& plain) {
     std::vector<std::string> keys;
     std::set<std::string> seen;
     static const char prefix[] = "GAMETEXT_";
-    for (size_t at = 0; at + 4 + sizeof(prefix) - 1 <= plain.size(); ++at) {
-        const uint8_t* p = plain.data() + at;
-        uint32_t length = static_cast<uint32_t>(p[0]) |
-                          (static_cast<uint32_t>(p[1]) << 8) |
-                          (static_cast<uint32_t>(p[2]) << 16) |
-                          (static_cast<uint32_t>(p[3]) << 24);
-        if (length < sizeof(prefix) - 1 || length > 160 ||
-            length > plain.size() - at - 4) continue;
-        const char* value = reinterpret_cast<const char*>(p + 4);
-        if (std::memcmp(value, prefix, sizeof(prefix) - 1) != 0) continue;
-        bool printable = true;
-        for (uint32_t i = 0; i < length; ++i) {
+    const size_t prefixLength = sizeof(prefix) - 1;
+
+    auto addKey = [&](const char* value, size_t length) {
+        if (length < prefixLength || length > 160 ||
+            std::memcmp(value, prefix, prefixLength) != 0) return;
+        for (size_t i = 0; i < length; ++i) {
             const uint8_t c = static_cast<uint8_t>(value[i]);
-            if (c < 0x20 || c >= 0x7f) { printable = false; break; }
+            const bool valid = (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '_';
+            if (!valid) return;
         }
-        if (!printable) continue;
         std::string key(value, length);
         if (seen.insert(key).second) keys.push_back(std::move(key));
+    };
+
+    // Most RR3 paint tables store strings as a little-endian 32-bit length
+    // followed by the key. Keep supporting that representation.
+    for (size_t at = 0; at + 4 + prefixLength <= plain.size(); ++at) {
+        const uint8_t* p = plain.data() + at;
+        const uint32_t length = static_cast<uint32_t>(p[0]) |
+                                (static_cast<uint32_t>(p[1]) << 8) |
+                                (static_cast<uint32_t>(p[2]) << 16) |
+                                (static_cast<uint32_t>(p[3]) << 24);
+        if (length >= prefixLength && length <= 160 &&
+            length <= plain.size() - at - 4) {
+            addKey(reinterpret_cast<const char*>(p + 4), length);
+        }
+    }
+
+    // Some RR3 revisions embed the same keys as ordinary terminated ASCII
+    // strings rather than length-prefixed values. Scan those too; otherwise
+    // only the few entries using the first representation appear in the UI.
+    for (size_t at = 0; at + prefixLength <= plain.size(); ++at) {
+        if (std::memcmp(plain.data() + at, prefix, prefixLength) != 0) continue;
+        size_t end = at;
+        while (end < plain.size() && end - at < 160) {
+            const uint8_t c = plain[end];
+            const bool valid = (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9') || c == '_';
+            if (!valid) break;
+            ++end;
+        }
+        addKey(reinterpret_cast<const char*>(plain.data() + at), end - at);
+    }
+    // Some versions store Unity strings as UTF-16LE/BE. The old scan
+    // only saw byte-oriented ASCII and silently missed those paint entries.
+    for (size_t at = 0; at + prefixLength * 2 <= plain.size(); ++at) {
+        for (int endian = 0; endian < 2; ++endian) {
+            std::string wideKey;
+            wideKey.reserve(64);
+            bool validPrefix = true;
+            for (size_t i = 0; i < prefixLength; ++i) {
+                const uint8_t first = plain[at + i * 2];
+                const uint8_t second = plain[at + i * 2 + 1];
+                const uint8_t character = endian == 0 ? first : second;
+                const uint8_t zero = endian == 0 ? second : first;
+                if (character != static_cast<uint8_t>(prefix[i]) || zero != 0) {
+                    validPrefix = false;
+                    break;
+                }
+            }
+            if (!validPrefix) continue;
+
+            const size_t limit = std::min<size_t>(160, (plain.size() - at) / 2);
+            for (size_t i = 0; i < limit; ++i) {
+                const uint8_t first = plain[at + i * 2];
+                const uint8_t second = plain[at + i * 2 + 1];
+                const uint8_t character = endian == 0 ? first : second;
+                const uint8_t zero = endian == 0 ? second : first;
+                const bool valid = (character >= 'A' && character <= 'Z') ||
+                                   (character >= '0' && character <= '9') ||
+                                   character == '_';
+                if (zero != 0 || !valid) break;
+                wideKey.push_back(static_cast<char>(character));
+            }
+            addKey(wideKey.data(), wideKey.size());
+        }
     }
     return keys;
 }
@@ -1116,17 +1547,136 @@ std::string base64Encode(const uint8_t* data, size_t length) {
     return out;
 }
 
-bool loadRr3EnglishTexts(const nfsnl::Bytes& gameText,
-                         const nfsnl::Bytes& englishText,
-                         nfsnl::Rr3Texts& texts) {
-    std::vector<std::string> names = {"gametext.txt", "text_en.txt"};
-    auto read = [&](const std::string& name, nfsnl::Bytes& bytes) -> bool {
-        if (name == "gametext.txt") bytes = gameText;
-        else if (name == "text_en.txt") bytes = englishText;
-        else return false;
-        return !bytes.empty();
-    };
-    return texts.load(names, read);
+struct Rr3TextDocument {
+    bool encrypted = false;
+    std::vector<std::string> lines;
+    std::vector<std::string> endings; // exact line ending after each line
+};
+
+bool rr3ReadTextDocument(const nfsnl::Bytes& raw, Rr3TextDocument& doc) {
+    if (raw.empty()) return false;
+    doc = Rr3TextDocument();
+    doc.encrypted = !nfsnl::rr3TextIsPlain(raw.data(), raw.size());
+
+    nfsnl::Bytes decoded;
+    if (doc.encrypted) {
+        if (!nfsnl::rr3TextTransform(raw.data(), raw.size(), decoded) ||
+            decoded.size() != raw.size()) return false;
+    } else {
+        decoded = raw;
+    }
+
+    const std::string text(decoded.begin(), decoded.end());
+    size_t start = 0;
+    while (true) {
+        size_t end = start;
+        while (end < text.size() && text[end] != '\r' && text[end] != '\n') ++end;
+        doc.lines.push_back(text.substr(start, end - start));
+        if (end == text.size()) break;
+
+        if (text[end] == '\r' && end + 1 < text.size() && text[end + 1] == '\n') {
+            doc.endings.emplace_back("\r\n");
+            start = end + 2;
+        } else {
+            doc.endings.emplace_back(1, text[end]);
+            start = end + 1;
+        }
+        if (start == text.size()) {
+            // Keep the final empty line when the source ends with a newline.
+            doc.lines.emplace_back();
+            break;
+        }
+    }
+    return !doc.lines.empty() && doc.endings.size() + 1 == doc.lines.size();
+}
+
+std::string rr3JoinTextDocument(const Rr3TextDocument& doc) {
+    std::string text;
+    size_t reserve = 0;
+    for (const auto& line : doc.lines) reserve += line.size();
+    for (const auto& ending : doc.endings) reserve += ending.size();
+    text.reserve(reserve);
+    for (size_t i = 0; i < doc.lines.size(); ++i) {
+        text += doc.lines[i];
+        if (i < doc.endings.size()) text += doc.endings[i];
+    }
+    return text;
+}
+
+bool rr3EncodeTextDocument(const Rr3TextDocument& doc, nfsnl::Bytes& output) {
+    const std::string plain = rr3JoinTextDocument(doc);
+    nfsnl::Bytes input(plain.begin(), plain.end());
+    if (!doc.encrypted) {
+        output.swap(input);
+        return true;
+    }
+
+    if (!nfsnl::rr3TextTransform(input.data(), input.size(), output) ||
+        output.size() != input.size()) return false;
+
+    // Never emit a rebuilt language file unless the same game cipher decodes
+    // it byte-for-byte to the text we intended to write.
+    nfsnl::Bytes roundTrip;
+    if (!nfsnl::rr3TextTransform(output.data(), output.size(), roundTrip) ||
+        roundTrip != input) {
+        output.clear();
+        return false;
+    }
+    return true;
+}
+
+std::string rr3KeyWithoutBom(const std::string& line) {
+    if (line.size() >= 3 &&
+        static_cast<uint8_t>(line[0]) == 0xEF &&
+        static_cast<uint8_t>(line[1]) == 0xBB &&
+        static_cast<uint8_t>(line[2]) == 0xBF) {
+        return line.substr(3);
+    }
+    return line;
+}
+
+std::string rr3NormaliseGameTextKey(const std::string& key) {
+    return key.compare(0, 9, "GAMETEXT_") == 0 ? key : "GAMETEXT_" + key;
+}
+
+bool rr3LoadPaintTextDocuments(const nfsnl::Bytes& gameText,
+                               const nfsnl::Bytes& englishText,
+                               Rr3TextDocument& keys,
+                               Rr3TextDocument& english,
+                               std::map<std::string, size_t>& keyLines,
+                               std::string& why) {
+    if (!rr3ReadTextDocument(gameText, keys)) {
+        why = "Could not decode gametext.txt.";
+        return false;
+    }
+    if (!rr3ReadTextDocument(englishText, english)) {
+        why = "Could not decode text_en.txt.";
+        return false;
+    }
+
+    if (keys.lines.size() != english.lines.size()) {
+        why = "gametext.txt and text_en.txt have different line counts. No files were changed.";
+        return false;
+    }
+
+    keyLines.clear();
+    for (size_t i = 0; i < keys.lines.size(); ++i) {
+        const std::string key = rr3KeyWithoutBom(keys.lines[i]);
+        if (key.compare(0, 9, "GAMETEXT_") == 0) keyLines[key] = i;
+    }
+    if (keyLines.empty()) {
+        why = "No GAMETEXT keys were found in gametext.txt.";
+        return false;
+    }
+    return true;
+}
+
+std::string rr3PaintTextValue(const Rr3TextDocument& english,
+                              const std::map<std::string, size_t>& keyLines,
+                              const std::string& key) {
+    const auto found = keyLines.find(rr3NormaliseGameTextKey(key));
+    if (found == keyLines.end() || found->second >= english.lines.size()) return {};
+    return rr3KeyWithoutBom(english.lines[found->second]);
 }
 } // namespace
 
@@ -1155,9 +1705,11 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
         return toJava(env, errorJson("The paint configuration decoder failed."));
     }
 
-    nfsnl::Rr3Texts texts;
-    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
-        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    Rr3TextDocument keys, english;
+    std::map<std::string, size_t> keyLines;
+    std::string why;
+    if (!rr3LoadPaintTextDocuments(gameText, englishText, keys, english, keyLines, why)) {
+        return toJava(env, errorJson(why));
     }
 
     const auto packKeys = readGameTextKeys(packs);
@@ -1165,8 +1717,12 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     std::vector<std::string> specialLabels;
     for (const auto& key : packKeys) {
         const std::string prefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
+        // _SPECIAL is a category marker in the paint-pack table, not a
+        // localisation string. Other entries remain visible even if this
+        // game's gametext table has no editable English line for them.
         if (key.compare(0, prefix.size(), prefix) == 0 &&
-            key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0) {
+            key.compare(key.size() >= 5 ? key.size() - 5 : 0, 5, "_NAME") != 0 &&
+            key != "GAMETEXT_CUSTOMISATION_PAINTS_SPECIAL") {
             specialLabels.push_back(key);
         }
     }
@@ -1179,11 +1735,29 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
     std::string pendingMaterial;
     const std::string materialPrefix = "GAMETEXT_CUSTOMISATION_PAINTS_";
     const std::string colourPrefix = "GAMETEXT_CUSTOMISATION_COLOUR_";
+    const std::string colorPrefix = "GAMETEXT_CUSTOMISATION_COLOR_";
     for (const auto& key : paintKeys) {
-        if (key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
-            key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0) {
+        const bool isMaterialName =
+            key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
+            key.size() >= 5 && key.compare(key.size() - 5, 5, "_NAME") == 0;
+        const bool isPaintTableEntry =
+            key.compare(0, materialPrefix.size(), materialPrefix) == 0 &&
+            key != "GAMETEXT_CUSTOMISATION_PAINTS_SPECIAL";
+        const bool isColourName =
+            key.compare(0, colourPrefix.size(), colourPrefix) == 0 ||
+            key.compare(0, colorPrefix.size(), colorPrefix) == 0 ||
+            (key.compare(0, 23, "GAMETEXT_CUSTOMISATION_") == 0 &&
+             (key.find("COLOUR") != std::string::npos ||
+              key.find("COLOR") != std::string::npos));
+
+        if (isMaterialName) {
+            if (!pendingMaterial.empty()) options.push_back({pendingMaterial, ""});
             pendingMaterial = key;
-        } else if (key.compare(0, colourPrefix.size(), colourPrefix) == 0) {
+        } else if (isColourName || isPaintTableEntry) {
+            // Some revisions use the PAINTS_* namespace for the colour too,
+            // rather than the separate COLOUR_/COLOR_ prefixes. Keep those
+            // entries visible instead of silently dropping everything but
+            // the small subset matching the older naming convention.
             options.push_back({pendingMaterial, key});
             pendingMaterial.clear();
         }
@@ -1196,16 +1770,23 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3PaintLabels(
         if (i) out << ',';
         const auto& key = specialLabels[i];
         out << "{\"key\":" << jsonString(key)
-            << ",\"value\":" << jsonString(texts.get(key)) << '}';
+            << ",\"value\":" << jsonString(rr3PaintTextValue(english, keyLines, key))
+            << ",\"editable\":" << (keyLines.find(key) != keyLines.end() ? "true" : "false") << '}';
     }
     out << "],\"paintOptions\":[";
     for (size_t i = 0; i < options.size(); ++i) {
         if (i) out << ',';
         const auto& option = options[i];
+        const bool materialEditable = !option.materialKey.empty() &&
+            keyLines.find(option.materialKey) != keyLines.end();
+        const bool colourEditable = !option.colourKey.empty() &&
+            keyLines.find(option.colourKey) != keyLines.end();
         out << "{\"materialKey\":" << jsonString(option.materialKey)
-            << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : texts.get(option.materialKey))
+            << ",\"material\":" << jsonString(option.materialKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.materialKey))
+            << ",\"materialEditable\":" << (materialEditable ? "true" : "false")
             << ",\"colourKey\":" << jsonString(option.colourKey)
-            << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : texts.get(option.colourKey))
+            << ",\"colour\":" << jsonString(option.colourKey.empty() ? "" : rr3PaintTextValue(english, keyLines, option.colourKey))
+            << ",\"colourEditable\":" << (colourEditable ? "true" : "false")
             << '}';
     }
     out << "]}";
@@ -1227,11 +1808,14 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
         return toJava(env, errorJson("Select at least one paint label to update."));
     }
 
-    nfsnl::Rr3Texts texts;
-    if (!loadRr3EnglishTexts(gameText, englishText, texts)) {
-        return toJava(env, errorJson("Could not match gametext.txt with text_en.txt."));
+    Rr3TextDocument keys, english;
+    std::map<std::string, size_t> keyLines;
+    std::string why;
+    if (!rr3LoadPaintTextDocuments(gameText, englishText, keys, english, keyLines, why)) {
+        return toJava(env, errorJson(why));
     }
 
+    bool changed = false;
     for (jsize i = 0; i < keyCount; ++i) {
         auto keyObject = static_cast<jstring>(env->GetObjectArrayElement(keyArray, i));
         auto valueObject = static_cast<jstring>(env->GetObjectArrayElement(valueArray, i));
@@ -1240,29 +1824,46 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3PaintLabels(
             if (valueObject) env->DeleteLocalRef(valueObject);
             continue;
         }
-        const std::string key = fromJava(env, keyObject);
+        const std::string key = rr3NormaliseGameTextKey(fromJava(env, keyObject));
         const std::string value = fromJava(env, valueObject);
         env->DeleteLocalRef(keyObject);
         env->DeleteLocalRef(valueObject);
+
         if (key.empty() || value.empty()) continue;
         if (key.size() > 160 || value.size() > 160) {
             return toJava(env, errorJson("Paint labels must be no longer than 160 characters."));
         }
-        texts.set(key, value);
+        const auto found = keyLines.find(key);
+        if (found == keyLines.end() || found->second >= english.lines.size()) {
+            return toJava(env, errorJson("The paint label key " + key + " does not exist in the indexed text files. No files were changed."));
+        }
+
+        std::string replacement = value;
+        if (found->second == 0 && english.lines[0].size() >= 3 &&
+            static_cast<uint8_t>(english.lines[0][0]) == 0xEF &&
+            static_cast<uint8_t>(english.lines[0][1]) == 0xBB &&
+            static_cast<uint8_t>(english.lines[0][2]) == 0xBF) {
+            replacement = std::string("\xEF\xBB\xBF") + value;
+        }
+        if (english.lines[found->second] != replacement) {
+            english.lines[found->second] = replacement;
+            changed = true;
+        }
     }
 
-    const auto changed = texts.changedFiles();
-    if (changed.empty()) return toJava(env, errorJson("No paint-label changes were made."));
-    std::ostringstream out;
-    out << "{\"ok\":true,\"files\":[";
-    for (size_t i = 0; i < changed.size(); ++i) {
-        if (i) out << ',';
-        const auto& item = changed[i];
-        out << "{\"name\":" << jsonString(item.first)
-            << ",\"data\":" << jsonString(base64Encode(item.second.data(), item.second.size()))
-            << '}';
+    if (!changed) {
+        return toJava(env, errorJson("No paint-label changes were made."));
     }
-    out << "]}";
+
+    nfsnl::Bytes updatedEnglish;
+    if (!rr3EncodeTextDocument(english, updatedEnglish) || updatedEnglish.empty()) {
+        return toJava(env, errorJson("The updated text_en.txt failed its encoding check. No files were exported."));
+    }
+
+    std::ostringstream out;
+    out << "{\"ok\":true,\"files\":[{\"name\":\"text_en.txt\",\"data\":"
+        << jsonString(base64Encode(updatedEnglish.data(), updatedEnglish.size()))
+        << "}]}";
     return toJava(env, out.str());
 }
 
@@ -1465,10 +2066,28 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
         md5.push_back(hex[(byte >> 4) & 0x0f]);
         md5.push_back(hex[byte & 0x0f]);
     }
-    nfsnl::rr3AssetListSet(list, assetPath, md5, true);
+    // This file is being replaced, so its cached MD5 must change too.
+    // keepIfListed=true preserves the old digest and leaves the depot cache stale.
+    nfsnl::rr3AssetListSet(list, assetPath, md5, false);
+
     nfsnl::Bytes output = nfsnl::rr3AssetListWrite(list);
     if (output.empty() || output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
         return nullptr;
+
+    // Read the generated cache back and confirm the exact replacement digest
+    // is present before returning an exportable asset-list file.
+    nfsnl::Rr3AssetList verified;
+    if (!nfsnl::rr3AssetListRead(output, verified)) return nullptr;
+    std::string expectedPath = "/" + assetPath;
+    for (char& c : expectedPath) if (c == static_cast<char>(92)) c = '/';
+    bool digestVerified = false;
+    for (const auto& entry : verified.entries) {
+        if (entry.first == expectedPath) {
+            digestVerified = entry.second == md5;
+            break;
+        }
+    }
+    if (!digestVerified) return nullptr;
     jbyteArray result = env->NewByteArray(static_cast<jsize>(output.size()));
     if (!result) return nullptr;
     env->SetByteArrayRegion(result, 0, static_cast<jsize>(output.size()),
@@ -1816,3 +2435,1372 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3Track(
     return toJava(env, out.str());
 }
 
+
+
+namespace {
+thread_local std::string gRr3ViewerError;
+
+std::string viewerLower(std::string value) {
+    for (char& c : value) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return value;
+}
+
+std::string viewerUnwrapName(std::string value) {
+    const auto stripSuffix = [&](const char* suffix) {
+        const size_t count = std::strlen(suffix);
+        if (value.size() >= count &&
+            viewerLower(value.substr(value.size() - count)) == suffix) {
+            value.erase(value.size() - count);
+            return true;
+        }
+        return false;
+    };
+    stripSuffix(".bin");
+    stripSuffix(".z");
+    return value;
+}
+
+void viewerAppendU32(std::vector<uint8_t>& out, uint32_t value) {
+    out.push_back(static_cast<uint8_t>(value & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xff));
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
+}
+
+void viewerAppendFloat(std::vector<uint8_t>& out, float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    viewerAppendU32(out, bits);
+}
+
+void viewerAppendString(std::vector<uint8_t>& out, const std::string& value) {
+    viewerAppendU32(out, static_cast<uint32_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+}
+
+bool viewerIsHelperLod(const std::string& lod) {
+    return lod == "HELPERS" || lod == "INTCAM" || lod == "BONNETCAM" ||
+           lod == "DAMAGE" || lod == "SHADOW";
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeGetRr3ViewerError(
+    JNIEnv* env, jobject /* thiz */) {
+    return toJava(env, gRr3ViewerError);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
+    JNIEnv* env, jobject /* thiz */, jstring modelPathValue, jbyteArray modelInput,
+    jobjectArray assetPaths, jobjectArray assetInputs) {
+    gRr3ViewerError.clear();
+    if (!modelPathValue || !modelInput || !assetPaths || !assetInputs) {
+        gRr3ViewerError = "The selected RR3 model or its asset list is missing.";
+        return nullptr;
+    }
+
+    const std::string modelPath = viewerUnwrapName(fromJava(env, modelPathValue));
+    const jsize modelLength = env->GetArrayLength(modelInput);
+    const jsize pathCount = env->GetArrayLength(assetPaths);
+    const jsize dataCount = env->GetArrayLength(assetInputs);
+    if (modelPath.empty() || modelLength <= 0 || pathCount != dataCount ||
+        pathCount > 4096) {
+        gRr3ViewerError = "The selected RR3 model has invalid input data.";
+        return nullptr;
+    }
+
+    try {
+        nfsnl::Bytes modelBytes(static_cast<size_t>(modelLength));
+        env->GetByteArrayRegion(modelInput, 0, modelLength,
+                                reinterpret_cast<jbyte*>(modelBytes.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Could not read the selected RR3 model bytes.";
+            return nullptr;
+        }
+
+        std::map<std::string, nfsnl::Bytes> files;
+        std::map<std::string, std::string> texturePathByStem;
+        size_t totalAssetBytes = 0;
+        for (jsize i = 0; i < pathCount; ++i) {
+            auto pathObject = static_cast<jstring>(env->GetObjectArrayElement(assetPaths, i));
+            auto dataObject = static_cast<jbyteArray>(env->GetObjectArrayElement(assetInputs, i));
+            if (!pathObject || !dataObject) {
+                if (pathObject) env->DeleteLocalRef(pathObject);
+                if (dataObject) env->DeleteLocalRef(dataObject);
+                continue;
+            }
+            std::string path = viewerUnwrapName(fromJava(env, pathObject));
+            const jsize length = env->GetArrayLength(dataObject);
+            if (path.empty() || length <= 0 || static_cast<size_t>(length) > (64u << 20)) {
+                env->DeleteLocalRef(pathObject);
+                env->DeleteLocalRef(dataObject);
+                continue;
+            }
+            if (totalAssetBytes + static_cast<size_t>(length) > (96u << 20)) {
+                env->DeleteLocalRef(pathObject);
+                env->DeleteLocalRef(dataObject);
+                gRr3ViewerError = "This car's texture and sidecar files exceed the 96 MiB preview limit. Try a car with smaller assets.";
+                return nullptr;
+            }
+            nfsnl::Bytes bytes(static_cast<size_t>(length));
+            env->GetByteArrayRegion(dataObject, 0, length,
+                                    reinterpret_cast<jbyte*>(bytes.data()));
+            env->DeleteLocalRef(pathObject);
+            env->DeleteLocalRef(dataObject);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                gRr3ViewerError = "Could not read one of this car's model or texture assets.";
+                return nullptr;
+            }
+            totalAssetBytes += bytes.size();
+            files[viewerLower(path)] = std::move(bytes);
+        }
+
+        nfsnl::Model model = nfsnl::loadModel(modelBytes.data(), modelBytes.size());
+        if (!model.valid || model.meshes.empty()) {
+            gRr3ViewerError = model.warnings.empty()
+                ? "Monkey Tool could not find renderable geometry in this RR3 model."
+                : "Could not load the RR3 model: " + model.warnings.front();
+            return nullptr;
+        }
+
+        const std::string modelStem = nfsnl::stripExtension(modelPath);
+        std::string carStem = modelStem;
+        if (carStem.size() > 2 && carStem[carStem.size() - 2] == '_' &&
+            ((carStem.back() >= 'a' && carStem.back() <= 'z') ||
+             (carStem.back() >= 'A' && carStem.back() <= 'Z')))
+            carStem.erase(carStem.size() - 2);
+        const std::string pointsPath = carStem + ".points";
+        const std::string innerPointsPath = nfsnl::rr3InteriorPointsNameFor(modelPath);
+        std::vector<nfsnl::Hardpoint> points;
+        auto pointsFile = files.find(viewerLower(pointsPath));
+        if (pointsFile != files.end())
+            points = nfsnl::rr3ReadPoints(pointsFile->second.data(), pointsFile->second.size());
+        if (!innerPointsPath.empty()) {
+            auto innerFile = files.find(viewerLower(innerPointsPath));
+            if (innerFile != files.end()) {
+                auto innerPoints = nfsnl::rr3ReadPoints(innerFile->second.data(), innerFile->second.size());
+                if (!innerPoints.empty()) nfsnl::rr3MergeCockpitPoints(points, innerPoints);
+            }
+        }
+        if (!points.empty()) nfsnl::rr3PlaceParts(model, points);
+
+        const std::string sharedPath = nfsnl::rr3SharedNameFor(modelPath);
+        auto sharedFile = files.find(viewerLower(sharedPath));
+        if (sharedFile != files.end()) {
+            nfsnl::Model shared = nfsnl::loadModel(sharedFile->second.data(), sharedFile->second.size());
+            if (shared.valid && !shared.meshes.empty())
+                nfsnl::rr3AttachWheels(model, shared, points);
+        }
+
+        // Build a filename lookup for the real textures in this car's folder.
+        for (const auto& item : files) {
+            const std::string leaf = nfsnl::baseName(item.first);
+            const std::string ext = viewerLower(nfsnl::extensionOf(item.first));
+            if (ext != "sba" && ext != "pvr" && ext != "dds") continue;
+            const std::string stem = viewerLower(nfsnl::stripExtension(leaf));
+            if (!stem.empty() && !texturePathByStem.count(stem))
+                texturePathByStem[stem] = item.first;
+        }
+        auto lookupTexture = [&](const std::string& stem) -> std::string {
+            const std::string wanted = viewerLower(nfsnl::baseName(nfsnl::stripExtension(stem)));
+            auto found = texturePathByStem.find(wanted);
+            return found == texturePathByStem.end() ? std::string() : found->second;
+        };
+
+        std::vector<std::pair<std::string, std::string>> noCommonTextures;
+        std::string textureReport;
+        nfsnl::rr3AssignTextures(model, modelPath, lookupTexture,
+                                 noCommonTextures, nullptr, &textureReport);
+
+        std::string selectedLod;
+        for (const nfsnl::Mesh& mesh : model.meshes) {
+            if (viewerIsHelperLod(mesh.lod) || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            if (!mesh.lod.empty() &&
+                (selectedLod.empty() || mesh.lod < selectedLod))
+                selectedLod = mesh.lod;
+        }
+
+        std::vector<const nfsnl::Mesh*> visibleMeshes;
+        float minBounds[3] = {
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max()
+        };
+        float maxBounds[3] = {
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max()
+        };
+
+        for (const nfsnl::Mesh& mesh : model.meshes) {
+            if (viewerIsHelperLod(mesh.lod) || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            if (!selectedLod.empty() && !mesh.lod.empty() && mesh.lod != selectedLod)
+                continue;
+            const size_t vertexCount = mesh.positions.size() / 3;
+            bool validIndices = true;
+            for (uint32_t index : mesh.indices) {
+                if (index >= vertexCount) { validIndices = false; break; }
+            }
+            if (!validIndices) continue;
+            visibleMeshes.push_back(&mesh);
+            for (size_t i = 0; i + 2 < mesh.positions.size(); i += 3) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    minBounds[axis] = std::min(minBounds[axis], mesh.positions[i + axis]);
+                    maxBounds[axis] = std::max(maxBounds[axis], mesh.positions[i + axis]);
+                }
+            }
+        }
+        if (visibleMeshes.empty()) {
+            gRr3ViewerError = "The RR3 model parsed, but its exterior LOD contains no drawable triangles.";
+            return nullptr;
+        }
+
+        const float centre[3] = {
+            (minBounds[0] + maxBounds[0]) * 0.5f,
+            (minBounds[1] + maxBounds[1]) * 0.5f,
+            (minBounds[2] + maxBounds[2]) * 0.5f
+        };
+        const float extent = std::max({
+            maxBounds[0] - minBounds[0],
+            maxBounds[1] - minBounds[1],
+            maxBounds[2] - minBounds[2]
+        });
+        const float scale = extent > 0.0001f ? 2.0f / extent : 1.0f;
+
+        struct ViewerTexture {
+            std::string name;
+            nfsnl::Image image;
+        };
+        std::vector<ViewerTexture> textures;
+        std::map<std::string, uint32_t> textureIndices;
+        std::vector<uint32_t> meshTextureIndices;
+        meshTextureIndices.reserve(visibleMeshes.size());
+        size_t textureBytes = 0;
+
+        for (const nfsnl::Mesh* mesh : visibleMeshes) {
+            uint32_t textureIndex = 0xffffffffu;
+            if (!mesh->texture.empty()) {
+                const std::string texturePath = viewerLower(mesh->texture);
+                auto textureFile = files.find(texturePath);
+                if (textureFile == files.end()) {
+                    const std::string leaf = viewerLower(nfsnl::baseName(mesh->texture));
+                    for (auto it = files.begin(); it != files.end(); ++it) {
+                        if (viewerLower(nfsnl::baseName(it->first)) == leaf) {
+                            textureFile = it;
+                            break;
+                        }
+                    }
+                }
+                if (textureFile != files.end()) {
+                    const std::string key = textureFile->first;
+                    auto existing = textureIndices.find(key);
+                    if (existing != textureIndices.end()) {
+                        textureIndex = existing->second;
+                    } else {
+                        nfsnl::Image decoded;
+                        if (nfsnl::decodeTextureFile(textureFile->second.data(),
+                                                     textureFile->second.size(), decoded) &&
+                            decoded.ok()) {
+                            decoded = nfsnl::toRgba(decoded);
+                            if (decoded.width > 1024 || decoded.height > 1024) {
+                                const float factor = std::min(
+                                    1024.0f / decoded.width,
+                                    1024.0f / decoded.height
+                                );
+                                const int w = std::max(1, static_cast<int>(decoded.width * factor));
+                                const int h = std::max(1, static_cast<int>(decoded.height * factor));
+                                decoded = nfsnl::resizeRgba(decoded, w, h);
+                            }
+                            const size_t bytes = decoded.pixels.size();
+                            if (decoded.ok() && bytes >= 4 &&
+                                textureBytes + bytes <= (48u << 20)) {
+                                textureIndex = static_cast<uint32_t>(textures.size());
+                                textureIndices[key] = textureIndex;
+                                textureBytes += bytes;
+                                textures.push_back({ key, std::move(decoded) });
+                            }
+                        }
+                    }
+                }
+            }
+            meshTextureIndices.push_back(textureIndex);
+        }
+
+        std::vector<uint8_t> packet;
+        packet.reserve(16u << 20);
+        packet.insert(packet.end(), {'R', '3', 'V', '1'});
+        viewerAppendU32(packet, static_cast<uint32_t>(visibleMeshes.size()));
+        viewerAppendU32(packet, static_cast<uint32_t>(textures.size()));
+        uint64_t triangles = 0;
+        for (const nfsnl::Mesh* mesh : visibleMeshes)
+            triangles += mesh->indices.size() / 3;
+        if (triangles > std::numeric_limits<uint32_t>::max()) {
+            gRr3ViewerError = "The selected car has too many triangles for the Android viewer.";
+            return nullptr;
+        }
+        viewerAppendU32(packet, static_cast<uint32_t>(triangles));
+
+        for (const ViewerTexture& texture : textures) {
+            viewerAppendString(packet, texture.name);
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.width));
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.height));
+            viewerAppendU32(packet, static_cast<uint32_t>(texture.image.pixels.size()));
+            packet.insert(packet.end(), texture.image.pixels.begin(), texture.image.pixels.end());
+        }
+
+        for (size_t meshIndex = 0; meshIndex < visibleMeshes.size(); ++meshIndex) {
+            const nfsnl::Mesh& mesh = *visibleMeshes[meshIndex];
+            const size_t vertexCount = mesh.positions.size() / 3;
+            if (vertexCount > 2'000'000 || mesh.indices.size() > 12'000'000) {
+                gRr3ViewerError = "One mesh in this car exceeds the Android viewer's geometry limit.";
+                return nullptr;
+            }
+            viewerAppendString(packet, mesh.name.substr(0, 1024));
+            viewerAppendString(packet, mesh.material.substr(0, 1024));
+            viewerAppendU32(packet, static_cast<uint32_t>(vertexCount));
+            viewerAppendU32(packet, static_cast<uint32_t>(mesh.indices.size()));
+            viewerAppendU32(packet, meshTextureIndices[meshIndex]);
+            uint32_t flags = 0;
+            if (mesh.material.find("alpha") != std::string::npos) flags |= 1u;
+            if (mesh.material.find("twosided") != std::string::npos) flags |= 2u;
+            viewerAppendU32(packet, flags);
+            for (int c = 0; c < 4; ++c)
+                viewerAppendFloat(packet, std::isfinite(mesh.color[c]) ? mesh.color[c] : 1.0f);
+
+            for (size_t vertex = 0; vertex < vertexCount; ++vertex) {
+                const size_t p = vertex * 3;
+                for (int axis = 0; axis < 3; ++axis) {
+                    const float position = (mesh.positions[p + axis] - centre[axis]) * scale;
+                    viewerAppendFloat(packet, std::isfinite(position) ? position : 0.0f);
+                }
+                for (int axis = 0; axis < 3; ++axis) {
+                    float normal = 0.0f;
+                    if (mesh.normals.size() >= p + 3) normal = mesh.normals[p + axis];
+                    viewerAppendFloat(packet, std::isfinite(normal) ? normal : (axis == 1 ? 1.0f : 0.0f));
+                }
+                const size_t uv = vertex * 2;
+                viewerAppendFloat(packet, mesh.uvs.size() >= uv + 2 ? mesh.uvs[uv] : 0.0f);
+                viewerAppendFloat(packet, mesh.uvs.size() >= uv + 2 ? mesh.uvs[uv + 1] : 0.0f);
+                const size_t color = vertex * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    float value = mesh.colors.size() >= color + 4
+                        ? mesh.colors[color + channel] : 1.0f;
+                    if (channel < 3 && mesh.light.size() > vertex)
+                        value *= mesh.light[vertex];
+                    viewerAppendFloat(packet, std::isfinite(value) ? value : 1.0f);
+                }
+            }
+            for (uint32_t index : mesh.indices) viewerAppendU32(packet, index);
+            if (packet.size() > (160u << 20)) {
+                gRr3ViewerError = "The selected car's render data exceeds the 160 MiB Android viewer limit.";
+                return nullptr;
+            }
+        }
+
+        if (packet.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+            gRr3ViewerError = "The selected car's render data is too large for Android.";
+            return nullptr;
+        }
+        jbyteArray result = env->NewByteArray(static_cast<jsize>(packet.size()));
+        if (!result) {
+            gRr3ViewerError = "Android could not allocate the 3D model preview buffer.";
+            return nullptr;
+        }
+        env->SetByteArrayRegion(result, 0, static_cast<jsize>(packet.size()),
+                                reinterpret_cast<const jbyte*>(packet.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Android could not copy the 3D model preview buffer.";
+            env->DeleteLocalRef(result);
+            return nullptr;
+        }
+        gRr3ViewerError.clear();
+        return result;
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough memory to assemble this car for 3D preview. Close other apps and try again.";
+    } catch (const std::exception& error) {
+        gRr3ViewerError = std::string("The 3D model preview failed: ") + error.what();
+    } catch (...) {
+        gRr3ViewerError = "The 3D model preview failed unexpectedly. The original game files were not changed.";
+    }
+    return nullptr;
+}
+
+
+namespace {
+struct Rr3ViewerGpuMesh {
+    GLuint vao = 0;
+    GLuint vertexBuffer = 0;
+    GLuint indexBuffer = 0;
+    GLuint texture = 0;
+    GLsizei indexCount = 0;
+    float color[4] = {1, 1, 1, 1};
+    bool textured = false;
+    bool blended = false;
+};
+
+struct Rr3ViewerGpu {
+    GLuint program = 0;
+    GLint mvpLocation = -1;
+    GLint colorLocation = -1;
+    GLint hasTextureLocation = -1;
+    GLint blendedLocation = -1;
+    GLint samplerLocation = -1;
+    GLuint environmentProgram = 0;
+    GLuint environmentTexture = 0;
+    GLint environmentSamplerLocation = -1;
+    GLint environmentYawLocation = -1;
+    GLint environmentFovLocation = -1;
+    GLint environmentAspectLocation = -1;
+    bool environmentEnabled = true;
+    std::vector<Rr3ViewerGpuMesh> meshes;
+    bool ready = false;
+};
+
+void releaseViewerGpu(Rr3ViewerGpu& gpu) {
+    if (gpu.program != 0) glDeleteProgram(gpu.program);
+    if (gpu.environmentProgram != 0) glDeleteProgram(gpu.environmentProgram);
+    if (gpu.environmentTexture != 0) glDeleteTextures(1, &gpu.environmentTexture);
+    std::vector<GLuint> vertexArrays;
+    std::vector<GLuint> buffers;
+    std::set<GLuint> textures;
+    for (const Rr3ViewerGpuMesh& mesh : gpu.meshes) {
+        if (mesh.vao != 0) vertexArrays.push_back(mesh.vao);
+        if (mesh.vertexBuffer != 0) buffers.push_back(mesh.vertexBuffer);
+        if (mesh.indexBuffer != 0) buffers.push_back(mesh.indexBuffer);
+        if (mesh.texture != 0) textures.insert(mesh.texture);
+    }
+    if (!vertexArrays.empty())
+        glDeleteVertexArrays(static_cast<GLsizei>(vertexArrays.size()), vertexArrays.data());
+    if (!buffers.empty())
+        glDeleteBuffers(static_cast<GLsizei>(buffers.size()), buffers.data());
+    if (!textures.empty()) {
+        std::vector<GLuint> textureIds(textures.begin(), textures.end());
+        glDeleteTextures(static_cast<GLsizei>(textureIds.size()), textureIds.data());
+    }
+    gpu.program = 0;
+    gpu.environmentProgram = 0;
+    gpu.environmentTexture = 0;
+    gpu.environmentSamplerLocation = -1;
+    gpu.environmentYawLocation = -1;
+    gpu.environmentFovLocation = -1;
+    gpu.environmentAspectLocation = -1;
+    gpu.meshes.clear();
+    gpu.ready = false;
+}
+
+struct Rr3ViewerSession {
+    nfsnl::Model model;
+    nfsnl::RenderView view;
+    std::vector<nfsnl::Image> textures;
+    std::vector<const nfsnl::Image*> meshTextures;
+    float frameDistance = 5.0f;
+    bool cameraPoseEnabled = false;
+    float cameraEye[3] = {0.0f, 0.0f, 0.0f};
+    float cameraTarget[3] = {0.0f, 0.0f, 0.0f};
+    std::string draftLod;
+    int triangles = 0;
+    Rr3ViewerGpu gpu;
+};
+
+std::mutex gRr3ViewerMutex;
+std::map<jlong, std::shared_ptr<Rr3ViewerSession>> gRr3ViewerSessions;
+std::atomic<jlong> gRr3ViewerNextHandle{1};
+
+GLuint compileViewerShader(GLenum type, const char* source, std::string& error) {
+    GLuint shader = glCreateShader(type);
+    if (!shader) {
+        error = "OpenGL could not allocate a shader.";
+        return 0;
+    }
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled != GL_TRUE) {
+        GLint length = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+        std::string log(static_cast<size_t>(std::max(1, length)), static_cast<char>(0));
+        glGetShaderInfoLog(shader, length, nullptr, log.data());
+        error = "OpenGL shader compilation failed: " + log;
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+void multiplyViewerMatrices(const float a[16], const float b[16], float out[16]) {
+    float result[16] = {};
+    for (int column = 0; column < 4; ++column) {
+        for (int row = 0; row < 4; ++row) {
+            for (int k = 0; k < 4; ++k)
+                result[column * 4 + row] += a[k * 4 + row] * b[column * 4 + k];
+        }
+    }
+    std::copy(result, result + 16, out);
+}
+
+void buildViewerMvp(const Rr3ViewerSession& session, int width, int height,
+                    float yaw, float pitch, float zoom, float out[16]) {
+    float cameraYaw = std::isfinite(yaw) ? yaw : 0.6f;
+    float cameraPitch = std::isfinite(pitch)
+        ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
+    const float safeZoom = std::isfinite(zoom)
+        ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
+    const float* centre = session.view.centre;
+    const float radius = std::max(0.05f, session.view.radius);
+    const float fovY = std::isfinite(session.view.fovY)
+        ? std::max(0.15f, std::min(2.6f, session.view.fovY)) : 0.75f;
+    const float fitDistance = radius / std::max(0.15f, std::tan(fovY * 0.5f)) * 1.15f;
+    float distance = std::max(session.frameDistance, fitDistance) / safeZoom;
+    if (session.cameraPoseEnabled) {
+        const float dx = session.cameraTarget[0] - session.cameraEye[0];
+        const float dy = session.cameraTarget[1] - session.cameraEye[1];
+        const float dz = session.cameraTarget[2] - session.cameraEye[2];
+        const float poseDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(poseDistance) && poseDistance > 0.001f) {
+            cameraYaw = std::atan2(dx, dz);
+            cameraPitch = -std::asin(std::max(-1.0f, std::min(1.0f, dy / poseDistance)));
+            distance = poseDistance / safeZoom;
+            centre = session.cameraTarget;
+        }
+    }
+    const float cy = std::cos(cameraYaw), sy = std::sin(cameraYaw);
+    const float cp = std::cos(cameraPitch), sp = std::sin(cameraPitch);
+    const float right[3] = {-cy, 0.0f, sy};
+    const float up[3] = {sy * sp, cp, cy * sp};
+    const float forward[3] = {sy * cp, -sp, cy * cp};
+
+    // Use a conventional look-at matrix centred on the framed model bounds.
+    // Mixing modelPos and centre could shift RR3 assets outside the camera frustum
+    // when their model origin is not at their geometric centre.
+    float view[16] = {};
+    view[0] = right[0]; view[4] = right[1]; view[8] = right[2];
+    view[12] = -(right[0] * centre[0] + right[1] * centre[1] +
+                 right[2] * centre[2]) - session.view.pan[0];
+    view[1] = up[0]; view[5] = up[1]; view[9] = up[2];
+    view[13] = -(up[0] * centre[0] + up[1] * centre[1] +
+                 up[2] * centre[2]) - session.view.pan[1];
+    view[2] = -forward[0]; view[6] = -forward[1]; view[10] = -forward[2];
+    view[14] = forward[0] * centre[0] + forward[1] * centre[1] +
+               forward[2] * centre[2] - distance;
+    view[15] = 1.0f;
+
+    const float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
+    const float f = 1.0f / std::tan(0.5f * fovY);
+    const float nearPlane = std::max(0.01f, radius * 0.001f);
+    const float farPlane = std::max(1000.0f, distance + radius * 20.0f);
+    float projection[16] = {};
+    projection[0] = f / aspect;
+    projection[5] = f;
+    projection[10] = (farPlane + nearPlane) / (nearPlane - farPlane);
+    projection[11] = -1.0f;
+    projection[14] = (2.0f * farPlane * nearPlane) / (nearPlane - farPlane);
+    multiplyViewerMatrices(projection, view, out);
+}
+
+bool copyViewerInputs(JNIEnv* env, jobjectArray pathArray, jobjectArray dataArray,
+                      std::vector<std::string>& paths,
+                      std::map<std::string, nfsnl::Bytes>& files) {
+    if (!pathArray || !dataArray) return false;
+    const jsize pathCount = env->GetArrayLength(pathArray);
+    const jsize dataCount = env->GetArrayLength(dataArray);
+    if (pathCount != dataCount || pathCount > 10000) return false;
+
+    size_t total = 0;
+    paths.reserve(static_cast<size_t>(pathCount));
+    for (jsize i = 0; i < pathCount; ++i) {
+        auto pathObject = static_cast<jstring>(env->GetObjectArrayElement(pathArray, i));
+        auto dataObject = static_cast<jbyteArray>(env->GetObjectArrayElement(dataArray, i));
+        if (!pathObject || !dataObject) {
+            if (pathObject) env->DeleteLocalRef(pathObject);
+            if (dataObject) env->DeleteLocalRef(dataObject);
+            continue;
+        }
+        std::string path = viewerUnwrapName(fromJava(env, pathObject));
+        const jsize byteCount = env->GetArrayLength(dataObject);
+        if (path.empty() || byteCount <= 0 || static_cast<size_t>(byteCount) > (64u << 20) ||
+            total + static_cast<size_t>(byteCount) > (96u << 20)) {
+            env->DeleteLocalRef(pathObject);
+            env->DeleteLocalRef(dataObject);
+            if (total + static_cast<size_t>(std::max(0, byteCount)) > (96u << 20))
+                gRr3ViewerError = "The selected car's sidecars exceed the 96 MiB memory limit.";
+            continue;
+        }
+        nfsnl::Bytes bytes(static_cast<size_t>(byteCount));
+        env->GetByteArrayRegion(dataObject, 0, byteCount,
+                                reinterpret_cast<jbyte*>(bytes.data()));
+        env->DeleteLocalRef(pathObject);
+        env->DeleteLocalRef(dataObject);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            gRr3ViewerError = "Could not read one of the selected car's sidecar files.";
+            return false;
+        }
+        total += bytes.size();
+        std::string key = viewerLower(path);
+        paths.push_back(key);
+        files[key] = std::move(bytes);
+    }
+    return !paths.empty() || pathCount == 0;
+}
+} // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInspectRr3CarCatalogue(
+    JNIEnv* env, jobject /* thiz */, jobjectArray pathArray, jobjectArray dataArray) {
+    gRr3ViewerError.clear();
+    std::vector<std::string> paths;
+    std::map<std::string, nfsnl::Bytes> files;
+    try {
+        if (!copyViewerInputs(env, pathArray, dataArray, paths, files))
+            return toJava(env, errorJson(gRr3ViewerError.empty()
+                ? "The RR3 car catalogue input files could not be read." : gRr3ViewerError));
+
+        auto read = [&](const std::string& path, nfsnl::Bytes& output) -> bool {
+            auto found = files.find(viewerLower(path));
+            if (found == files.end()) return false;
+            output = found->second;
+            return true;
+        };
+        const std::vector<nfsnl::Rr3CarInfo> cars = nfsnl::rr3ListCars(paths, read);
+        std::ostringstream out;
+        out << "{\"ok\":true,\"cars\":[";
+        bool first = true;
+        for (const nfsnl::Rr3CarInfo& car : cars) {
+            if (!first) out << ',';
+            first = false;
+            out << "{\"id\":" << car.id
+                << ",\"appearance\":" << car.appearance
+                << ",\"readable\":" << (car.readable ? "true" : "false")
+                << ",\"folder\":" << jsonString(car.folder)
+                << ",\"modelFolder\":" << jsonString(car.modelFolder)
+                << ",\"make\":" << jsonString(car.make)
+                << ",\"model\":" << jsonString(car.model)
+                << ",\"year\":" << jsonString(car.year)
+                << ",\"class\":" << jsonString(car.cls)
+                << ",\"drive\":" << jsonString(car.drive) << '}';
+        }
+        out << "]}";
+        return toJava(env, out.str());
+    } catch (const std::bad_alloc&) {
+        return toJava(env, errorJson("Not enough native memory to read the RR3 car catalogue."));
+    } catch (...) {
+        return toJava(env, errorJson("The native RR3 car-catalogue reader failed unexpectedly."));
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
+    JNIEnv* env, jobject /* thiz */, jstring modelPathValue, jstring dataFolderValue,
+    jbyteArray modelInput, jobjectArray pathArray, jobjectArray dataArray) {
+    gRr3ViewerError.clear();
+    const std::string modelPath = viewerUnwrapName(fromJava(env, modelPathValue));
+    const std::string dataFolder = fromJava(env, dataFolderValue);
+    nfsnl::Bytes modelBytes;
+    std::vector<std::string> paths;
+    std::map<std::string, nfsnl::Bytes> files;
+    try {
+        if (modelPath.empty() || dataFolder.empty() || !copyJavaByteArray(env, modelInput, modelBytes))
+            return toJava(env, errorJson("The selected RR3 model input is missing or empty."));
+        if (!copyViewerInputs(env, pathArray, dataArray, paths, files))
+            return toJava(env, errorJson(gRr3ViewerError.empty()
+                ? "The selected car's model sidecars could not be read." : gRr3ViewerError));
+
+        auto session = std::make_shared<Rr3ViewerSession>();
+        session->model = nfsnl::loadModel(modelBytes.data(), modelBytes.size());
+        if (!session->model.valid || session->model.meshes.empty()) {
+            const std::string detail = session->model.warnings.empty()
+                ? "no renderable meshes" : session->model.warnings.front();
+            return toJava(env, errorJson("Monkey Tool could not parse " + modelPath + ": " + detail));
+        }
+
+        auto findFile = [&](const std::string& path) -> nfsnl::Bytes* {
+            auto found = files.find(viewerLower(path));
+            return found == files.end() ? nullptr : &found->second;
+        };
+
+        std::vector<nfsnl::Hardpoint> points;
+        const std::string pointsPath = nfsnl::rr3PointsNameFor(modelPath);
+        if (nfsnl::Bytes* pointBytes = findFile(pointsPath))
+            points = nfsnl::rr3ReadPoints(pointBytes->data(), pointBytes->size());
+
+        const std::string innerPointsPath = nfsnl::rr3InteriorPointsNameFor(modelPath);
+        if (!innerPointsPath.empty()) {
+            if (nfsnl::Bytes* innerBytes = findFile(innerPointsPath)) {
+                const auto innerPoints = nfsnl::rr3ReadPoints(innerBytes->data(), innerBytes->size());
+                if (!innerPoints.empty()) nfsnl::rr3MergeCockpitPoints(points, innerPoints);
+            }
+        }
+        if (!points.empty()) nfsnl::rr3PlaceParts(session->model, points);
+
+        const std::string sharedPath = nfsnl::rr3SharedNameFor(modelPath);
+        if (nfsnl::Bytes* sharedBytes = findFile(sharedPath)) {
+            nfsnl::Model shared = nfsnl::loadModel(sharedBytes->data(), sharedBytes->size());
+            if (shared.valid && !shared.meshes.empty())
+                nfsnl::rr3AttachWheels(session->model, shared, points);
+        }
+
+        nfsnl::NctLiveries liveries;
+        bool haveLiveries = false;
+        const std::string liveryPath =
+            "vehicles/data/liveries/" + dataFolder + ".liveries.bin.nct";
+        if (nfsnl::Bytes* raw = findFile(liveryPath)) {
+            nfsnl::Bytes plain;
+            if (nfsnl::nctTransform(raw->data(), raw->size(), plain, nullptr))
+                liveries = nfsnl::nctReadLiveries(plain.data(), plain.size());
+            haveLiveries = liveries.ok;
+        }
+
+        std::map<std::string, std::string> texturePathByStem;
+        for (const auto& item : files) {
+            const std::string leaf = nfsnl::baseName(item.first);
+            const std::string extension = viewerLower(nfsnl::extensionOf(leaf));
+            if (extension != "sba" && extension != "pvr" && extension != "dds" &&
+                extension != "png" && extension != "jpg") continue;
+            std::string stem = viewerLower(leaf.substr(0, leaf.find('.')));
+            if (stem.empty()) continue;
+            auto found = texturePathByStem.find(stem);
+            if (found == texturePathByStem.end() ||
+                (leaf.find(".etc.") != std::string::npos &&
+                 found->second.find(".etc.") == std::string::npos))
+                texturePathByStem[stem] = item.first;
+        }
+        auto lookupTexture = [&](const std::string& stem) -> std::string {
+            const std::string wanted = viewerLower(nfsnl::baseName(nfsnl::stripExtension(stem)));
+            auto found = texturePathByStem.find(wanted);
+            return found == texturePathByStem.end() ? std::string() : found->second;
+        };
+        const std::vector<std::pair<std::string, std::string>> noCommonTextures;
+        std::string textureReport;
+        nfsnl::rr3AssignTextures(session->model, modelPath, lookupTexture,
+                                 noCommonTextures, haveLiveries ? &liveries : nullptr,
+                                 &textureReport);
+
+        std::string topLod;
+        std::string draftLod;
+        for (const nfsnl::Mesh& mesh : session->model.meshes) {
+            if (mesh.lod.compare(0, 3, "LOD") == 0) {
+                if (topLod.empty() || mesh.lod < topLod) topLod = mesh.lod;
+                if (draftLod.empty() || mesh.lod > draftLod) draftLod = mesh.lod;
+            }
+        }
+        session->draftLod = draftLod.empty() ? topLod : draftLod;
+        session->view.lodFilter = topLod;
+        session->view.twoSided = true;
+        session->view.textured = true;
+        session->view.vertexColors = true;
+        session->view.hideGlow = true;
+        session->view.sky = true;
+        session->view.floor = true;
+        session->view.shadow = false;
+        nfsnl::frameModel(session->model, session->view);
+        session->frameDistance = session->view.distance;
+
+        session->textures.reserve(session->model.meshes.size());
+        session->meshTextures.assign(session->model.meshes.size(), nullptr);
+        int texturedMeshes = 0;
+        int visibleMeshes = 0;
+        int triangles = 0;
+        for (size_t i = 0; i < session->model.meshes.size(); ++i) {
+            const nfsnl::Mesh& mesh = session->model.meshes[i];
+            if ((!topLod.empty() && !mesh.lod.empty() && mesh.lod != topLod) ||
+                mesh.lod == "HELPERS" || mesh.positions.size() < 9 ||
+                mesh.indices.size() < 3) continue;
+            ++visibleMeshes;
+            triangles += static_cast<int>(mesh.indices.size() / 3);
+            if (mesh.texture.empty()) continue;
+
+            auto textureFile = files.find(viewerLower(mesh.texture));
+            if (textureFile == files.end()) {
+                const std::string leaf = viewerLower(nfsnl::baseName(mesh.texture));
+                for (auto candidate = files.begin(); candidate != files.end(); ++candidate) {
+                    if (viewerLower(nfsnl::baseName(candidate->first)) == leaf) {
+                        textureFile = candidate;
+                        break;
+                    }
+                }
+            }
+            if (textureFile == files.end()) continue;
+
+            nfsnl::Image decoded;
+            if (!nfsnl::decodeTextureFile(textureFile->second.data(),
+                                           textureFile->second.size(), decoded) ||
+                !decoded.ok()) continue;
+            decoded = nfsnl::toRgba(decoded);
+            if (decoded.width > 1024 || decoded.height > 1024) {
+                const float factor = std::min(1024.0f / decoded.width, 1024.0f / decoded.height);
+                const int textureWidth = std::max(1, static_cast<int>(decoded.width * factor));
+                const int textureHeight = std::max(1, static_cast<int>(decoded.height * factor));
+                decoded = nfsnl::resizeRgba(decoded, textureWidth, textureHeight);
+            }
+            if (!decoded.ok()) continue;
+            session->textures.push_back(std::move(decoded));
+            session->meshTextures[i] = &session->textures.back();
+            ++texturedMeshes;
+        }
+
+        if (visibleMeshes <= 0 || triangles <= 0)
+            return toJava(env, errorJson("The selected RR3 model parsed but contains no drawable exterior triangles."));
+        session->triangles = triangles;
+
+        const jlong handle = gRr3ViewerNextHandle.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+            gRr3ViewerSessions[handle] = session;
+        }
+
+        std::ostringstream out;
+        out << "{\"ok\":true,\"handle\":" << handle
+            << ",\"meshes\":" << visibleMeshes
+            << ",\"triangles\":" << triangles
+            << ",\"textures\":" << texturedMeshes
+            << ",\"lod\":" << jsonString(topLod) << '}';
+        return toJava(env, out.str());
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough native memory to assemble this RR3 car for preview.";
+    } catch (const std::exception& error) {
+        gRr3ViewerError = std::string("The RR3 3D model setup failed: ") + error.what();
+    } catch (...) {
+        gRr3ViewerError = "The RR3 3D model setup failed unexpectedly.";
+    }
+    return toJava(env, errorJson(gRr3ViewerError));
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeInitRr3ViewerGl(
+    JNIEnv* env, jobject /* thiz */, jlong handle) {
+    gRr3ViewerError.clear();
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end())
+            return toJava(env, "The RR3 viewer session has expired. Load the car again.");
+        session = found->second;
+    }
+    if (!glGetString(GL_VERSION))
+        return toJava(env, "OpenGL context is not current on the viewer thread.");
+
+    // Android may recreate the EGL context after a pause or surface detach.
+    releaseViewerGpu(session->gpu);
+
+    static const char* vertexSource = R"GLSL(#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUv;
+layout(location = 3) in vec4 aColor;
+uniform mat4 uMvp;
+out vec2 vUv;
+out vec4 vColor;
+out float vLight;
+void main() {
+    gl_Position = uMvp * vec4(aPosition, 1.0);
+    vUv = aUv;
+    vColor = aColor;
+    vec3 normal = dot(aNormal, aNormal) > 0.0001 ? normalize(aNormal) : vec3(0.0, 1.0, 0.0);
+    vLight = max(dot(normal, normalize(vec3(0.4, 0.8, 0.45))), 0.0);
+}
+)GLSL";
+    static const char* fragmentSource = R"GLSL(#version 300 es
+precision highp float;
+in vec2 vUv;
+in vec4 vColor;
+in float vLight;
+uniform sampler2D uTexture;
+uniform vec4 uMaterialColor;
+uniform int uHasTexture;
+uniform int uBlended;
+out vec4 fragColor;
+void main() {
+    vec4 base = uMaterialColor * vColor;
+    if (uHasTexture == 1) base *= texture(uTexture, vec2(vUv.x, 1.0 - vUv.y));
+    if (base.a < 0.12) discard;
+    float lighting = 0.58 + 0.42 * vLight;
+    fragColor = vec4(base.rgb * lighting, uBlended == 1 ? base.a : 1.0);
+}
+)GLSL";
+
+    std::string shaderError;
+    GLuint vertex = compileViewerShader(GL_VERTEX_SHADER, vertexSource, shaderError);
+    if (!vertex) return toJava(env, shaderError);
+    GLuint fragment = compileViewerShader(GL_FRAGMENT_SHADER, fragmentSource, shaderError);
+    if (!fragment) {
+        glDeleteShader(vertex);
+        return toJava(env, shaderError);
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        GLint length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+        std::string log(static_cast<size_t>(std::max(1, length)), static_cast<char>(0));
+        glGetProgramInfoLog(program, length, nullptr, log.data());
+        glDeleteProgram(program);
+        return toJava(env, "OpenGL program link failed: " + log);
+    }
+
+    Rr3ViewerGpu gpu;
+    gpu.program = program;
+    gpu.mvpLocation = glGetUniformLocation(program, "uMvp");
+    gpu.colorLocation = glGetUniformLocation(program, "uMaterialColor");
+    gpu.hasTextureLocation = glGetUniformLocation(program, "uHasTexture");
+    gpu.blendedLocation = glGetUniformLocation(program, "uBlended");
+    gpu.samplerLocation = glGetUniformLocation(program, "uTexture");
+
+    const std::vector<uint8_t> visible = nfsnl::visibleMeshes(session->model, session->view);
+    std::map<const nfsnl::Image*, GLuint> uploadedTextures;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (size_t i = 0; i < session->model.meshes.size(); ++i) {
+        if (i >= visible.size() || !visible[i]) continue;
+        const nfsnl::Mesh& mesh = session->model.meshes[i];
+        const size_t vertexCount = mesh.positions.size() / 3;
+        if (vertexCount == 0 || mesh.indices.empty() ||
+            vertexCount > static_cast<size_t>(std::numeric_limits<GLsizei>::max()) ||
+            mesh.indices.size() > static_cast<size_t>(std::numeric_limits<GLsizei>::max()))
+            continue;
+
+        struct ViewerVertex {
+            float position[3];
+            float normal[3];
+            float uv[2];
+            float color[4];
+        };
+        std::vector<ViewerVertex> vertices(vertexCount);
+        for (size_t v = 0; v < vertexCount; ++v) {
+            ViewerVertex& out = vertices[v];
+            for (int k = 0; k < 3; ++k) {
+                out.position[k] = mesh.positions[v * 3 + static_cast<size_t>(k)];
+                out.normal[k] = mesh.normals.size() >= vertexCount * 3
+                    ? mesh.normals[v * 3 + static_cast<size_t>(k)]
+                    : (k == 1 ? 1.0f : 0.0f);
+            }
+            out.uv[0] = mesh.uvs.size() >= vertexCount * 2 ? mesh.uvs[v * 2] : 0.0f;
+            out.uv[1] = mesh.uvs.size() >= vertexCount * 2 ? mesh.uvs[v * 2 + 1] : 0.0f;
+            for (int k = 0; k < 4; ++k)
+                out.color[k] = mesh.colors.size() >= vertexCount * 4
+                    ? mesh.colors[v * 4 + static_cast<size_t>(k)] : 1.0f;
+        }
+
+        Rr3ViewerGpuMesh gpuMesh;
+        std::copy(mesh.color, mesh.color + 4, gpuMesh.color);
+        std::string materialName = viewerLower(mesh.material + " " + mesh.name);
+        gpuMesh.blended = materialName.find("glass") != std::string::npos ||
+                          materialName.find("window") != std::string::npos ||
+                          materialName.find("windscreen") != std::string::npos ||
+                          materialName.find("alpha") != std::string::npos;
+        if (gpuMesh.blended && gpuMesh.color[3] > 0.95f) gpuMesh.color[3] = 0.48f;
+
+        const nfsnl::Image* texture = i < session->meshTextures.size()
+            ? session->meshTextures[i] : nullptr;
+        if (texture && texture->ok()) {
+            auto existing = uploadedTextures.find(texture);
+            if (existing != uploadedTextures.end()) {
+                gpuMesh.texture = existing->second;
+                gpuMesh.textured = true;
+            } else {
+                nfsnl::Image converted;
+                const nfsnl::Image* upload = texture;
+                if (texture->channels != 4) {
+                    converted = nfsnl::toRgba(*texture);
+                    upload = &converted;
+                }
+                if (upload->ok() && upload->channels == 4) {
+                    glGenTextures(1, &gpuMesh.texture);
+                    glBindTexture(GL_TEXTURE_2D, gpuMesh.texture);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, upload->width, upload->height,
+                                 0, GL_RGBA, GL_UNSIGNED_BYTE, upload->pixels.data());
+                    glGenerateMipmap(GL_TEXTURE_2D);
+                    gpuMesh.textured = glGetError() == GL_NO_ERROR;
+                    if (gpuMesh.textured) uploadedTextures[texture] = gpuMesh.texture;
+                }
+            }
+        }
+
+        glGenVertexArrays(1, &gpuMesh.vao);
+        glBindVertexArray(gpuMesh.vao);
+        glGenBuffers(1, &gpuMesh.vertexBuffer);
+        glGenBuffers(1, &gpuMesh.indexBuffer);
+        glBindBuffer(GL_ARRAY_BUFFER, gpuMesh.vertexBuffer);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(vertices.size() * sizeof(ViewerVertex)),
+                     vertices.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpuMesh.indexBuffer);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(uint32_t)),
+                     mesh.indices.data(), GL_STATIC_DRAW);
+        const GLsizei stride = static_cast<GLsizei>(sizeof(ViewerVertex));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, position)));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, normal)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, uv)));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(offsetof(ViewerVertex, color)));
+        glBindVertexArray(0);
+        gpuMesh.indexCount = static_cast<GLsizei>(mesh.indices.size());
+        gpu.meshes.push_back(gpuMesh);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (gpu.meshes.empty()) {
+        releaseViewerGpu(gpu);
+        return toJava(env, "OpenGL could not upload any drawable RR3 meshes.");
+    }
+    gpu.ready = true;
+    session->gpu = std::move(gpu);
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    return toJava(env, std::string("OpenGL ES 3 · GPU: ") +
+        (renderer ? renderer : "unknown renderer") + " · " +
+        std::to_string(session->gpu.meshes.size()) + " GPU mesh(es)");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3ViewerEnvironment(
+    JNIEnv* env, jobject /* thiz */, jlong handle, jint width, jint height, jbyteArray rgbaInput) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (!glGetString(GL_VERSION) || width < 2 || height < 2 ||
+        width > 8192 || height > 4096 || !rgbaInput) return;
+    const jsize length = env->GetArrayLength(rgbaInput);
+    const uint64_t expected = static_cast<uint64_t>(width) *
+        static_cast<uint64_t>(height) * 4u;
+    if (expected > static_cast<uint64_t>(std::numeric_limits<jsize>::max()) ||
+        static_cast<uint64_t>(length) != expected) return;
+    jbyte* pixels = env->GetByteArrayElements(rgbaInput, nullptr);
+    if (!pixels) return;
+
+    static const char* vertexSource = R"GLSL(#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+    vec2 positions[4] = vec2[4](
+        vec2(-1.0, -1.0), vec2(1.0, -1.0),
+        vec2(-1.0, 1.0), vec2(1.0, 1.0)
+    );
+    vec2 uv[4] = vec2[4](
+        vec2(0.0, 0.0), vec2(1.0, 0.0),
+        vec2(0.0, 1.0), vec2(1.0, 1.0)
+    );
+    vUv = uv[gl_VertexID];
+    gl_Position = vec4(positions[gl_VertexID], 0.0, 1.0);
+}
+)GLSL";
+    static const char* fragmentSource = R"GLSL(#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uEnvironment;
+uniform float uYaw;
+uniform float uFovY;
+uniform float uAspect;
+out vec4 fragColor;
+void main() {
+    float tangent = tan(clamp(uFovY, 0.15, 2.6) * 0.5);
+    vec2 ndc = vUv * 2.0 - 1.0;
+    vec3 direction = normalize(vec3(ndc.x * uAspect * tangent,
+                                    ndc.y * tangent, 1.0));
+    float longitude = atan(direction.x, direction.z) - uYaw;
+    float latitude = asin(clamp(direction.y, -1.0, 1.0));
+    vec2 uv = vec2(fract(0.5 + longitude / 6.28318530718),
+                   0.5 - latitude / 3.14159265359);
+    fragColor = texture(uEnvironment, uv);
+}
+)GLSL";
+    std::string shaderError;
+    GLuint vertex = compileViewerShader(GL_VERTEX_SHADER, vertexSource, shaderError);
+    GLuint fragment = vertex ? compileViewerShader(GL_FRAGMENT_SHADER, fragmentSource, shaderError) : 0;
+    GLuint program = 0;
+    if (vertex && fragment) {
+        program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+    }
+    if (vertex) glDeleteShader(vertex);
+    if (fragment) glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    if (program) glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        if (program) glDeleteProgram(program);
+        env->ReleaseByteArrayElements(rgbaInput, pixels, JNI_ABORT);
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    while (glGetError() != GL_NO_ERROR) {}
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    env->ReleaseByteArrayElements(rgbaInput, pixels, JNI_ABORT);
+    if (!texture || glGetError() != GL_NO_ERROR) {
+        if (texture) glDeleteTextures(1, &texture);
+        glDeleteProgram(program);
+        return;
+    }
+    if (session->gpu.environmentProgram) glDeleteProgram(session->gpu.environmentProgram);
+    if (session->gpu.environmentTexture) glDeleteTextures(1, &session->gpu.environmentTexture);
+    session->gpu.environmentProgram = program;
+    session->gpu.environmentTexture = texture;
+    session->gpu.environmentSamplerLocation = glGetUniformLocation(program, "uEnvironment");
+    session->gpu.environmentYawLocation = glGetUniformLocation(program, "uYaw");
+    session->gpu.environmentFovLocation = glGetUniformLocation(program, "uFovY");
+    session->gpu.environmentAspectLocation = glGetUniformLocation(program, "uAspect");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3ViewerEnvironment(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle, jboolean enabled) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    session->gpu.environmentEnabled = enabled == JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle, jint width, jint height,
+    jfloat yaw, jfloat pitch, jfloat zoom) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (!session->gpu.ready || session->gpu.program == 0 || width <= 0 || height <= 0) return;
+    float mvp[16];
+    buildViewerMvp(*session, width, height, yaw, pitch, zoom, mvp);
+    glViewport(0, 0, width, height);
+    glClearColor(0.0941f, 0.1020f, 0.1843f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (session->gpu.environmentEnabled && session->gpu.environmentProgram != 0 &&
+        session->gpu.environmentTexture != 0) {
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDepthMask(GL_FALSE);
+        glUseProgram(session->gpu.environmentProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, session->gpu.environmentTexture);
+        glUniform1i(session->gpu.environmentSamplerLocation, 0);
+        glUniform1f(session->gpu.environmentYawLocation, std::isfinite(yaw) ? yaw : 0.6f);
+        glUniform1f(session->gpu.environmentFovLocation,
+                    std::isfinite(session->view.fovY) ? session->view.fovY : 0.75f);
+        glUniform1f(session->gpu.environmentAspectLocation,
+                    static_cast<float>(width) / static_cast<float>(height));
+        glBindVertexArray(0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDepthMask(GL_TRUE);
+    }
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDisable(GL_CULL_FACE);
+    glUseProgram(session->gpu.program);
+    glUniformMatrix4fv(session->gpu.mvpLocation, 1, GL_FALSE, mvp);
+    glUniform1i(session->gpu.samplerLocation, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    auto drawPass = [&](bool blendedPass) {
+        for (const Rr3ViewerGpuMesh& mesh : session->gpu.meshes) {
+            if (mesh.blended != blendedPass) continue;
+            if (blendedPass) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+            } else {
+                glDisable(GL_BLEND);
+                glDepthMask(GL_TRUE);
+            }
+            glUniform4fv(session->gpu.colorLocation, 1, mesh.color);
+            glUniform1i(session->gpu.hasTextureLocation, mesh.textured ? 1 : 0);
+            glUniform1i(session->gpu.blendedLocation, blendedPass ? 1 : 0);
+            glBindTexture(GL_TEXTURE_2D, mesh.textured ? mesh.texture : 0);
+            glBindVertexArray(mesh.vao);
+            glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    };
+    drawPass(false);
+    drawPass(true);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3ViewerCamera(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle,
+    jfloat panX, jfloat panY, jfloat fovY) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    session->view.pan[0] = std::isfinite(panX)
+        ? std::max(-5.0f, std::min(5.0f, panX)) : 0.0f;
+    session->view.pan[1] = std::isfinite(panY)
+        ? std::max(-5.0f, std::min(5.0f, panY)) : 0.0f;
+    session->view.fovY = std::isfinite(fovY)
+        ? std::max(0.15f, std::min(2.6f, fovY)) : 0.75f;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3ViewerCameraPose(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle,
+    jfloat eyeX, jfloat eyeY, jfloat eyeZ,
+    jfloat targetX, jfloat targetY, jfloat targetZ, jboolean enabled) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    const bool valid = enabled == JNI_TRUE &&
+        std::isfinite(eyeX) && std::isfinite(eyeY) && std::isfinite(eyeZ) &&
+        std::isfinite(targetX) && std::isfinite(targetY) && std::isfinite(targetZ);
+    session->cameraPoseEnabled = valid;
+    if (valid) {
+        session->cameraEye[0] = eyeX; session->cameraEye[1] = eyeY; session->cameraEye[2] = eyeZ;
+        session->cameraTarget[0] = targetX; session->cameraTarget[1] = targetY; session->cameraTarget[2] = targetZ;
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeReleaseRr3ViewerGl(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (glGetString(GL_VERSION)) releaseViewerGpu(session->gpu);
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeRenderRr3ViewerFrame(
+    JNIEnv* env, jobject /* thiz */, jlong handle, jint width, jint height,
+    jfloat yaw, jfloat pitch, jfloat zoom, jboolean preview) {
+    gRr3ViewerError.clear();
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) {
+            gRr3ViewerError = "The RR3 viewer session has expired. Load the car again.";
+            return nullptr;
+        }
+        session = found->second;
+    }
+    if (width < 160 || width > 1200 || height < 160 || height > 900) {
+        gRr3ViewerError = "The 3D preview dimensions are outside the supported range.";
+        return nullptr;
+    }
+    try {
+        nfsnl::RenderView view = session->view;
+        view.yaw = std::isfinite(yaw) ? yaw : 0.6f;
+        view.pitch = std::isfinite(pitch) ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
+        const float safeZoom = std::isfinite(zoom) ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
+        view.distance = session->frameDistance / safeZoom;
+        if (preview == JNI_TRUE) {
+            // During a finger drag favour responsiveness over visual detail:
+            // use the cheapest available LOD, skip texture sampling/vertex
+            // colours, and omit the editor floor grid. ACTION_UP requests the
+            // original fully textured, highest-LOD view again.
+            if (!session->draftLod.empty()) view.lodFilter = session->draftLod;
+            view.textured = false;
+            view.vertexColors = false;
+            view.floor = false;
+            view.sky = false;
+            view.shadow = false;
+        }
+
+        nfsnl::Image frame;
+        nfsnl::renderModel(session->model, view, &session->meshTextures,
+                           width, height, frame);
+        if (!frame.ok() || frame.pixels.empty()) {
+            gRr3ViewerError = "Monkey Tool returned an empty frame for this RR3 model.";
+            return nullptr;
+        }
+        nfsnl::Bytes png = nfsnl::encodePng(frame);
+        if (png.empty() || png.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+            gRr3ViewerError = "The rendered RR3 frame could not be encoded as a PNG.";
+            return nullptr;
+        }
+        jbyteArray result = env->NewByteArray(static_cast<jsize>(png.size()));
+        if (!result) {
+            gRr3ViewerError = "Android could not allocate the rendered RR3 frame.";
+            return nullptr;
+        }
+        env->SetByteArrayRegion(result, 0, static_cast<jsize>(png.size()),
+                                reinterpret_cast<const jbyte*>(png.data()));
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            env->DeleteLocalRef(result);
+            gRr3ViewerError = "Android could not receive the rendered RR3 frame.";
+            return nullptr;
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        gRr3ViewerError = "Not enough native memory to render this RR3 frame. Reduce the preview size.";
+    } catch (...) {
+        gRr3ViewerError = "The RR3 software renderer failed while drawing this frame.";
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeFreeRr3Viewer(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+        gRr3ViewerSessions.erase(found);
+    }
+    if (glGetString(GL_VERSION)) releaseViewerGpu(session->gpu);
+}

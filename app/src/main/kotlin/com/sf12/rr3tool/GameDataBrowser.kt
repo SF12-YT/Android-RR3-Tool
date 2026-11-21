@@ -31,7 +31,7 @@ internal object GameDataBrowser {
         val sizeBytes: Long
     )
 
-    private const val MAX_FILES = 100_000
+    private const val MAX_FILES = 250_000
     private const val MAX_FOLDERS_TO_FIND_DEPOT = 500
     private const val MAX_DEPOT_DEPTH = 6
     private const val MAX_DEPOT_CONTENT_FOLDERS_TO_CHECK = 256
@@ -42,16 +42,10 @@ internal object GameDataBrowser {
         "com.ea.games.r3_cn"
     )
 
-    private val excludedExtensions = setOf(
-        "sba", "pvr", "dds", "astc", "ktx", "m3g", "sb3d",
-        "png", "jpg", "jpeg", "bmp", "tga", "points", "banim"
-    )
-
     fun fromRootListing(
         rootPath: String,
         listing: String,
         useShizuku: Boolean = false,
-        includeTextures: Boolean = false
     ): List<GameDataFile> {
         val root = rootPath.trimEnd('/')
         val result = ArrayList<GameDataFile>()
@@ -63,8 +57,6 @@ internal object GameDataBrowser {
             val name = relativePath.substringAfterLast('/')
             val effectiveName = name.removeSuffixIgnoreCase(".bin")
                 .removeSuffixIgnoreCase(".z")
-            val extension = effectiveName.substringAfterLast('.', "").lowercase()
-            if (!includeTextures && extension in excludedExtensions) continue
             result.add(
                 GameDataFile(
                     name = name,
@@ -78,7 +70,7 @@ internal object GameDataBrowser {
             )
             if (result.size >= MAX_FILES) {
                 throw IllegalStateException(
-                    "The RR3 .depot folder contains more than $MAX_FILES supported files."
+                    "The RR3 .depot folder contains more than $MAX_FILES files."
                 )
             }
         }
@@ -120,9 +112,6 @@ internal object GameDataBrowser {
 
                 val effectiveName = child.name.removeSuffixIgnoreCase(".bin")
                     .removeSuffixIgnoreCase(".z")
-                val extension = effectiveName.substringAfterLast('.', "").lowercase()
-                if (extension in excludedExtensions) continue
-
                 result.add(
                     GameDataFile(
                         name = child.name,
@@ -133,7 +122,7 @@ internal object GameDataBrowser {
                 )
                 if (result.size >= MAX_FILES) {
                     throw IllegalStateException(
-                        "The RR3 folder contains more than $MAX_FILES supported files. Narrow the selected folder to files/.depot."
+                        "The RR3 folder contains more than $MAX_FILES files. Narrow the selected folder to files/.depot."
                     )
                 }
             }
