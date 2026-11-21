@@ -3463,7 +3463,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     float mvp[16];
     buildViewerMvp(*session, width, height, yaw, pitch, zoom, mvp);
     glViewport(0, 0, width, height);
-    glClearColor(0.0941f, 0.1020f, 0.1843f, 1.0f);
+    glClearColor(0.0941f, 0.1020f, 0.1843f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -3498,6 +3498,25 @@ Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     glDisable(GL_BLEND);
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3ViewerCamera(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle,
+    jfloat panX, jfloat panY, jfloat fovY) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    session->view.pan[0] = std::isfinite(panX)
+        ? std::max(-5.0f, std::min(5.0f, panX)) : 0.0f;
+    session->view.pan[1] = std::isfinite(panY)
+        ? std::max(-5.0f, std::min(5.0f, panY)) : 0.0f;
+    session->view.fovY = std::isfinite(fovY)
+        ? std::max(0.15f, std::min(2.6f, fovY)) : 0.75f;
 }
 
 extern "C" JNIEXPORT void JNICALL

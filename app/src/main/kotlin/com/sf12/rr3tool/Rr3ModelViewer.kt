@@ -1,8 +1,16 @@
 package com.sf12.rr3tool
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.RectF
 import android.opengl.GLSurfaceView
 import android.view.MotionEvent
+import android.view.View
 import android.widget.FrameLayout
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
@@ -10,14 +18,67 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
 
 /**
- * Full-screen RR3 model surface. Meshes and textures are uploaded once by the
- * native renderer; camera changes redraw the existing GPU buffers directly.
+ * Shows the supplied 2:1 equirectangular environment as a reference panorama.
+ * This is a visual backdrop; a JPEG does not provide HDR lighting or reflections.
  */
+private class PanoramaStripView(context: Context) : View(context) {
+    private val image: Bitmap? = try {
+        context.assets.open("rr3_environment_360.jpg").use { BitmapFactory.decodeStream(it) }
+    } catch (_: Exception) {
+        null
+    }
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+
+    @Volatile var yaw: Float = 0f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    @Volatile var environmentEnabled: Boolean = true
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawColor(UiPalette.background)
+        val panorama = image ?: return
+        if (!environmentEnabled || width <= 0 || height <= 0) return
+
+        val visibleSourceWidth = (panorama.height.toFloat() * width.toFloat() / height.toFloat())
+            .toInt().coerceIn(1, panorama.width)
+        val centre = (((yaw / (2f * Math.PI.toFloat())) * panorama.width).toInt() % panorama.width +
+            panorama.width) % panorama.width
+        val start = (centre - visibleSourceWidth / 2 + panorama.width) % panorama.width
+        val firstWidth = minOf(visibleSourceWidth, panorama.width - start)
+        val firstDestinationWidth = width.toFloat() * firstWidth / visibleSourceWidth.toFloat()
+
+        canvas.drawBitmap(
+            panorama,
+            Rect(start, 0, start + firstWidth, panorama.height),
+            RectF(0f, 0f, firstDestinationWidth, height.toFloat()),
+            paint
+        )
+        val remainingWidth = visibleSourceWidth - firstWidth
+        if (remainingWidth > 0) {
+            canvas.drawBitmap(
+                panorama,
+                Rect(0, 0, remainingWidth, panorama.height),
+                RectF(firstDestinationWidth, 0f, width.toFloat(), height.toFloat()),
+                paint
+            )
+        }
+    }
+}
+
 internal class Rr3ModelViewer(
     context: Context,
     private val handle: Long,
     private val onFrameStatus: (String) -> Unit
 ) : FrameLayout(context) {
+    private val panoramaView = PanoramaStripView(context)
     private val glSurface = GLSurfaceView(context)
     private val disposed = AtomicBoolean(false)
     @Volatile private var rendererReady = false
@@ -27,14 +88,21 @@ internal class Rr3ModelViewer(
     @Volatile private var zoom = 1f
     @Volatile private var surfaceWidth = 1
     @Volatile private var surfaceHeight = 1
+    @Volatile private var cameraPanX = 0f
+    @Volatile private var cameraPanY = 0f
+    @Volatile private var cameraFovY = 0.75f
     private var lastX = 0f
     private var lastY = 0f
     private var pinchDistance = 0f
 
     init {
         setBackgroundColor(UiPalette.background)
+        addView(panoramaView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         glSurface.setEGLContextClientVersion(3)
         glSurface.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        glSurface.holder.setFormat(PixelFormat.TRANSLUCENT)
+        // Media overlay keeps the panorama below GL but leaves normal Android chrome above it.
+        glSurface.setZOrderMediaOverlay(true)
         glSurface.preserveEGLContextOnPause = true
         glSurface.setRenderer(object : GLSurfaceView.Renderer {
             override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -45,12 +113,12 @@ internal class Rr3ModelViewer(
                     error.message ?: "Could not initialise the OpenGL ES 3 viewer."
                 }
                 rendererReady = status.startsWith("OpenGL ES 3")
+                if (rendererReady) {
+                    NativeBridge.nativeUpdateRr3ViewerCamera(handle, cameraPanX, cameraPanY, cameraFovY)
+                }
                 post {
                     if (!disposed.get()) {
-                        onFrameStatus(
-                            if (rendererReady) status
-                            else "GPU viewer unavailable: $status"
-                        )
+                        onFrameStatus(if (rendererReady) status else "GPU viewer unavailable: $status")
                     }
                 }
                 if (rendererReady && !disposed.get()) glSurface.requestRender()
@@ -65,15 +133,11 @@ internal class Rr3ModelViewer(
             override fun onDrawFrame(gl: GL10?) {
                 if (disposed.get() || !rendererReady) return
                 try {
-                    NativeBridge.nativeDrawRr3ViewerGl(
-                        handle, surfaceWidth, surfaceHeight, yaw, pitch, zoom
-                    )
+                    NativeBridge.nativeDrawRr3ViewerGl(handle, surfaceWidth, surfaceHeight, yaw, pitch, zoom)
                 } catch (error: Exception) {
                     rendererReady = false
                     post {
-                        if (!disposed.get()) {
-                            onFrameStatus(error.message ?: "The GPU viewer failed while drawing.")
-                        }
+                        if (!disposed.get()) onFrameStatus(error.message ?: "The GPU viewer failed while drawing.")
                     }
                 }
             }
@@ -104,6 +168,7 @@ internal class Rr3ModelViewer(
                         yaw -= (event.x - lastX) * 0.008f
                         pitch = (pitch + (event.y - lastY) * 0.008f).coerceIn(-1.1f, 1.1f)
                     }
+                    panoramaView.yaw = yaw
                     lastX = event.x
                     lastY = event.y
                     requestGpuFrame()
@@ -129,7 +194,38 @@ internal class Rr3ModelViewer(
         yaw = 0.6f
         pitch = 0.25f
         zoom = 1f
+        panoramaView.yaw = yaw
         requestGpuFrame()
+    }
+
+    fun setCameraTuning(panX: Float, panY: Float, fovY: Float) {
+        cameraPanX = panX.coerceIn(-5f, 5f)
+        cameraPanY = panY.coerceIn(-5f, 5f)
+        cameraFovY = fovY.coerceIn(0.15f, 2.6f)
+        if (rendererReady) {
+            glSurface.queueEvent {
+                if (!disposed.get()) {
+                    NativeBridge.nativeUpdateRr3ViewerCamera(handle, cameraPanX, cameraPanY, cameraFovY)
+                }
+            }
+        }
+        requestGpuFrame()
+    }
+
+    fun setCameraAngles(nextYaw: Float, nextPitch: Float) {
+        yaw = nextYaw
+        pitch = nextPitch.coerceIn(-1.1f, 1.1f)
+        panoramaView.yaw = yaw
+        requestGpuFrame()
+    }
+
+    fun setCameraZoom(nextZoom: Float) {
+        zoom = nextZoom.coerceIn(0.55f, 3f)
+        requestGpuFrame()
+    }
+
+    fun setEnvironmentEnabled(enabled: Boolean) {
+        panoramaView.environmentEnabled = enabled
     }
 
     fun refresh() {
@@ -164,8 +260,6 @@ internal class Rr3ModelViewer(
                 }
             }
         } else {
-            // A detached/paused GLSurfaceView is about to lose its EGL context;
-            // freeing the native session is safe and the driver releases its GL objects.
             NativeBridge.nativeFreeRr3Viewer(handle)
         }
     }

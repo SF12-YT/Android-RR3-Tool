@@ -35,6 +35,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -291,6 +292,7 @@ class MainActivity : Activity() {
     private lateinit var careerInspectorStatus: TextView
     private lateinit var trackInspectorStatus: TextView
     private lateinit var carFieldsContainer: LinearLayout
+    private lateinit var carEditorIndexedCarsContainer: LinearLayout
     private lateinit var careerDetailsContainer: LinearLayout
     private lateinit var trackDetailsContainer: LinearLayout
     private lateinit var saveFieldsContainer: LinearLayout
@@ -319,11 +321,14 @@ class MainActivity : Activity() {
     private lateinit var liveryPaintContainer: LinearLayout
     private lateinit var liveryDecodedContainer: LinearLayout
     private val expandedLiveryBrands = mutableSetOf<String>()
+    private val expandedCarEditorBrands = mutableSetOf<String>()
     private val expandedViewerBrands = mutableSetOf<String>()
     private var rr3ViewerCars: List<Rr3ViewerCar> = emptyList()
     private var rr3ViewerCatalogLoading = false
     private var rr3ViewerLoading = false
     private lateinit var rr3ViewerCarListContainer: LinearLayout
+    private lateinit var settingsIndexStatus: TextView
+    private lateinit var scanNewFilesButton: TextView
     private lateinit var rr3ViewerStatus: TextView
     private lateinit var rr3ViewerScreen: FrameLayout
     private lateinit var rr3ViewerScreenHost: FrameLayout
@@ -355,6 +360,7 @@ class MainActivity : Activity() {
         get() = File(stageDir, "TempSaveGame.dat")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         window.statusBarColor = UiPalette.background
         window.navigationBarColor = UiPalette.background
         val appRoot = FrameLayout(this)
@@ -410,28 +416,30 @@ class MainActivity : Activity() {
         rr3ViewerScreen.addView(rr3ViewerScreenHost, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        val rr3ViewerToolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(7), dp(8), dp(7))
-            background = rounded(UiPalette.surfaceOverlay, dp(16).toFloat())
-        }
-        rr3ViewerToolbar.addView(compactOverlayButton("‹ Cars") { closeRr3FullScreenViewer() })
-        rr3ViewerScreenTitle = text("3D Viewer", 13, UiPalette.text, bold = true).apply {
-            maxLines = 1
-            setPadding(dp(10), 0, dp(8), 0)
-        }
-        rr3ViewerToolbar.addView(rr3ViewerScreenTitle, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        ).apply { marginStart = dp(8); marginEnd = dp(8) })
-        rr3ViewerToolbar.addView(compactOverlayButton("Reset") { rr3ViewerSurface?.resetCamera() })
-        rr3ViewerScreen.addView(rr3ViewerToolbar, FrameLayout.LayoutParams(
+        val viewerBackButton = compactOverlayButton("‹ Back") { closeRr3FullScreenViewer() }
+        rr3ViewerScreen.addView(viewerBackButton, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            Gravity.TOP or Gravity.START
         ).apply {
             topMargin = dp(14)
-            leftMargin = dp(12)
-            rightMargin = dp(12)
+            leftMargin = dp(14)
+        })
+        rr3ViewerScreenTitle = text("3D Viewer", 13, UiPalette.text, bold = true).apply {
+            maxLines = 1
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rounded(UiPalette.surfaceOverlay, dp(14).toFloat())
+        }
+        rr3ViewerScreen.addView(rr3ViewerScreenTitle, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        ).apply { topMargin = dp(14) })
+        val viewerMenuButton = compactOverlayButton("☰ Menu") { showRr3ViewerMenu() }
+        rr3ViewerScreen.addView(viewerMenuButton, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        ).apply {
+            topMargin = dp(14)
+            rightMargin = dp(14)
         })
         rr3ViewerScreenStatus = text(
             "Drag to rotate · Pinch to zoom",
@@ -471,8 +479,8 @@ class MainActivity : Activity() {
             matchWrap(top = 5, bottom = 16)
         )
         val tabNames = listOf(
-            "Index", "Save Editor", "Transform", "Data Editor",
-            "Car Editor", "Liveries", "Career", "Track Inspector", "3D Viewer", "About"
+            "Index", "Save Editor", "Data Editor", "Car Editor",
+            "Liveries", "Career", "Track Inspector", "3D Viewer", "About", "Settings"
         )
         val tabPages = linkedMapOf<String, LinearLayout>()
         for (name in tabNames) {
@@ -532,7 +540,6 @@ class MainActivity : Activity() {
         selectTab("Index")
         val gameDataPage = tabPages.getValue("Index")
         val savePage = tabPages.getValue("Save Editor")
-        val transformPage = tabPages.getValue("Transform")
         val editorPage = tabPages.getValue("Data Editor")
         val carPage = tabPages.getValue("Car Editor")
         val liveryPage = tabPages.getValue("Liveries")
@@ -542,10 +549,10 @@ class MainActivity : Activity() {
         val aboutPage = tabPages.getValue("About")
         addSection(gameDataPage, "DEPOT INDEX")
         val gameCard = card(gameDataPage)
-        gameCard.addView(text("Full RR3 asset index", 17, UiPalette.text, bold = true), matchWrap())
+        gameCard.addView(text("RR3 depot index", 17, UiPalette.text, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "Browse the complete installed .depot listing. The Index operation also reads and caches the RR3 car catalogue, so opening the 3D Viewer does not read those records again.",
+                "Browse the installed .depot listing. Use Settings → Scan for new files to discover additions without rebuilding the existing index.",
                 13,
                 UiPalette.textMuted
             ),
@@ -553,8 +560,6 @@ class MainActivity : Activity() {
         )
         gameFilesStatus = text("The RR3 depot has not been indexed yet.", 12, UiPalette.textMuted)
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
-        indexGameFilesButton = actionButton("Re-index EVERYTHING") { indexGameDataFiles() }
-        gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
         gameFilesSearch = editBox("Search indexed RR3 file names and paths", "", numeric = false)
         gameCard.addView(gameFilesSearch, matchWrap(top = 10))
         gameFilesContainer = LinearLayout(this).apply {
@@ -624,15 +629,15 @@ class MainActivity : Activity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderAdvancedFields()
             override fun afterTextChanged(s: Editable?) = Unit
         })
-        addSection(transformPage, "RR3 DATA TRANSFORM")
-        val dataCard = card(transformPage)
+        addSection(editorPage, "RR3 FILE CONVERSION")
+        val dataCard = card(editorPage)
         dataCard.addView(
             text("Decode or re-encode RR3 data and game text", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         dataCard.addView(
             text(
-                "The upstream RR3 RC4 transform is built into the native engine. Choose .nct/.gui or .bin/.xml pairs to decode or encode. RR3 gametext.txt and text_<language>.txt have their own cipher; the app asks whether to decode or encode those.",
+                "Conversion remains available here when an editor needs a readable working copy. The native conversion engine stays internal; there is no separate Transform screen.",
                 13,
                 UiPalette.textMuted
             ),
@@ -679,11 +684,25 @@ class MainActivity : Activity() {
             matchWrap(top = 6)
         )
         carCard.addView(
-            actionButton("Choose car data (.bin.nct)") { chooseCarEditorFile() },
+            actionButton("Open my own car file (.bin.nct)") { chooseCarEditorFile() },
             matchWrap(top = 12)
         )
-        carEditorStatus = text("No car data file opened.", 12, UiPalette.textMuted)
+        carEditorStatus = text("Choose an indexed car or open your own .bin.nct file.", 12, UiPalette.textMuted)
         carCard.addView(carEditorStatus, matchWrap(top = 10))
+        carCard.addView(text("INDEXED CARS", 11, UiPalette.accent, bold = true), matchWrap(top = 14, bottom = 7))
+        val carEditorIndexScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = true
+            isNestedScrollingEnabled = true
+            background = rounded(UiPalette.background, dp(10).toFloat())
+        }
+        carEditorIndexedCarsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        carEditorIndexScroll.addView(carEditorIndexedCarsContainer)
+        carCard.addView(carEditorIndexScroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(230)
+        ))
         carFieldsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -859,7 +878,7 @@ class MainActivity : Activity() {
         )
         viewerCard.addView(
             text(
-                "Choose a car from the catalogue cached during Index, then load its exterior model and textures. The model opens in an immersive landscape viewer. The preview is read-only.",
+                "Choose a cached car model and preview it in the landscape GPU viewer with a panoramic environment backdrop. Game files remain unchanged by the preview.",
                 13, UiPalette.textMuted
             ),
             matchWrap(top = 6)
@@ -907,6 +926,21 @@ class MainActivity : Activity() {
             ).apply { gravity = Gravity.CENTER },
             matchWrap(top = 24)
         )
+        val settingsPage = tabPages.getValue("Settings")
+        addSection(settingsPage, "DEPOT INDEX SETTINGS")
+        val settingsCard = card(settingsPage)
+        settingsCard.addView(text("Find newly added RR3 files", 17, UiPalette.text, bold = true), matchWrap())
+        settingsCard.addView(
+            text(
+                "This walks the depot paths to discover additions, then retains existing index entries and the cached car catalogue. Only newly discovered car records are parsed.",
+                13, UiPalette.textMuted
+            ),
+            matchWrap(top = 6)
+        )
+        settingsIndexStatus = text("No scan has been run in this session.", 12, UiPalette.textMuted)
+        settingsCard.addView(settingsIndexStatus, matchWrap(top = 10))
+        scanNewFilesButton = actionButton("Scan for new files") { scanNewGameDataFiles() }
+        settingsCard.addView(scanNewFilesButton, matchWrap(top = 10))
         val savedRootGameData = preferences.getString("game_data_root_dir", null)
         if (savedRootGameData.isNullOrBlank()) {
             // Older builds allowed a manually selected document folder. RR3
@@ -1003,10 +1037,11 @@ class MainActivity : Activity() {
             setupScreen.visibility = View.GONE
             rootScrollView.visibility = View.VISIBLE
             gameFilesStatus.text =
-                "Restored ${indexedGameFiles.size} indexed files. ${rr3ViewerCatalogStatus} Use Re-index EVERYTHING after updating RR3."
+                "Restored ${indexedGameFiles.size} indexed files. ${rr3ViewerCatalogStatus} Use Settings → Scan for new files after updating RR3."
             renderGameFiles()
             renderLiveryCarChoices()
             renderRr3ViewerCarChoices()
+            renderCarEditorIndexedChoices()
         } else {
             setupScreen.visibility = View.VISIBLE
             rootScrollView.visibility = View.GONE
@@ -1333,7 +1368,11 @@ class MainActivity : Activity() {
     }
 
     /** Parses RR3 registries and per-car records during the depot index operation. */
-    private fun buildRr3ViewerCarCatalog(files: List<GameDataFile>): Pair<List<Rr3ViewerCar>, String> {
+    private fun buildRr3ViewerCarCatalog(
+        files: List<GameDataFile>,
+        onlyDataPaths: Set<String>? = null,
+        previousCars: List<Rr3ViewerCar> = emptyList()
+    ): Pair<List<Rr3ViewerCar>, String> {
         fun normalPath(entry: GameDataFile) =
             entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
         val cardesc = files.firstOrNull { normalPath(it) == "vehicles/data/cardesc.list.nct" }
@@ -1346,13 +1385,19 @@ class MainActivity : Activity() {
             path.substringBeforeLast('/', "") == "vehicles/data" &&
                 Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE)
                     .matches(path.substringAfterLast('/'))
-        }.sortedBy { normalPath(it) }
+        }.filter { onlyDataPaths == null || normalPath(it) in onlyDataPaths }
+            .sortedBy { normalPath(it) }
         if (carDataFiles.isEmpty()) {
-            return emptyList<Rr3ViewerCar>() to "The RR3 registries are indexed, but no per-car data records were found."
+            return if (onlyDataPaths != null) {
+                previousCars to "No new per-car records were found; the cached car catalogue was retained."
+            } else {
+                emptyList<Rr3ViewerCar>() to "The RR3 registries are indexed, but no per-car data records were found."
+            }
         }
         val registryPaths = arrayOf(normalPath(cardesc), normalPath(appearances))
         val registryData = arrayOf(readGameFile(cardesc), readGameFile(appearances))
         val carsByDataFolder = LinkedHashMap<String, Rr3ViewerCar>()
+        for (car in previousCars) carsByDataFolder[car.dataFolder.lowercase(Locale.ROOT)] = car
         val batches = carDataFiles.chunked(32)
         for ((batchIndex, batch) in batches.withIndex()) {
             val paths = ArrayList<String>(2 + batch.size)
@@ -1397,8 +1442,11 @@ class MainActivity : Activity() {
         val sorted = carsByDataFolder.values.sortedWith(
             compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
         )
-        return sorted to
-            "Cached ${sorted.size} RR3 car records during Index (${carDataFiles.size} source records, ${batches.size} batches)."
+        return sorted to if (onlyDataPaths == null) {
+            "Cached ${sorted.size} RR3 car records during initial Index (${carDataFiles.size} source records, ${batches.size} batches)."
+        } else {
+            "Added ${(sorted.size - previousCars.size).coerceAtLeast(0)} new car record(s); catalogue now contains ${sorted.size} cars."
+        }
     }
 
     private fun indexGameDataFiles() {
@@ -1461,6 +1509,7 @@ class MainActivity : Activity() {
                     renderGameFiles()
                     renderLiveryCarChoices()
                     renderRr3ViewerCarChoices()
+                    renderCarEditorIndexedChoices()
                     setIndexButtonsEnabled(true)
                     preferences.edit().putBoolean("setup_complete", cacheError == null).apply()
                     setupScreen.visibility = if (cacheError == null) View.GONE else View.VISIBLE
@@ -1479,6 +1528,94 @@ class MainActivity : Activity() {
             }
         }.start()
     }
+    private fun scanNewGameDataFiles() {
+        val rootPath = preferences.getString("game_data_root_dir", null)
+            ?.takeIf { it.isNotBlank() }
+            ?: run {
+                settingsIndexStatus.text = "Detect the RR3 depot with Root or Shizuku first."
+                return
+            }
+        if (indexedGameFiles.isEmpty()) {
+            settingsIndexStatus.text = "No existing index was found; performing the initial index."
+            indexGameDataFiles()
+            return
+        }
+        val backend = preferences.getString("game_data_backend", "root") ?: "root"
+        if (backend == "shizuku" && shizukuStorageService == null) {
+            ensureShizukuStorageService { scanNewGameDataFiles() }
+            return
+        }
+        scanNewFilesButton.isEnabled = false
+        settingsIndexStatus.text = "Checking depot paths for additions…"
+        Thread {
+            try {
+                val listing = if (backend == "shizuku") {
+                    val service = shizukuStorageService
+                        ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                    val pipe = service.listFiles(rootPath)
+                        ?: throw IllegalStateException("Shizuku could not list the RR3 files.")
+                    ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                } else {
+                    runRootCommand("find ${shellQuote(rootPath)} -type f -print")
+                }
+                val discovered = GameDataBrowser.fromRootListing(
+                    rootPath, listing, useShizuku = backend == "shizuku"
+                )
+                val knownPaths = indexedGameFiles.map {
+                    it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                }.toHashSet()
+                val newFiles = discovered.filter {
+                    it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT) !in knownPaths
+                }
+                val merged = (indexedGameFiles + newFiles).sortedBy {
+                    it.relativePath.lowercase(Locale.ROOT)
+                }
+                val newCarPaths = newFiles.asSequence()
+                    .filter {
+                        val path = it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+                        path.substringBeforeLast('/', "") == "vehicles/data" &&
+                            Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE)
+                                .matches(path.substringAfterLast('/'))
+                    }
+                    .map { it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT) }
+                    .toSet()
+                val catalogue = if (newCarPaths.isNotEmpty()) {
+                    buildRr3ViewerCarCatalog(merged, newCarPaths, rr3ViewerCars)
+                } else {
+                    rr3ViewerCars to rr3ViewerCatalogStatus
+                }
+                saveRr3IndexCache(rootPath, backend, merged, catalogue.first, catalogue.second)
+                runOnUiThread {
+                    indexedGameFiles = merged
+                    rr3ViewerCars = catalogue.first
+                    rr3ViewerCatalogStatus = catalogue.second
+                    renderGameFiles()
+                    renderLiveryCarChoices()
+                    renderRr3ViewerCarChoices()
+                    renderCarEditorIndexedChoices()
+                    settingsIndexStatus.text = if (newFiles.isEmpty()) {
+                        "No new files found. The existing ${indexedGameFiles.size}-file index was kept."
+                    } else {
+                        "Added ${newFiles.size} new file(s). The index now contains ${indexedGameFiles.size} files. ${catalogue.second}"
+                    }
+                    gameFilesStatus.text =
+                        "Indexed ${indexedGameFiles.size} files across the full RR3 .depot. ${rr3ViewerCatalogStatus}"
+                    scanNewFilesButton.isEnabled = true
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    settingsIndexStatus.text = error.message ?: "Could not scan for new files."
+                    scanNewFilesButton.isEnabled = true
+                }
+            } catch (error: OutOfMemoryError) {
+                runOnUiThread {
+                    settingsIndexStatus.text = "Android ran out of memory while scanning the depot."
+                    scanNewFilesButton.isEnabled = true
+                }
+            }
+        }.start()
+    }
+
     private fun ensureShizukuStorageService(onReady: () -> Unit) {
         if (shizukuStorageService != null) { onReady(); return }
         pendingShizukuAction = onReady
@@ -1950,6 +2087,17 @@ class MainActivity : Activity() {
                         rr3ViewerScreenStatus.text = detail
                     }
                     rr3ViewerSurface = surface
+                    surface.setCameraTuning(
+                        preferences.getFloat("viewer_camera_pan_x", 0f),
+                        preferences.getFloat("viewer_camera_pan_y", 0f),
+                        preferences.getFloat("viewer_camera_fov", 0.75f)
+                    )
+                    surface.setCameraAngles(
+                        preferences.getFloat("viewer_camera_yaw", 0.6f),
+                        preferences.getFloat("viewer_camera_pitch", 0.25f)
+                    )
+                    surface.setCameraZoom(preferences.getFloat("viewer_camera_zoom", 1f))
+                    surface.setEnvironmentEnabled(preferences.getBoolean("viewer_environment_enabled", true))
                     rr3ViewerScreenTitle.text = car.displayName
                     rr3ViewerScreenStatus.text = meshes.toString() + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s)"
                     rr3ViewerStatus.text = "Loaded " + car.displayName + "."
@@ -2006,6 +2154,127 @@ class MainActivity : Activity() {
         requestedOrientation = viewerPreviousRequestedOrientation
         window.decorView.systemUiVisibility = viewerPreviousSystemUiVisibility
         rr3ViewerSurface?.refresh()
+    }
+
+    private fun showRr3ViewerMenu() {
+        val actions = arrayOf(
+            "Live camera controls",
+            "Toggle panorama backdrop",
+            "Reset camera",
+            "camTweaks.dat editor status"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("3D Viewer menu")
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> showRr3ViewerCameraControls()
+                    1 -> {
+                        val enabled = !preferences.getBoolean("viewer_environment_enabled", true)
+                        preferences.edit().putBoolean("viewer_environment_enabled", enabled).apply()
+                        rr3ViewerSurface?.setEnvironmentEnabled(enabled)
+                        rr3ViewerScreenStatus.text = if (enabled) "Panorama backdrop enabled" else "Panorama backdrop disabled"
+                    }
+                    2 -> {
+                        rr3ViewerSurface?.resetCamera()
+                        rr3ViewerSurface?.setCameraTuning(0f, 0f, 0.75f)
+                    }
+                    3 -> AlertDialog.Builder(this)
+                        .setTitle("camTweaks.dat")
+                        .setMessage(
+                            "The live controls currently tune the Monkey Tool preview camera and can save a local preset. Writing the game's camTweaks.dat is not enabled because no sample file or verified field layout is available. A guessed binary layout could corrupt the source file."
+                        )
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showRr3ViewerCameraControls() {
+        var panX = preferences.getFloat("viewer_camera_pan_x", 0f)
+        var panY = preferences.getFloat("viewer_camera_pan_y", 0f)
+        var fovDegrees = (preferences.getFloat("viewer_camera_fov", 0.75f) * 180f / Math.PI.toFloat()).coerceIn(25f, 110f)
+        var yawDegrees = (preferences.getFloat("viewer_camera_yaw", 0.6f) * 180f / Math.PI.toFloat()).let {
+            ((it % 360f) + 360f) % 360f
+        }
+        var pitchDegrees = (preferences.getFloat("viewer_camera_pitch", 0.25f) * 180f / Math.PI.toFloat()).coerceIn(-63f, 63f)
+        var zoom = preferences.getFloat("viewer_camera_zoom", 1f).coerceIn(0.55f, 3f)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(4))
+        }
+        fun addCameraSlider(
+            title: String,
+            min: Float,
+            max: Float,
+            initial: Float,
+            onValue: (Float) -> Unit
+        ) {
+            val label = text("$title · ${"%.1f".format(Locale.ROOT, initial)}", 12, UiPalette.text)
+            root.addView(label, matchWrap(top = 7))
+            val seek = SeekBar(this).apply {
+                this.max = 1000
+                progress = (((initial - min) / (max - min)) * 1000f).toInt().coerceIn(0, 1000)
+            }
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val value = min + (max - min) * progress / 1000f
+                    label.text = "$title · ${"%.1f".format(Locale.ROOT, value)}"
+                    onValue(value)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+            root.addView(seek, matchWrap(bottom = 2))
+        }
+        fun updateCamera() {
+            rr3ViewerSurface?.setCameraTuning(panX, panY, fovDegrees * Math.PI.toFloat() / 180f)
+            rr3ViewerSurface?.setCameraAngles(
+                yawDegrees * Math.PI.toFloat() / 180f,
+                pitchDegrees * Math.PI.toFloat() / 180f
+            )
+            rr3ViewerSurface?.setCameraZoom(zoom)
+        }
+        addCameraSlider("Camera position X", -2f, 2f, panX) { panX = it; updateCamera() }
+        addCameraSlider("Camera position Y", -2f, 2f, panY) { panY = it; updateCamera() }
+        addCameraSlider("Camera yaw (degrees)", 0f, 360f, yawDegrees) { yawDegrees = it; updateCamera() }
+        addCameraSlider("Camera pitch (degrees)", -63f, 63f, pitchDegrees) { pitchDegrees = it; updateCamera() }
+        addCameraSlider("Field of view (degrees)", 25f, 110f, fovDegrees) { fovDegrees = it; updateCamera() }
+        addCameraSlider("Camera distance", 0.55f, 3f, zoom) { zoom = it; updateCamera() }
+        AlertDialog.Builder(this)
+            .setTitle("Live viewer camera preview")
+            .setMessage("Changes update the preview immediately. Save stores a local viewer preset, not game camTweaks.dat.")
+            .setView(root)
+            .setPositiveButton("Save preview preset") { _, _ ->
+                preferences.edit()
+                    .putFloat("viewer_camera_pan_x", panX)
+                    .putFloat("viewer_camera_pan_y", panY)
+                    .putFloat("viewer_camera_fov", fovDegrees * Math.PI.toFloat() / 180f)
+                    .putFloat("viewer_camera_yaw", yawDegrees * Math.PI.toFloat() / 180f)
+                    .putFloat("viewer_camera_pitch", pitchDegrees * Math.PI.toFloat() / 180f)
+                    .putFloat("viewer_camera_zoom", zoom)
+                    .apply()
+                rr3ViewerScreenStatus.text = "Local viewer camera preset saved"
+            }
+            .setNeutralButton("Reset") { _, _ ->
+                preferences.edit()
+                    .remove("viewer_camera_pan_x")
+                    .remove("viewer_camera_pan_y")
+                    .remove("viewer_camera_fov")
+                    .remove("viewer_camera_yaw")
+                    .remove("viewer_camera_pitch")
+                    .remove("viewer_camera_zoom")
+                    .apply()
+                panX = 0f; panY = 0f
+                fovDegrees = 0.75f * 180f / Math.PI.toFloat()
+                yawDegrees = 0.6f * 180f / Math.PI.toFloat()
+                pitchDegrees = 0.25f * 180f / Math.PI.toFloat()
+                zoom = 1f
+                updateCamera()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun renderSelectedLiveryDecodedData() {
@@ -4364,6 +4633,61 @@ class MainActivity : Activity() {
             row.addView(text(value.ifBlank { "—" }, 14, UiPalette.text), matchWrap(top = 3))
         }
     }
+    private fun renderCarEditorIndexedChoices() {
+        if (!::carEditorIndexedCarsContainer.isInitialized) return
+        carEditorIndexedCarsContainer.removeAllViews()
+        if (indexedGameFiles.isEmpty() || rr3ViewerCars.isEmpty()) {
+            carEditorIndexedCarsContainer.addView(
+                text("Index the RR3 depot to browse installed cars here.", 12, UiPalette.textSubtle),
+                matchWrap()
+            )
+            return
+        }
+        val groups = rr3ViewerCars.groupBy { it.brand.ifBlank { "Other" } }
+            .toSortedMap(compareBy<String> { it.lowercase(Locale.ROOT) })
+        for ((brand, cars) in groups) {
+            val expanded = brand in expandedCarEditorBrands
+            val header = text(
+                (if (expanded) "▾  " else "▸  ") + brand + "  ·  " + cars.size + " car(s)",
+                13, UiPalette.text, bold = true
+            ).apply {
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+                background = rounded(UiPalette.surface, dp(8).toFloat())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (brand in expandedCarEditorBrands) expandedCarEditorBrands.remove(brand)
+                    else expandedCarEditorBrands.add(brand)
+                    renderCarEditorIndexedChoices()
+                }
+            }
+            carEditorIndexedCarsContainer.addView(header, matchWrap(bottom = 4))
+            if (!expanded) continue
+            for (car in cars) {
+                val expectedName = car.dataFolder.substringAfterLast('/') + ".bin.nct"
+                val entry = indexedGameFiles.firstOrNull {
+                    it.name.equals(expectedName, ignoreCase = true) ||
+                        it.relativePath.substringAfterLast('/').equals(expectedName, ignoreCase = true)
+                }
+                val row = text(
+                    if (entry == null) car.displayName + " · data file not indexed"
+                    else car.displayName + " · " + expectedName,
+                    12, if (entry == null) UiPalette.textSubtle else UiPalette.text
+                ).apply {
+                    setPadding(dp(12), dp(9), dp(12), dp(9))
+                    background = rounded(UiPalette.background, dp(8).toFloat())
+                    isEnabled = entry != null
+                    if (entry != null) {
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener { inspectCarGameFile(entry) }
+                    }
+                }
+                carEditorIndexedCarsContainer.addView(row, matchWrap(bottom = 3))
+            }
+        }
+    }
+
     private fun chooseCarEditorFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4474,8 +4798,52 @@ class MainActivity : Activity() {
             }
             carFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
             fieldCard.addView(text(label, 12, UiPalette.textMuted, bold = true), matchWrap())
-            val input = editBox("Value", value, numeric = !item.optBoolean("text") && key != "gear_ratios")
+            val isNumericField = !item.optBoolean("text") && key != "gear_ratios"
+            val input = editBox("Whole number value", value, numeric = isNumericField)
             fieldCard.addView(input, matchWrap(top = 7))
+            val wholeNumber = value.toLongOrNull()
+            if (isNumericField && wholeNumber != null &&
+                wholeNumber in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+            ) {
+                val span = (if (wholeNumber < 0) -wholeNumber else wholeNumber)
+                    .div(2L).plus(100L).coerceIn(100L, 1_000_000L)
+                val rangeMin = (wholeNumber - span).coerceAtLeast(Int.MIN_VALUE.toLong())
+                val rangeMax = (wholeNumber + span).coerceAtMost(Int.MAX_VALUE.toLong())
+                if (rangeMax > rangeMin) {
+                    fieldCard.addView(text("Adjust with slider", 10, UiPalette.textSubtle), matchWrap(top = 8))
+                    val slider = SeekBar(this).apply {
+                        max = 1000
+                        progress = 500
+                    }
+                    var syncingSlider = false
+                    slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                            if (syncingSlider) return
+                            val edited = rangeMin + ((rangeMax - rangeMin) * progress.toLong() / 1000L)
+                            val next = edited.toString()
+                            if (input.text.toString() != next) input.setText(next)
+                        }
+                        override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                        override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+                    })
+                    input.addTextChangedListener(object : TextWatcher {
+                        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                            val edited = s?.toString()?.toLongOrNull() ?: return
+                            if (edited !in rangeMin..rangeMax) return
+                            val progress = (((edited - rangeMin) * 1000L) / (rangeMax - rangeMin))
+                                .toInt().coerceIn(0, 1000)
+                            if (slider.progress != progress) {
+                                syncingSlider = true
+                                slider.progress = progress
+                                syncingSlider = false
+                            }
+                        }
+                        override fun afterTextChanged(s: Editable?) = Unit
+                    })
+                    fieldCard.addView(slider, matchWrap(top = 2))
+                }
+            }
             carFieldInputs[key] = input
         }
         currentCarOriginalFields = original
@@ -4763,7 +5131,7 @@ class MainActivity : Activity() {
                     return@Thread
                 }
                 if (extension == "gui") {
-                    throw IllegalArgumentException("Use the RR3 Data Transform section for this .gui file.")
+                    throw IllegalArgumentException("Use the RR3 File Conversion card in Data Editor for this .gui file.")
                 }
                 val input = contentResolver.openInputStream(uri)
                     ?: throw IllegalStateException("Could not open the selected file.")

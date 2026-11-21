@@ -147,6 +147,9 @@ internal object NativeBridge {
     /** Releases GL objects while the viewer's EGL context is current. */
     external fun nativeReleaseRr3ViewerGl(handle: Long)
 
+    /** Updates preview camera pan and vertical field of view. */
+    external fun nativeUpdateRr3ViewerCamera(handle: Long, panX: Float, panY: Float, fovY: Float)
+
     external fun nativeFreeRr3Viewer(handle: Long)
 
     external fun nativeGetRr3ViewerError(): String
