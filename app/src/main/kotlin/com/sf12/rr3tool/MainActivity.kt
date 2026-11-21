@@ -241,6 +241,7 @@ class MainActivity : Activity() {
     private var shizukuStorageService: IRr3StorageService? = null
     private var shizukuBindPending = false
     private var shizukuBound = false
+    private var shizukuAutoReconnectAttempted = false
     private var pendingShizukuAction: (() -> Unit)? = null
     private val shizukuPermissionRequestCode = 4812
     private val shizukuPermissionListener =
@@ -5008,6 +5009,27 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         rr3ViewerSurface?.refresh()
+        val backend = preferences.getString("game_data_backend", "root")
+        if (backend == "shizuku" &&
+            shizukuStorageService == null &&
+            !shizukuBindPending &&
+            !shizukuAutoReconnectAttempted &&
+            Shizuku.pingBinder()
+        ) {
+            shizukuAutoReconnectAttempted = true
+            ensureShizukuStorageService {
+                setGameDataStatus(
+                    "Shizuku reconnected. The saved depot index is ready; RR3 files can be opened again."
+                )
+            }
+        } else if (backend == "shizuku" &&
+            shizukuStorageService == null &&
+            !Shizuku.pingBinder()
+        ) {
+            setGameDataStatus(
+                "The saved index is available. Start Shizuku and return here to reconnect for file access."
+            )
+        }
     }
     override fun onDestroy() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }
