@@ -336,6 +336,8 @@ class MainActivity : Activity() {
     }
     private val keysFile: File
         get() = File(filesDir, "rr3_keys.txt")
+    private val rr3IndexCacheFile: File
+        get() = File(filesDir, "rr3_depot_index.json")
     private val stageDir: File
         get() = File(filesDir, "rr3_save_work")
     private val stagedSave: File
@@ -1006,17 +1008,24 @@ class MainActivity : Activity() {
         appRoot.addView(setupScreen, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
+        val savedBackend = preferences.getString("game_data_backend", "root") ?: "root"
         val setupCompleted = preferences.getBoolean("setup_complete", false) &&
-            !savedRootGameData.isNullOrBlank()
+            !savedRootGameData.isNullOrBlank() &&
+            restoreRr3IndexCache(savedRootGameData, savedBackend)
         if (setupCompleted) {
             setupScreen.visibility = View.GONE
             rootScrollView.visibility = View.VISIBLE
+            gameFilesStatus.text =
+                "Restored ${indexedGameFiles.size} indexed files. ${rr3ViewerCatalogStatus} Use Re-index EVERYTHING after updating RR3."
+            renderGameFiles()
+            renderLiveryCarChoices()
+            renderRr3ViewerCarChoices()
         } else {
             setupScreen.visibility = View.VISIBLE
             rootScrollView.visibility = View.GONE
+            setupIndexButton.isEnabled = !savedRootGameData.isNullOrBlank()
         }
         setContentView(appRoot)
-        if (setupCompleted) indexGameDataFiles()
     }
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
@@ -1214,6 +1223,114 @@ class MainActivity : Activity() {
             }
         }
     }
+    private fun saveRr3IndexCache(
+        rootPath: String,
+        backend: String,
+        files: List<GameDataFile>,
+        cars: List<Rr3ViewerCar>,
+        catalogStatus: String
+    ) {
+        val root = JSONObject()
+            .put("schema", 1)
+            .put("rootPath", rootPath)
+            .put("backend", backend)
+            .put("catalogStatus", catalogStatus)
+            .put("indexedAt", System.currentTimeMillis())
+        val fileArray = org.json.JSONArray()
+        for (entry in files) {
+            fileArray.put(JSONObject().put("name", entry.name).put("relativePath", entry.relativePath))
+        }
+        root.put("files", fileArray)
+        val carArray = org.json.JSONArray()
+        for (car in cars) {
+            carArray.put(
+                JSONObject()
+                    .put("id", car.id)
+                    .put("dataFolder", car.dataFolder)
+                    .put("modelFolder", car.modelFolder)
+                    .put("displayName", car.displayName)
+            )
+        }
+        root.put("cars", carArray)
+        val temporary = File(filesDir, "rr3_depot_index.json.tmp")
+        temporary.writeText(root.toString(), Charsets.UTF_8)
+        if (rr3IndexCacheFile.exists() && !rr3IndexCacheFile.delete()) {
+            temporary.delete()
+            throw IllegalStateException("Could not replace the previous depot index cache.")
+        }
+        if (!temporary.renameTo(rr3IndexCacheFile)) {
+            temporary.delete()
+            throw IllegalStateException("Could not save the depot index cache.")
+        }
+    }
+
+    private fun restoreRr3IndexCache(rootPath: String, backend: String): Boolean {
+        return try {
+            if (!rr3IndexCacheFile.isFile) return false
+            val cached = JSONObject(rr3IndexCacheFile.readText(Charsets.UTF_8))
+            if (cached.optInt("schema") != 1 ||
+                cached.optString("rootPath") != rootPath ||
+                cached.optString("backend", "root") != backend
+            ) return false
+
+            val fileArray = cached.optJSONArray("files") ?: return false
+            val restoredFiles = ArrayList<GameDataFile>(fileArray.length())
+            for (index in 0 until fileArray.length()) {
+                val item = fileArray.optJSONObject(index) ?: continue
+                val relativePath = item.optString("relativePath").trim('/')
+                if (relativePath.isBlank()) continue
+                val name = item.optString("name").ifBlank { relativePath.substringAfterLast('/') }
+                val absolutePath = rootPath.trimEnd('/') + "/" + relativePath
+                restoredFiles.add(
+                    GameDataFile(
+                        name = name,
+                        relativePath = relativePath,
+                        uri = null,
+                        sizeBytes = -1L,
+                        rootPath = absolutePath,
+                        depotRootPath = rootPath,
+                        isShizuku = backend == "shizuku"
+                    )
+                )
+            }
+            if (restoredFiles.isEmpty()) return false
+            val cardesc = restoredFiles.firstOrNull {
+                it.relativePath.replace('\\', '/').equals(
+                    "vehicles/data/cardesc.list.nct", ignoreCase = true
+                )
+            } ?: return false
+            val carArray = cached.optJSONArray("cars") ?: org.json.JSONArray()
+            val restoredCars = ArrayList<Rr3ViewerCar>(carArray.length())
+            for (index in 0 until carArray.length()) {
+                val item = carArray.optJSONObject(index) ?: continue
+                val dataFolder = item.optString("dataFolder").trim()
+                val modelFolder = item.optString("modelFolder").trim()
+                if (dataFolder.isBlank() || modelFolder.isBlank()) continue
+                restoredCars.add(
+                    Rr3ViewerCar(
+                        item.optInt("id"),
+                        dataFolder,
+                        modelFolder,
+                        item.optString("displayName").ifBlank { formatLiveryCarName(modelFolder) },
+                        cardesc
+                    )
+                )
+            }
+            indexedGameFiles = restoredFiles
+            rr3ViewerCars = restoredCars.sortedWith(
+                compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
+            )
+            rr3ViewerCatalogStatus = cached.optString(
+                "catalogStatus", "Restored the cached RR3 car catalogue."
+            )
+            true
+        } catch (_: Exception) {
+            false
+        } catch (_: OutOfMemoryError) {
+            false
+        }
+    }
+
     private fun setGameDataStatus(message: String) {
         if (::gameFilesStatus.isInitialized) gameFilesStatus.text = message
         if (::setupStatus.isInitialized) setupStatus.text = message
@@ -1329,20 +1446,29 @@ class MainActivity : Activity() {
                         "The depot file index completed, but the car catalogue could not be cached: " +
                         (error.message ?: "Unknown catalogue error.")
                 }
+                val cacheError = try {
+                    saveRr3IndexCache(rootPath, backend, files, catalogue.first, catalogue.second)
+                    null
+                } catch (error: Exception) {
+                    error.message ?: "Could not save the index cache."
+                } catch (error: OutOfMemoryError) {
+                    "Android ran out of memory while saving the index cache."
+                }
                 runOnUiThread {
                     indexedGameFiles = files
                     rr3ViewerCars = catalogue.first
                     rr3ViewerCatalogStatus = catalogue.second
                     gameFilesSearch.setText("")
                     setGameDataStatus(
-                        "Indexed ${files.size} files across the full RR3 .depot. ${catalogue.second}"
+                        "Indexed ${files.size} files across the full RR3 .depot. ${catalogue.second}" +
+                            if (cacheError == null) "" else " Cache warning: $cacheError"
                     )
                     renderGameFiles()
                     renderLiveryCarChoices()
                     renderRr3ViewerCarChoices()
                     setIndexButtonsEnabled(true)
-                    preferences.edit().putBoolean("setup_complete", true).apply()
-                    setupScreen.visibility = View.GONE
+                    preferences.edit().putBoolean("setup_complete", cacheError == null).apply()
+                    setupScreen.visibility = if (cacheError == null) View.GONE else View.VISIBLE
                     rootScrollView.visibility = View.VISIBLE
                 }
             } catch (e: Exception) {
@@ -1369,24 +1495,24 @@ class MainActivity : Activity() {
                 .setPositiveButton("Shizuku setup") { _, _ ->
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/guide/setup/")))
                 }.setNegativeButton("Cancel", null).show()
-            gameFilesStatus.text = "Shizuku is not running. Start it through Wireless Debugging, then retry."
+            setGameDataStatus("Shizuku is not running. Start it through Wireless Debugging, then retry.")
             return
         }
         if (Shizuku.isPreV11()) {
             pendingShizukuAction = null
-            gameFilesStatus.text = "This Shizuku version is too old. Update Shizuku and retry."
+            setGameDataStatus("This Shizuku version is too old. Update Shizuku and retry.")
             return
         }
         try {
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                 Shizuku.requestPermission(shizukuPermissionRequestCode)
-                gameFilesStatus.text = "Waiting for Shizuku permission…"
+                setGameDataStatus("Waiting for Shizuku permission…")
                 return
             }
             bindShizukuStorageService()
         } catch (e: Exception) {
             pendingShizukuAction = null
-            gameFilesStatus.text = e.message ?: "Could not connect to Shizuku."
+            setGameDataStatus(e.message ?: "Could not connect to Shizuku.")
         }
     }
     private fun bindShizukuStorageService() {
@@ -1400,11 +1526,11 @@ class MainActivity : Activity() {
         try {
             shizukuBindPending = true
             Shizuku.bindUserService(shizukuServiceArgs, shizukuServiceConnection)
-            gameFilesStatus.text = "Connecting to Shizuku's storage service…"
+            setGameDataStatus("Connecting to Shizuku's storage service…")
         } catch (e: Exception) {
             shizukuBindPending = false
             pendingShizukuAction = null
-            gameFilesStatus.text = e.message ?: "Could not bind the Shizuku storage service."
+            setGameDataStatus(e.message ?: "Could not bind the Shizuku storage service.")
         }
     }
     private fun locateShizukuGameDataFolder() {
@@ -1424,7 +1550,9 @@ class MainActivity : Activity() {
                             .putString("game_data_root_dir", found)
                             .putString("game_data_backend", "shizuku")
                             .remove("game_data_tree")
+                            .putBoolean("setup_complete", false)
                             .apply()
+                        rr3IndexCacheFile.delete()
                         gameDataValue.text = found
                         if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = true
                         preferences.edit().putBoolean("setup_complete", false).apply()
@@ -1536,7 +1664,9 @@ class MainActivity : Activity() {
                     .putString("game_data_root_dir", found)
                     .putString("game_data_backend", "root")
                     .remove("game_data_tree")
+                    .putBoolean("setup_complete", false)
                     .apply()
+                rr3IndexCacheFile.delete()
                 runOnUiThread {
                     gameDataValue.text = found
                     if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = true
@@ -1643,7 +1773,7 @@ class MainActivity : Activity() {
             addNode(gameFilesContainer, child, 0)
         }
         gameFilesStatus.text = if (query.isEmpty()) {
-            "Indexed ${indexedGameFiles.size} files across the full RR3 .depot."
+            "Indexed ${indexedGameFiles.size} files across the full RR3 .depot. ${rr3ViewerCatalogStatus}"
         } else {
             "Showing ${matches.size} file(s) matching “${gameFilesSearch.text}”. Matching folders are expanded."
         }
