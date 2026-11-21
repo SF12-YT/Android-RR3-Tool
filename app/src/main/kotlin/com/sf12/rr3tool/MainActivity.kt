@@ -414,8 +414,8 @@ class MainActivity : Activity() {
             setPadding(dp(10), 0, dp(8), 0)
         }
         rr3ViewerToolbar.addView(rr3ViewerScreenTitle, LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        ))
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { marginStart = dp(8); marginEnd = dp(8) })
         rr3ViewerToolbar.addView(compactOverlayButton("Reset") { rr3ViewerSurface?.resetCamera() })
         rr3ViewerScreen.addView(rr3ViewerToolbar, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
