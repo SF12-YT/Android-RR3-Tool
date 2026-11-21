@@ -3511,7 +3511,7 @@ void main() {
     float tangent = tan(clamp(uFovY, 0.15, 2.6) * 0.5);
     vec2 ndc = vUv * 2.0 - 1.0;
     vec3 direction = normalize(vec3(ndc.x * uAspect * tangent,
-                                    -ndc.y * tangent, 1.0));
+                                    ndc.y * tangent, 1.0));
     float longitude = atan(direction.x, direction.z) + uYaw;
     float latitude = asin(clamp(direction.y, -1.0, 1.0));
     vec2 uv = vec2(fract(0.5 + longitude / 6.28318530718),
@@ -3546,6 +3546,7 @@ void main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    while (glGetError() != GL_NO_ERROR) {}
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, pixels);
