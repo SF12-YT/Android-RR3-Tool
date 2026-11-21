@@ -3463,7 +3463,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     float mvp[16];
     buildViewerMvp(*session, width, height, yaw, pitch, zoom, mvp);
     glViewport(0, 0, width, height);
-    glClearColor(0.055f, 0.075f, 0.10f, 1.0f);
+    glClearColor(0.0941f, 0.1020f, 0.1843f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="rr3_background">#181A2F</color>
+    <color name="rr3_surface">#242E49</color>
+    <color name="rr3_green">#34715C</color>
+    <color name="rr3_coral">#FDA481</color>
+    <color name="rr3_crimson">#84182D</color>
+    <color name="rr3_burgundy">#54162B</color>
+    <color name="rr3_text">#F7F3F0</color>
+    <color name="rr3_text_muted">#C8C6D3</color>
+</resources>

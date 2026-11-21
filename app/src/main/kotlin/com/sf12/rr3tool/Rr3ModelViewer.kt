@@ -32,7 +32,7 @@ internal class Rr3ModelViewer(
     private var pinchDistance = 0f
 
     init {
-        setBackgroundColor(0xFF263442.toInt())
+        setBackgroundColor(UiPalette.background)
         glSurface.setEGLContextClientVersion(3)
         glSurface.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         glSurface.preserveEGLContextOnPause = true

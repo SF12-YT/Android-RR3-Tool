@@ -355,11 +355,11 @@ class MainActivity : Activity() {
         get() = File(stageDir, "TempSaveGame.dat")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.rgb(9, 17, 29)
-        window.navigationBarColor = Color.rgb(9, 17, 29)
+        window.statusBarColor = UiPalette.background
+        window.navigationBarColor = UiPalette.background
         val appRoot = FrameLayout(this)
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.rgb(9, 17, 29))
+            setBackgroundColor(UiPalette.background)
             isFillViewport = true
         }
         rootScrollView = scroll
@@ -373,19 +373,19 @@ class MainActivity : Activity() {
         ))
         editorScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(9, 17, 29))
+            setBackgroundColor(UiPalette.background)
             visibility = View.GONE
         }
         val editorToolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(10), dp(18), dp(10))
-            setBackgroundColor(0xFF0D1B2C.toInt())
+            setBackgroundColor(UiPalette.surface)
         }
         editorToolbar.addView(actionButton("‹ Back") {
             closeDataEditorAction?.invoke() ?: closeDataEditorScreen()
         })
-        editorScreenTitle = text("Editor", 18, Color.WHITE, bold = true)
+        editorScreenTitle = text("Editor", 18, UiPalette.text, bold = true)
         editorToolbar.addView(editorScreenTitle, LinearLayout.LayoutParams(
             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
         ).apply { marginStart = dp(14) })
@@ -401,11 +401,11 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
         rr3ViewerScreen = FrameLayout(this).apply {
-            setBackgroundColor(0xFF050B13.toInt())
+            setBackgroundColor(UiPalette.background)
             visibility = View.GONE
         }
         rr3ViewerScreenHost = FrameLayout(this).apply {
-            setBackgroundColor(0xFF101B29.toInt())
+            setBackgroundColor(UiPalette.surface)
         }
         rr3ViewerScreen.addView(rr3ViewerScreenHost, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
@@ -414,10 +414,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), dp(7), dp(8), dp(7))
-            background = rounded(0xCC0D1B2C.toInt(), dp(16).toFloat())
+            background = rounded(UiPalette.surfaceOverlay, dp(16).toFloat())
         }
         rr3ViewerToolbar.addView(compactOverlayButton("‹ Cars") { closeRr3FullScreenViewer() })
-        rr3ViewerScreenTitle = text("3D Viewer", 13, Color.WHITE, bold = true).apply {
+        rr3ViewerScreenTitle = text("3D Viewer", 13, UiPalette.text, bold = true).apply {
             maxLines = 1
             setPadding(dp(10), 0, dp(8), 0)
         }
@@ -435,11 +435,11 @@ class MainActivity : Activity() {
         })
         rr3ViewerScreenStatus = text(
             "Drag to rotate · Pinch to zoom",
-            10, 0xFFE3ECF7.toInt()
+            10, UiPalette.text
         ).apply {
             maxLines = 1
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = rounded(0xB20D1B2C.toInt(), dp(12).toFloat())
+            background = rounded(UiPalette.surfaceOverlayLight, dp(12).toFloat())
         }
         rr3ViewerScreen.addView(rr3ViewerScreenStatus, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -453,20 +453,20 @@ class MainActivity : Activity() {
         ))
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         page.addView(
-            text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
+            text("ANDROID EDITION  •  REAL RACING 3", 11, UiPalette.accent).apply {
                 letterSpacing = 0.10f
             },
             matchWrap()
         )
         page.addView(
-            text("RR3 Tool", 32, Color.WHITE, bold = true),
+            text("RR3 Tool", 32, UiPalette.text, bold = true),
             matchWrap(top = 7)
         )
         page.addView(
             text(
                 "A native Android port of the Monkey Tool RR3 workflows.",
                 14,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 5, bottom = 16)
         )
@@ -503,18 +503,18 @@ class MainActivity : Activity() {
             }
             tabButtons.forEach { (name, button) ->
                 val active = name == selected
-                button.background = rounded(
-                    if (active) 0xFF1766A8.toInt() else 0xFF121F30.toInt(),
+                button.background = interactiveBackground(
+                    if (active) UiPalette.primary else UiPalette.surface,
                     dp(18).toFloat()
                 )
-                button.setTextColor(if (active) Color.WHITE else 0xFF9BAFC5.toInt())
+                button.setTextColor(if (active) UiPalette.text else UiPalette.textMuted)
             }
         }
         for (name in tabNames) {
-            val button = text(name, 12, 0xFF9BAFC5.toInt(), bold = true).apply {
+            val button = text(name, 12, UiPalette.textMuted, bold = true).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(15), dp(10), dp(15), dp(10))
-                background = rounded(0xFF121F30.toInt(), dp(18).toFloat())
+                background = interactiveBackground(UiPalette.surface, dp(18).toFloat())
                 isClickable = true
                 isFocusable = true
                 setOnClickListener { selectTab(name) }
@@ -542,16 +542,16 @@ class MainActivity : Activity() {
         val aboutPage = tabPages.getValue("About")
         addSection(gameDataPage, "DEPOT INDEX")
         val gameCard = card(gameDataPage)
-        gameCard.addView(text("Full RR3 asset index", 17, Color.WHITE, bold = true), matchWrap())
+        gameCard.addView(text("Full RR3 asset index", 17, UiPalette.text, bold = true), matchWrap())
         gameCard.addView(
             text(
                 "Browse the complete installed .depot listing. The Index operation also reads and caches the RR3 car catalogue, so opening the 3D Viewer does not read those records again.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
-        gameFilesStatus = text("The RR3 depot has not been indexed yet.", 12, 0xFF9BAFC5.toInt())
+        gameFilesStatus = text("The RR3 depot has not been indexed yet.", 12, UiPalette.textMuted)
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
         indexGameFilesButton = actionButton("Re-index EVERYTHING") { indexGameDataFiles() }
         gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
@@ -568,22 +568,22 @@ class MainActivity : Activity() {
         })
         addSection(savePage, "SAVE EDITOR")
         val saveCard = card(savePage)
-        saveCard.addView(text("RR3 save location", 17, Color.WHITE, bold = true), matchWrap())
+        saveCard.addView(text("RR3 save location", 17, UiPalette.text, bold = true), matchWrap())
         saveCard.addView(
             text(
                 "Choose the folder containing character.2.dat. The original save is backed up before every write.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
-        saveFolderValue = text("No folder selected", 12, 0xFFB7C8D9.toInt())
+        saveFolderValue = text("No folder selected", 12, UiPalette.text)
         saveCard.addView(saveFolderValue, matchWrap(top = 12))
         saveCard.addView(
             actionButton("Choose save folder") { chooseFolder(requestSaveFolder) },
             matchWrap(top = 12)
         )
-        rootSaveValue = text("Root access not configured", 12, 0xFFB7C8D9.toInt())
+        rootSaveValue = text("Root access not configured", 12, UiPalette.text)
         saveCard.addView(rootSaveValue, matchWrap(top = 12))
         saveCard.addView(
             actionButton("Locate private RR3 save folder with root") { locateRootSaveFolder() },
@@ -593,7 +593,7 @@ class MainActivity : Activity() {
             text(
                 "Root access is optional. It may be needed to reach the game's private doc folder on Android 11 and later.",
                 11,
-                0xFF7F93A9.toInt()
+                UiPalette.textSubtle
             ),
             matchWrap(top = 6)
         )
@@ -602,7 +602,7 @@ class MainActivity : Activity() {
         saveStatus = text(
             "Select a save folder, then load the save.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         saveCard.addView(saveStatus, matchWrap(top = 10))
         saveFieldsContainer = LinearLayout(this).apply {
@@ -610,7 +610,7 @@ class MainActivity : Activity() {
         }
         saveCard.addView(saveFieldsContainer, matchWrap(top = 12))
         saveCard.addView(
-            text("ALL FIELDS (ADVANCED)", 11, 0xFF75B9F1.toInt(), bold = true),
+            text("ALL FIELDS (ADVANCED)", 11, UiPalette.accent, bold = true),
             matchWrap(top = 18, bottom = 8)
         )
         advancedSearch = editBox("Search save field names", "", numeric = false)
@@ -627,14 +627,14 @@ class MainActivity : Activity() {
         addSection(transformPage, "RR3 DATA TRANSFORM")
         val dataCard = card(transformPage)
         dataCard.addView(
-            text("Decode or re-encode RR3 data and game text", 17, Color.WHITE, bold = true),
+            text("Decode or re-encode RR3 data and game text", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         dataCard.addView(
             text(
                 "The upstream RR3 RC4 transform is built into the native engine. Choose .nct/.gui or .bin/.xml pairs to decode or encode. RR3 gametext.txt and text_<language>.txt have their own cipher; the app asks whether to decode or encode those.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -642,19 +642,19 @@ class MainActivity : Activity() {
             actionButton("Choose RR3 data (.nct / .bin / .gui / .xml / game text .txt)") { chooseRr3DataFile() },
             matchWrap(top = 12)
         )
-        dataStatus = text("No RR3 data file selected.", 12, 0xFF9BAFC5.toInt())
+        dataStatus = text("No RR3 data file selected.", 12, UiPalette.textMuted)
         dataCard.addView(dataStatus, matchWrap(top = 10))
         addSection(editorPage, "RR3 DATA EDITOR")
         val editorCard = card(editorPage)
         editorCard.addView(
-            text("Edit supported RR3 data files as text", 17, Color.WHITE, bold = true),
+            text("Edit supported RR3 data files as text", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         editorCard.addView(
             text(
                 "Open supported .sounddef, .evt, table and text files. events.dat gets a compact, disk-backed text view of its series, tiers and events; saving rebuilds the RR3 binary and restores NCT encryption when the source was .dat.nct.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -662,19 +662,19 @@ class MainActivity : Activity() {
             actionButton("Open editable RR3 data file") { chooseEditableDataFile() },
             matchWrap(top = 12)
         )
-        dataEditorStatus = text("No data file opened.", 12, 0xFF9BAFC5.toInt())
+        dataEditorStatus = text("No data file opened.", 12, UiPalette.textMuted)
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
         addSection(carPage, "RR3 CAR EDITOR")
         val carCard = card(carPage)
         carCard.addView(
-            text("Edit a car's structured depot index", 17, Color.WHITE, bold = true),
+            text("Edit a car's structured depot index", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         carCard.addView(
             text(
                 "Open a vehicles/data/<id>_<car>.bin.nct file. The app reads the actual car fields and lets you change supported values without editing encrypted bytes by hand. Keep edited text fields the same UTF-8 byte length; RR3's encrypted record layout cannot safely shift later fields. Output is saved as a separate file.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -682,7 +682,7 @@ class MainActivity : Activity() {
             actionButton("Choose car data (.bin.nct)") { chooseCarEditorFile() },
             matchWrap(top = 12)
         )
-        carEditorStatus = text("No car data file opened.", 12, 0xFF9BAFC5.toInt())
+        carEditorStatus = text("No car data file opened.", 12, UiPalette.textMuted)
         carCard.addView(carEditorStatus, matchWrap(top = 10))
         carFieldsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -691,21 +691,21 @@ class MainActivity : Activity() {
         addSection(liveryPage, "RR3 LIVERY MANAGER")
         val liveryCard = card(liveryPage)
         liveryCard.addView(
-            text("Manage a car's livery slots", 17, Color.WHITE, bold = true),
+            text("Manage a car's livery slots", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         liveryCard.addView(
             text(
                 "Choose a car from the indexed depot. Its existing livery slots are listed here before you add another one. New slots are appended; existing slots are preserved.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
         liveryStatus = text(
             "Index the RR3 .depot in Index to load the available cars.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         liveryCard.addView(liveryStatus, matchWrap(top = 10))
         val liveryCarsPanel = LinearLayout(this).apply {
@@ -756,14 +756,14 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         liveryCarsPanel.addView(
-            text("SELECTED CAR · LIVERY SLOTS", 11, 0xFF8FA4BA.toInt(), bold = true),
+            text("SELECTED CAR · LIVERY SLOTS", 11, UiPalette.textSecondary, bold = true),
             matchWrap(top = 12, bottom = 6)
         )
         liveryCarsPanel.addView(liverySlotsContainer, matchWrap())
         liveryManualStatus = text(
             "Choose a .bin.nct file to inspect its livery entries. The indexed car list remains available in the other tab.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         liveryManualPanel.addView(liveryManualStatus, matchWrap(top = 10))
         liveryManualPanel.addView(
@@ -777,7 +777,7 @@ class MainActivity : Activity() {
         liveryPaintStatus = text(
             "Edit the Motorsports label and Road Cars paint-material/colour names. Index Index first.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         liveryPaintPanel.addView(liveryPaintStatus, matchWrap(top = 10))
         liveryPaintPanel.addView(
@@ -798,7 +798,7 @@ class MainActivity : Activity() {
         liveryDecodedPanel.addView(
             text(
                 "This view shows every field currently returned by the native livery parser. It is an experimental inspection view, not a complete dump of every unknown byte in the NCT format.",
-                11, 0xFF8FA4BA.toInt()
+                11, UiPalette.textSecondary
             ),
             matchWrap(top = 12)
         )
@@ -806,14 +806,14 @@ class MainActivity : Activity() {
         addSection(careerPage, "RR3 CAREER INSPECTOR")
         val careerCard = card(careerPage)
         careerCard.addView(
-            text("Inspect the career database", 17, Color.WHITE, bold = true),
+            text("Inspect the career database", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         careerCard.addView(
             text(
                 "Open data/events.dat.nct here to inspect its RRCE career structure, including tracks, series, tiers and event counts. Use Data Editor to edit the supported career fields and rebuild the file.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -821,7 +821,7 @@ class MainActivity : Activity() {
             actionButton("Choose events.dat.nct") { chooseCareerInspectorFile() },
             matchWrap(top = 12)
         )
-        careerInspectorStatus = text("No career file opened.", 12, 0xFF9BAFC5.toInt())
+        careerInspectorStatus = text("No career file opened.", 12, UiPalette.textMuted)
         careerCard.addView(careerInspectorStatus, matchWrap(top = 10))
         careerDetailsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -830,14 +830,14 @@ class MainActivity : Activity() {
         addSection(trackPage, "RR3 TRACK INSPECTOR")
         val trackCard = card(trackPage)
         trackCard.addView(
-            text("Inspect a track's data record", 17, Color.WHITE, bold = true),
+            text("Inspect a track's data record", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         trackCard.addView(
             text(
                 "Open a Tracks/data/*.bin.nct file to read its track ID, display name, track folder, layout, time of day and country. This is a read-only inspection tool.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -845,7 +845,7 @@ class MainActivity : Activity() {
             actionButton("Choose track data (.bin.nct)") { chooseTrackInspectorFile() },
             matchWrap(top = 12)
         )
-        trackInspectorStatus = text("No track data file opened.", 12, 0xFF9BAFC5.toInt())
+        trackInspectorStatus = text("No track data file opened.", 12, UiPalette.textMuted)
         trackCard.addView(trackInspectorStatus, matchWrap(top = 10))
         trackDetailsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -854,13 +854,13 @@ class MainActivity : Activity() {
         addSection(viewerPage, "RR3 3D VIEWER")
         val viewerCard = card(viewerPage)
         viewerCard.addView(
-            text("Load a car from the installed RR3 depot", 17, Color.WHITE, bold = true),
+            text("Load a car from the installed RR3 depot", 17, UiPalette.text, bold = true),
             matchWrap()
         )
         viewerCard.addView(
             text(
                 "Choose a car from the catalogue cached during Index, then load its exterior model and textures. The model opens in an immersive landscape viewer. The preview is read-only.",
-                13, 0xFF9BAFC5.toInt()
+                13, UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -870,32 +870,32 @@ class MainActivity : Activity() {
         viewerCard.addView(rr3ViewerCarListContainer, matchWrap(top = 12))
         rr3ViewerStatus = text(
             "Expand a manufacturer to browse its car models.",
-            12, 0xFF9BAFC5.toInt()
+            12, UiPalette.textMuted
         )
         viewerCard.addView(rr3ViewerStatus, matchWrap(top = 10, bottom = 8))
         addSection(aboutPage, "NATIVE ENGINE")
         val engineCard = card(aboutPage)
-        engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
+        engineValue = text("Checking native engine…", 13, UiPalette.text)
         engineCard.addView(engineValue, matchWrap())
         engineCard.addView(
             text(
                 "The standalone 3D Viewer reads installed RR3 car models and available textures. Model editing and replacement are separate future work.",
                 12,
-                0xFF7F93A9.toInt()
+                UiPalette.textSubtle
             ),
             matchWrap(top = 12)
         )
         addSection(aboutPage, "PORT STATUS")
         val statusCard = card(aboutPage)
         statusCard.addView(
-            text("Android foundation", 16, Color.WHITE, bold = true),
+            text("Android foundation", 16, UiPalette.text, bold = true),
             matchWrap()
         )
         statusCard.addView(
             text(
                 "The app uses the upstream C++ save parser, car-data parser and career-file reader. Large NCT transforms run in the native engine; source game files remain untouched unless you explicitly export replacements.",
                 13,
-                0xFF9BAFC5.toInt()
+                UiPalette.textMuted
             ),
             matchWrap(top = 6)
         )
@@ -903,7 +903,7 @@ class MainActivity : Activity() {
             text(
                 "Unofficial fan project  •  Not affiliated with EA",
                 11,
-                0xFF61758B.toInt()
+                UiPalette.textSubtle
             ).apply { gravity = Gravity.CENTER },
             matchWrap(top = 24)
         )
@@ -923,7 +923,7 @@ class MainActivity : Activity() {
 
         setupScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(9, 17, 29))
+            setBackgroundColor(UiPalette.background)
             setPadding(dp(22), dp(20), dp(22), dp(20))
         }
         val setupScroll = ScrollView(this).apply { isFillViewport = true }
@@ -934,25 +934,25 @@ class MainActivity : Activity() {
         setupScroll.addView(setupPage)
         setupScreen.addView(setupScroll, matchWrap())
         setupPage.addView(
-            text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
+            text("ANDROID EDITION  •  REAL RACING 3", 11, UiPalette.accent).apply {
                 letterSpacing = 0.10f
             },
             matchWrap()
         )
-        setupPage.addView(text("RR3 Tool", 32, Color.WHITE, bold = true), matchWrap(top = 7))
+        setupPage.addView(text("RR3 Tool", 32, UiPalette.text, bold = true), matchWrap(top = 7))
         setupPage.addView(
             text(
                 "A quick two-step setup. The app reads the installed depot directly; it does not copy the game files.",
-                14, 0xFF9BAFC5.toInt()
+                14, UiPalette.textMuted
             ),
             matchWrap(top = 5, bottom = 20)
         )
         val detectCard = card(setupPage)
-        detectCard.addView(text("STEP 1  ·  DETECT RR3 FILES", 12, 0xFF75B9F1.toInt(), bold = true), matchWrap())
+        detectCard.addView(text("STEP 1  ·  DETECT RR3 FILES", 12, UiPalette.accent, bold = true), matchWrap())
         detectCard.addView(
             text(
                 "Choose one access method. Shizuku works without root when started through Wireless Debugging. Root requires a Superuser grant.",
-                13, 0xFF9BAFC5.toInt()
+                13, UiPalette.textMuted
             ),
             matchWrap(top = 7)
         )
@@ -966,25 +966,25 @@ class MainActivity : Activity() {
         )
         gameDataValue = text(
             savedRootGameData ?: "RR3 depot not detected yet.",
-            11, 0xFFB7C8D9.toInt()
+            11, UiPalette.text
         ).apply {
             setPadding(dp(10), dp(9), dp(10), dp(9))
-            background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+            background = rounded(UiPalette.background, dp(9).toFloat())
         }
         detectCard.addView(gameDataValue, matchWrap(top = 12))
         setupStatus = text(
             if (savedRootGameData.isNullOrBlank()) "Detect your installed RR3 depot to continue."
             else "RR3 depot already detected. Continue to the full index.",
-            12, 0xFF9BAFC5.toInt()
+            12, UiPalette.textMuted
         )
         detectCard.addView(setupStatus, matchWrap(top = 9))
 
         val indexCard = card(setupPage)
-        indexCard.addView(text("STEP 2  ·  INDEX EVERYTHING", 12, 0xFF75B9F1.toInt(), bold = true), matchWrap())
+        indexCard.addView(text("STEP 2  ·  INDEX EVERYTHING", 12, UiPalette.accent, bold = true), matchWrap())
         indexCard.addView(
             text(
                 "Build one complete file index for the depot, including models, textures, animations, sidecars and RR3 car records. The car catalogue is parsed here and reused by the 3D Viewer.",
-                13, 0xFF9BAFC5.toInt()
+                13, UiPalette.textMuted
             ),
             matchWrap(top = 7)
         )
@@ -1684,7 +1684,7 @@ class MainActivity : Activity() {
         gameFilesContainer.removeAllViews()
         if (indexedGameFiles.isEmpty()) {
             gameFilesContainer.addView(
-                text("No indexed files yet.", 12, 0xFF7F93A9.toInt()),
+                text("No indexed files yet.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -1695,7 +1695,7 @@ class MainActivity : Activity() {
         }
         if (matches.isEmpty()) {
             gameFilesContainer.addView(
-                text("No matching RR3 files.", 12, 0xFF7F93A9.toInt()),
+                text("No matching RR3 files.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -1721,11 +1721,11 @@ class MainActivity : Activity() {
                 val folderRow = text(
                     (if (expanded) "▾  " else "▸  ") + node.name + "  ·  " + node.children.size,
                     13,
-                    Color.WHITE,
+                    UiPalette.text,
                     bold = true
                 ).apply {
                     setPadding(dp(11 + depth * 16), dp(10), dp(10), dp(10))
-                    background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.surface, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
                     setOnClickListener {
@@ -1748,16 +1748,16 @@ class MainActivity : Activity() {
                 val fileRow = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(11 + depth * 16), dp(8), dp(10), dp(8))
-                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
                     setOnClickListener { showGameFileActions(entry) }
                 }
                 parent.addView(fileRow, matchWrap(bottom = 4))
-                fileRow.addView(text("📄  " + entry.name, 12, Color.WHITE, bold = true), matchWrap())
+                fileRow.addView(text("📄  " + entry.name, 12, UiPalette.text, bold = true), matchWrap())
                 val size = if (entry.sizeBytes >= 0) "  ·  ${entry.sizeBytes} bytes" else ""
                 fileRow.addView(
-                    text(entry.relativePath + size, 10, 0xFF8FA4BA.toInt()),
+                    text(entry.relativePath + size, 10, UiPalette.textSecondary),
                     matchWrap(top = 2)
                 )
             }
@@ -1831,7 +1831,7 @@ class MainActivity : Activity() {
             rr3ViewerCars = emptyList()
             rr3ViewerStatus.text = "Complete the depot index before loading a car."
             rr3ViewerCarListContainer.addView(
-                text("Index the depot to load cars.", 12, 0xFF7F93A9.toInt()),
+                text("Index the depot to load cars.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -1839,7 +1839,7 @@ class MainActivity : Activity() {
         if (rr3ViewerCars.isEmpty()) {
             rr3ViewerStatus.text = rr3ViewerCatalogStatus
             rr3ViewerCarListContainer.addView(
-                text("No cached car records.", 12, 0xFF7F93A9.toInt()),
+                text("No cached car records.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -1850,10 +1850,10 @@ class MainActivity : Activity() {
             val expanded = brand in expandedViewerBrands
             val header = text(
                 (if (expanded) "▾  " else "▸  ") + brand + "  ·  " + cars.size + " model(s)",
-                14, Color.WHITE, bold = true
+                14, UiPalette.text, bold = true
             ).apply {
                 setPadding(dp(12), dp(12), dp(10), dp(12))
-                background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
+                background = rounded(UiPalette.surface, dp(9).toFloat())
                 isClickable = true
                 isFocusable = true
                 setOnClickListener {
@@ -1870,15 +1870,15 @@ class MainActivity : Activity() {
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), dp(10), dp(12), dp(10))
-                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
                     setOnClickListener { loadRr3ViewerCar(car) }
                 }
                 rr3ViewerCarListContainer.addView(row, matchWrap(bottom = 5))
-                row.addView(text(car.displayName, 13, Color.WHITE, bold = true), matchWrap())
+                row.addView(text(car.displayName, 13, UiPalette.text, bold = true), matchWrap())
                 row.addView(
-                    text(car.modelFolder + "  ·  Tap to load", 10, 0xFF8FA4BA.toInt()),
+                    text(car.modelFolder + "  ·  Tap to load", 10, UiPalette.textSecondary),
                     matchWrap(top = 2)
                 )
             }
@@ -2016,7 +2016,7 @@ class MainActivity : Activity() {
             liveryDecodedContainer.addView(
                 text(
                     "Select a car in Cars, or load a .bin.nct file in Manual, then return here to inspect its decoded data.",
-                    12, 0xFF9BAFC5.toInt()
+                    12, UiPalette.textMuted
                 ),
                 matchWrap()
             )
@@ -2024,11 +2024,11 @@ class MainActivity : Activity() {
         }
         fun addDetail(parent: LinearLayout, label: String, value: String) {
             parent.addView(
-                text(label, 10, 0xFF75B9F1.toInt(), bold = true),
+                text(label, 10, UiPalette.accent, bold = true),
                 matchWrap(top = 9)
             )
             parent.addView(
-                text(value.ifBlank { "—" }, 12, Color.WHITE).apply {
+                text(value.ifBlank { "—" }, 12, UiPalette.text).apply {
                     setTextIsSelectable(true)
                 },
                 matchWrap(top = 2)
@@ -2039,7 +2039,7 @@ class MainActivity : Activity() {
         }
         val title = selectedLiverySourceName.ifBlank { "Livery NCT" }
         liveryDecodedContainer.addView(
-            text(title, 15, Color.WHITE, bold = true),
+            text(title, 15, UiPalette.text, bold = true),
             matchWrap(bottom = 4)
         )
         addDetail(liveryDecodedContainer, "INTERNAL CAR IDENTIFIER", payload.optString("car"))
@@ -2054,7 +2054,7 @@ class MainActivity : Activity() {
         )
         if (count == 0) {
             liveryDecodedContainer.addView(
-                text("The parser decoded the container but found no livery records.", 12, 0xFFFFC27A.toInt()),
+                text("The parser decoded the container but found no livery records.", 12, UiPalette.accent),
                 matchWrap(top = 12)
             )
         }
@@ -2067,14 +2067,14 @@ class MainActivity : Activity() {
             val record = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(10), dp(12), dp(12))
-                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+                background = rounded(UiPalette.background, dp(10).toFloat())
             }
             liveryDecodedContainer.addView(record, matchWrap(top = 12))
             record.addView(
                 text(
                     "RECORD ${index + 1} · " +
                         stringValue(item, "display").ifBlank { stringValue(item, "file").ifBlank { "Unnamed" } },
-                    13, Color.WHITE, bold = true
+                    13, UiPalette.text, bold = true
                 ),
                 matchWrap(bottom = 3)
             )
@@ -2097,19 +2097,19 @@ class MainActivity : Activity() {
             record.addView(
                 text(
                     "TEXTURE OVERRIDES · ${overrides?.length() ?: 0}",
-                    10, 0xFF75B9F1.toInt(), bold = true
+                    10, UiPalette.accent, bold = true
                 ),
                 matchWrap(top = 12, bottom = 4)
             )
             if (overrides == null || overrides.length() == 0) {
-                record.addView(text("None parsed", 11, 0xFF8FA4BA.toInt()), matchWrap())
+                record.addView(text("None parsed", 11, UiPalette.textSecondary), matchWrap())
             } else {
                 for (overrideIndex in 0 until overrides.length()) {
                     val override = overrides.optJSONObject(overrideIndex) ?: continue
                     record.addView(
                         text(
                             "Slot ${override.optInt("slot")}  →  " + stringValue(override, "path"),
-                            11, 0xFFD4E1EF.toInt()
+                            11, UiPalette.text
                         ).apply { setTextIsSelectable(true) },
                         matchWrap(top = 3)
                     )
@@ -2119,19 +2119,19 @@ class MainActivity : Activity() {
             record.addView(
                 text(
                     "MESH / MATERIAL ASSIGNMENTS · ${materials?.length() ?: 0}",
-                    10, 0xFF75B9F1.toInt(), bold = true
+                    10, UiPalette.accent, bold = true
                 ),
                 matchWrap(top = 12, bottom = 4)
             )
             if (materials == null || materials.length() == 0) {
-                record.addView(text("None parsed", 11, 0xFF8FA4BA.toInt()), matchWrap())
+                record.addView(text("None parsed", 11, UiPalette.textSecondary), matchWrap())
             } else {
                 for (materialIndex in 0 until materials.length()) {
                     val material = materials.optJSONObject(materialIndex) ?: continue
                     record.addView(
                         text(
                             "Mesh ${material.optInt("mesh")}  →  material ${material.optInt("material")}",
-                            11, 0xFFD4E1EF.toInt()
+                            11, UiPalette.text
                         ).apply { setTextIsSelectable(true) },
                         matchWrap(top = 3)
                     )
@@ -2139,11 +2139,11 @@ class MainActivity : Activity() {
             }
         }
         liveryDecodedContainer.addView(
-            text("RAW PARSER OUTPUT · JSON", 11, 0xFF75B9F1.toInt(), bold = true),
+            text("RAW PARSER OUTPUT · JSON", 11, UiPalette.accent, bold = true),
             matchWrap(top = 18, bottom = 6)
         )
         liveryDecodedContainer.addView(
-            text(payload.toString(2), 10, 0xFFB7C8D9.toInt()).apply {
+            text(payload.toString(2), 10, UiPalette.text).apply {
                 typeface = Typeface.MONOSPACE
                 setTextIsSelectable(true)
             },
@@ -2174,7 +2174,7 @@ class MainActivity : Activity() {
                 "No car livery lists were found in the indexed depot (the generic default list is hidden)."
             }
             liveryCarListContainer.addView(
-                text("No selectable cars yet.", 12, 0xFF7F93A9.toInt()),
+                text("No selectable cars yet.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -2201,10 +2201,10 @@ class MainActivity : Activity() {
             val expanded = brand in expandedLiveryBrands
             val brandRow = text(
                 (if (expanded) "▾  " else "▸  ") + brand + "  ·  " + cars.size + " car(s)",
-                14, Color.WHITE, bold = true
+                14, UiPalette.text, bold = true
             ).apply {
                 setPadding(dp(12), dp(12), dp(10), dp(12))
-                background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
+                background = rounded(UiPalette.surface, dp(9).toFloat())
                 isClickable = true
                 isFocusable = true
                 setOnClickListener {
@@ -2219,14 +2219,14 @@ class MainActivity : Activity() {
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), dp(10), dp(12), dp(10))
-                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
                     setOnClickListener { loadLiverySlots(choice.entry) }
                 }
                 liveryCarListContainer.addView(row, matchWrap(bottom = 5))
-                row.addView(text(choice.displayName, 13, Color.WHITE, bold = true), matchWrap())
-                row.addView(text(choice.carFolder, 10, 0xFF8FA4BA.toInt()), matchWrap(top = 2))
+                row.addView(text(choice.displayName, 13, UiPalette.text, bold = true), matchWrap())
+                row.addView(text(choice.carFolder, 10, UiPalette.textSecondary), matchWrap(top = 2))
             }
         }
     }
@@ -2296,12 +2296,12 @@ class MainActivity : Activity() {
     ) {
         target.removeAllViews()
         target.addView(
-            text("$carFolder · ${liveryArray.length()} existing slot(s)", 16, Color.WHITE, bold = true),
+            text("$carFolder · ${liveryArray.length()} existing slot(s)", 16, UiPalette.text, bold = true),
             matchWrap(bottom = 9)
         )
         if (liveryArray.length() == 0) {
             target.addView(
-                text("This car has no readable livery entries to use as a template.", 12, 0xFF9BAFC5.toInt()),
+                text("This car has no readable livery entries to use as a template.", 12, UiPalette.textMuted),
                 matchWrap()
             )
             return
@@ -2323,16 +2323,16 @@ class MainActivity : Activity() {
             val slot = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(10), dp(12), dp(10))
-                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+                background = rounded(UiPalette.background, dp(10).toFloat())
             }
             target.addView(slot, matchWrap(bottom = 6))
             slot.addView(
-                text("Slot ${i + 1}  ·  $display", 13, Color.WHITE, bold = true),
+                text("Slot ${i + 1}  ·  $display", 13, UiPalette.text, bold = true),
                 matchWrap()
             )
             if (details.isNotEmpty()) {
                 slot.addView(
-                    text(details.joinToString("  ·  "), 11, 0xFF8FA4BA.toInt()),
+                    text(details.joinToString("  ·  "), 11, UiPalette.textSecondary),
                     matchWrap(top = 3)
                 )
             }
@@ -2381,7 +2381,7 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(8), dp(20), dp(4))
         }
         fun addField(label: String, value: String, hint: String = label): EditText {
-            content.addView(text(label, 12, Color.WHITE, bold = true), matchWrap(bottom = 4))
+            content.addView(text(label, 12, UiPalette.text, bold = true), matchWrap(bottom = 4))
             return editBox(hint, value, numeric = false).also {
                 content.addView(it, matchWrap(bottom = 9))
             }
@@ -2755,7 +2755,7 @@ class MainActivity : Activity() {
         }
         if (special.isNotEmpty()) {
             liveryPaintContainer.addView(
-                text("MOTORSPORTS · OFFICIAL / SPECIAL LABEL", 11, 0xFF8FA4BA.toInt(), bold = true),
+                text("MOTORSPORTS · OFFICIAL / SPECIAL LABEL", 11, UiPalette.textSecondary, bold = true),
                 matchWrap(bottom = 6)
             )
             for (item in special) {
@@ -2765,12 +2765,12 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(12), dp(10), dp(10), dp(10))
-                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.background, dp(9).toFloat())
                 }
                 val label = text(
                     current.ifBlank { fallbackKeyName(key) },
                     13,
-                    Color.WHITE,
+                    UiPalette.text,
                     bold = true
                 )
                 row.addView(label, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -2788,12 +2788,12 @@ class MainActivity : Activity() {
             }
         }
         liveryPaintContainer.addView(
-            text("ROAD CARS · PAINT MATERIAL AND COLOUR", 11, 0xFF8FA4BA.toInt(), bold = true),
+            text("ROAD CARS · PAINT MATERIAL AND COLOUR", 11, UiPalette.textSecondary, bold = true),
             matchWrap(top = 12, bottom = 6)
         )
         if (paintOptions.length() == 0) {
             liveryPaintContainer.addView(
-                text("No Road Cars paint options were found in custom.paints.nct.", 12, 0xFF9BAFC5.toInt()),
+                text("No Road Cars paint options were found in custom.paints.nct.", 12, UiPalette.textMuted),
                 matchWrap()
             )
         }
@@ -2813,10 +2813,10 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(12), dp(10), dp(10), dp(10))
-                background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                background = rounded(UiPalette.background, dp(9).toFloat())
             }
             row.addView(
-                text(values.joinToString("  ·  ").ifBlank { "Paint option ${i + 1}" }, 13, Color.WHITE, bold = true),
+                text(values.joinToString("  ·  ").ifBlank { "Paint option ${i + 1}" }, 13, UiPalette.text, bold = true),
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             )
             row.addView(actionButton("Edit") {
@@ -2840,7 +2840,7 @@ class MainActivity : Activity() {
         }.filterNot { it.optString("key").endsWith("_SPECIAL", ignoreCase = true) }
         if (otherPackLabels.isNotEmpty()) {
             liveryPaintContainer.addView(
-                text("PAINT-PACK CATEGORY NAMES", 11, 0xFF8FA4BA.toInt(), bold = true),
+                text("PAINT-PACK CATEGORY NAMES", 11, UiPalette.textSecondary, bold = true),
                 matchWrap(top = 12, bottom = 6)
             )
             for (item in otherPackLabels) {
@@ -2850,10 +2850,10 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(12), dp(10), dp(10), dp(10))
-                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    background = rounded(UiPalette.background, dp(9).toFloat())
                 }
                 row.addView(
-                    text(value.ifBlank { fallbackKeyName(key) }, 13, Color.WHITE, bold = true),
+                    text(value.ifBlank { fallbackKeyName(key) }, 13, UiPalette.text, bold = true),
                     LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 )
                 row.addView(actionButton("Edit") {
@@ -2881,7 +2881,7 @@ class MainActivity : Activity() {
         }
         val inputs = fields.map { field ->
             content.addView(
-                text(field.label, 12, Color.WHITE, bold = true),
+                text(field.label, 12, UiPalette.text, bold = true),
                 matchWrap(bottom = 4)
             )
             val input = editBox(field.label, field.value, numeric = false)
@@ -2892,7 +2892,7 @@ class MainActivity : Activity() {
             text(
                 "Fields are optional individually. Leave a field as-is to keep its current text; at least one field must contain text to save.",
                 11,
-                0xFF8499AF.toInt()
+                UiPalette.textSecondary
             ),
             matchWrap(top = 2)
         )
@@ -3181,9 +3181,9 @@ class MainActivity : Activity() {
         }
         content.addView(text(
             "Append a new slot to $carFolder. The selected livery is copied as the template and its body texture is recoloured. Existing slots are preserved.",
-            12, 0xFF9BAFC5.toInt()
+            12, UiPalette.textMuted
         ), matchWrap(bottom = 10))
-        content.addView(text("Template livery", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        content.addView(text("Template livery", 12, UiPalette.text, bold = true), matchWrap(bottom = 5))
         val templateSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, labels).also {
                 it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -3192,9 +3192,9 @@ class MainActivity : Activity() {
         }
         content.addView(templateSpinner, matchWrap(bottom = 10))
         val nameInput = editBox("Livery display name", "", numeric = false)
-        content.addView(text("Display name", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        content.addView(text("Display name", 12, UiPalette.text, bold = true), matchWrap(bottom = 5))
         content.addView(nameInput, matchWrap(bottom = 10))
-        content.addView(text("Button colour · RGB (0–255)", 12, Color.WHITE, bold = true), matchWrap(bottom = 5))
+        content.addView(text("Button colour · RGB (0–255)", 12, UiPalette.text, bold = true), matchWrap(bottom = 5))
         val rgbRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
@@ -3209,7 +3209,7 @@ class MainActivity : Activity() {
         content.addView(rgbRow, matchWrap())
         content.addView(text(
             "The update is exported as a ZIP containing the new texture, updated livery list and refreshed asset-cache file. Apply it to a backup of the depot and test it in-game.",
-            11, 0xFF8499AF.toInt()
+            11, UiPalette.textSecondary
         ), matchWrap(top = 10))
         val dialog = AlertDialog.Builder(this)
             .setTitle("Add livery slot")
@@ -3784,14 +3784,14 @@ class MainActivity : Activity() {
         root.addView(
             text(
                 "${entry.relativePath} · ${points.size} points",
-                11, 0xFF75B9F1.toInt(), bold = true
+                11, UiPalette.accent, bold = true
             ),
             matchWrap(bottom = 6)
         )
         root.addView(
             text(
                 "These are named 3D hardpoints used by the car asset, not performance settings. Tap a point, then edit its X/Y/Z position or nudge it. HINGE_ points also store orientation. Export creates a separate edited file; the original stays untouched.",
-                12, 0xFF9BAFC5.toInt()
+                12, UiPalette.textMuted
             ),
             matchWrap(bottom = 10)
         )
@@ -3800,7 +3800,7 @@ class MainActivity : Activity() {
             isNestedScrollingEnabled = true
             isVerticalScrollBarEnabled = true
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            background = rounded(0xFF091522.toInt(), dp(10).toFloat())
+            background = rounded(UiPalette.background, dp(10).toFloat())
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
@@ -3819,7 +3819,7 @@ class MainActivity : Activity() {
         root.addView(listScroll, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, dp(235)
         ).apply { bottomMargin = dp(10) })
-        val selectedTitle = text("", 13, Color.WHITE, bold = true)
+        val selectedTitle = text("", 13, UiPalette.text, bold = true)
         root.addView(selectedTitle, matchWrap(bottom = 4))
         val coordRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3834,7 +3834,7 @@ class MainActivity : Activity() {
             })
         }
         root.addView(
-            text("Selected point position · enter model coordinates", 11, 0xFF9BAFC5.toInt()),
+            text("Selected point position · enter model coordinates", 11, UiPalette.textMuted),
             matchWrap(bottom = 4)
         )
         root.addView(coordRow, matchWrap(bottom = 8))
@@ -3843,8 +3843,8 @@ class MainActivity : Activity() {
         val mirrorCheck = android.widget.CheckBox(this).apply {
             text = "Mirror twin"
             textSize = 12f
-            setTextColor(0xFFDCE8F5.toInt())
-            buttonTintList = android.content.res.ColorStateList.valueOf(0xFF69B9F5.toInt())
+            setTextColor(UiPalette.text)
+            buttonTintList = android.content.res.ColorStateList.valueOf(UiPalette.accent)
             isChecked = true
         }
         setRow.addView(setButton, LinearLayout.LayoutParams(0, -2, 1f).apply {
@@ -3852,13 +3852,13 @@ class MainActivity : Activity() {
         })
         setRow.addView(mirrorCheck, LinearLayout.LayoutParams(-2, -2))
         root.addView(setRow, matchWrap(bottom = 8))
-        val nudgeHeader = text("Move point · choose a step, then tap an axis direction", 12, 0xFF75B9F1.toInt(), bold = true)
+        val nudgeHeader = text("Move point · choose a step, then tap an axis direction", 12, UiPalette.accent, bold = true)
         root.addView(nudgeHeader, matchWrap(bottom = 4))
         val stepRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        stepRow.addView(text("Step", 12, 0xFF9BAFC5.toInt()), LinearLayout.LayoutParams(dp(42), -2))
+        stepRow.addView(text("Step", 12, UiPalette.textMuted), LinearLayout.LayoutParams(dp(42), -2))
         val stepSpinner = Spinner(this)
         val stepLabels = listOf("1 mm", "5 mm", "1 cm", "5 cm", "10 cm")
         stepSpinner.adapter = ArrayAdapter(
@@ -3898,9 +3898,9 @@ class MainActivity : Activity() {
         }
         root.addView(nudgeRow1, matchWrap(bottom = 4))
         root.addView(nudgeRow2, matchWrap(bottom = 10))
-        val hingeTitle = text("Hinge orientation · HINGE_ points only", 12, 0xFF75B9F1.toInt(), bold = true)
+        val hingeTitle = text("Hinge orientation · HINGE_ points only", 12, UiPalette.accent, bold = true)
         root.addView(hingeTitle, matchWrap(bottom = 3))
-        val hingeInfo = text("", 11, 0xFF9BAFC5.toInt())
+        val hingeInfo = text("", 11, UiPalette.textMuted)
         root.addView(hingeInfo, matchWrap(bottom = 5))
         val angleSpinner = Spinner(this)
         val angleLabels = listOf("1°", "5°", "15°", "45°", "90°")
@@ -3935,9 +3935,9 @@ class MainActivity : Activity() {
             rowViews[index].text = point.name + (if (point.hinge) "  · hinge" else "") +
                 "     " + formatCoordinate(point.x) + ", " +
                 formatCoordinate(point.y) + ", " + formatCoordinate(point.z)
-            rowViews[index].setTextColor(if (index == selected) Color.WHITE else 0xFFBDCCDC.toInt())
+            rowViews[index].setTextColor(if (index == selected) UiPalette.text else UiPalette.textSecondary)
             rowViews[index].background = rounded(
-                if (index == selected) 0xFF174A75.toInt() else 0x00000000,
+                if (index == selected) UiPalette.danger else Color.TRANSPARENT,
                 dp(7).toFloat()
             )
         }
@@ -4099,7 +4099,7 @@ class MainActivity : Activity() {
         rotateButtons[4].setOnClickListener { rotateHinge(2, -1) }
         rotateButtons[5].setOnClickListener { rotateHinge(2, 1) }
         for (index in points.indices) {
-            val row = text("", 12, 0xFFBDCCDC.toInt()).apply {
+            val row = text("", 12, UiPalette.textSecondary).apply {
                 setPadding(dp(9), dp(10), dp(9), dp(10))
                 isClickable = true
                 isFocusable = true
@@ -4357,11 +4357,11 @@ class MainActivity : Activity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(11), dp(9), dp(11), dp(9))
-                background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+                background = rounded(UiPalette.background, dp(10).toFloat())
             }
             trackDetailsContainer.addView(row, matchWrap(bottom = 6))
-            row.addView(text(label, 11, 0xFF8FA4BA.toInt(), bold = true), matchWrap())
-            row.addView(text(value.ifBlank { "—" }, 14, Color.WHITE), matchWrap(top = 3))
+            row.addView(text(label, 11, UiPalette.textSecondary, bold = true), matchWrap())
+            row.addView(text(value.ifBlank { "—" }, 14, UiPalette.text), matchWrap(top = 3))
         }
     }
     private fun chooseCarEditorFile() {
@@ -4470,17 +4470,17 @@ class MainActivity : Activity() {
             val fieldCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(11), dp(12), dp(11))
-                background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+                background = rounded(UiPalette.background, dp(12).toFloat())
             }
             carFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
-            fieldCard.addView(text(label, 12, 0xFF9BAFC5.toInt(), bold = true), matchWrap())
+            fieldCard.addView(text(label, 12, UiPalette.textMuted, bold = true), matchWrap())
             val input = editBox("Value", value, numeric = !item.optBoolean("text") && key != "gear_ratios")
             fieldCard.addView(input, matchWrap(top = 7))
             carFieldInputs[key] = input
         }
         currentCarOriginalFields = original
         if (carFieldInputs.isEmpty()) {
-            carFieldsContainer.addView(text("No editable fields were returned.", 12, 0xFF7F93A9.toInt()), matchWrap())
+            carFieldsContainer.addView(text("No editable fields were returned.", 12, UiPalette.textSubtle), matchWrap())
             return
         }
         carFieldsContainer.addView(
@@ -4570,11 +4570,11 @@ class MainActivity : Activity() {
                 "Tiers: ${payload.optInt("tiersCount")} · Events: ${payload.optInt("eventsCount")} · " +
                 "Career groups: ${payload.optInt("superGroups")}",
             13,
-            Color.WHITE
+            UiPalette.text
         )
         careerDetailsContainer.addView(summary, matchWrap(bottom = 12))
         careerDetailsContainer.addView(
-            text("SERIES (internal text keys)", 11, 0xFF75B9F1.toInt(), bold = true),
+            text("SERIES (internal text keys)", 11, UiPalette.accent, bold = true),
             matchWrap(bottom = 7)
         )
         val series = payload.optJSONArray("series")
@@ -4585,19 +4585,19 @@ class MainActivity : Activity() {
                 val row = "${item.optInt("id")}  ·  ${item.optString("titleKey")}\n" +
                     "${item.optString("descriptionKey")}  ·  type ${item.optInt("type")}"
                 careerDetailsContainer.addView(
-                    text(row, 11, 0xFFB7C8D9.toInt()),
+                    text(row, 11, UiPalette.text),
                     matchWrap(bottom = 5)
                 )
             }
             if (series.length() > count) {
                 careerDetailsContainer.addView(
-                    text("Showing the first $count of ${series.length()} series.", 11, 0xFF7F93A9.toInt()),
+                    text("Showing the first $count of ${series.length()} series.", 11, UiPalette.textSubtle),
                     matchWrap(top = 4)
                 )
             }
         }
         careerDetailsContainer.addView(
-            text("TIER STRUCTURE", 11, 0xFF75B9F1.toInt(), bold = true),
+            text("TIER STRUCTURE", 11, UiPalette.accent, bold = true),
             matchWrap(top = 12, bottom = 7)
         )
         val tiers = payload.optJSONArray("tiers")
@@ -4610,7 +4610,7 @@ class MainActivity : Activity() {
                         "Tier ${item.optInt("id")} · series ${item.optInt("seriesId")} · " +
                             "${item.optInt("cars")} allowed cars · ${item.optInt("events")} events",
                         11,
-                        0xFFB7C8D9.toInt()
+                        UiPalette.text
                     ),
                     matchWrap(bottom = 4)
                 )
@@ -4900,7 +4900,7 @@ class MainActivity : Activity() {
         var jumpToFirstOnNextSearch = true
         val status = text(
             "Enter text to find. Search runs 1 second after you stop typing. Only loaded sections are searched.",
-            11, 0xFF8FA4BA.toInt()
+            11, UiPalette.textSecondary
         )
         val handler = Handler(Looper.getMainLooper())
         lateinit var searchRunnable: Runnable
@@ -5112,11 +5112,11 @@ class MainActivity : Activity() {
                 summary.optInt("events") + " events. " +
                 "Scroll through the file; more text is loaded before the bottom. Fixed IDs and indexes should be left unchanged.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         val pageContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF0B1725.toInt())
+            setBackgroundColor(UiPalette.background)
         }
         val editorScroll = ScrollView(this).apply {
             isFillViewport = false
@@ -5135,12 +5135,12 @@ class MainActivity : Activity() {
                 )
             )
         }
-        val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
+        val loadStatus = text("Scroll to load more of the file…", 11, UiPalette.accent)
         fun addPage(page: CareerTextPage) {
             val rowEditor = EditText(this).apply {
                 setText(page.text)
-                setTextColor(Color.WHITE)
-                setHintTextColor(0xFF6F849B.toInt())
+                setTextColor(UiPalette.text)
+                setHintTextColor(UiPalette.textHint)
                 textSize = 11.5f
                 typeface = Typeface.MONOSPACE
                 gravity = Gravity.TOP or Gravity.START
@@ -5150,7 +5150,7 @@ class MainActivity : Activity() {
                 setHorizontallyScrolling(false)
                 isVerticalScrollBarEnabled = false
                 setPadding(dp(10), dp(2), dp(10), dp(2))
-                background = rounded(0xFF0B1725.toInt(), 0f)
+                background = rounded(UiPalette.background, 0f)
                 val lineCount = maxOf(1, page.text.count { it == '\n' } + 1)
                 minLines = minOf(lineCount, 4)
                 maxLines = 100_000
@@ -5363,11 +5363,11 @@ class MainActivity : Activity() {
         val help = text(
             "Text file · ${pager.pageCount} section(s) indexed. Scroll to load more; edits are saved section by section.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         val pageContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF0B1725.toInt())
+            setBackgroundColor(UiPalette.background)
         }
         val editorScroll = ScrollView(this).apply {
             isFillViewport = false
@@ -5386,7 +5386,7 @@ class MainActivity : Activity() {
                 )
             )
         }
-        val loadStatus = text("Scroll to load more of the file…", 11, 0xFF75B9F1.toInt())
+        val loadStatus = text("Scroll to load more of the file…", 11, UiPalette.accent)
         fun disposeEditor() {
             if (closed) return
             closed = true
@@ -5411,8 +5411,8 @@ class MainActivity : Activity() {
             )
             val editor = EditText(this).apply {
                 setText(pageText)
-                setTextColor(Color.WHITE)
-                setHintTextColor(0xFF6F849B.toInt())
+                setTextColor(UiPalette.text)
+                setHintTextColor(UiPalette.textHint)
                 textSize = 11.5f
                 typeface = Typeface.MONOSPACE
                 gravity = Gravity.TOP or Gravity.START
@@ -5422,7 +5422,7 @@ class MainActivity : Activity() {
                 setHorizontallyScrolling(false)
                 isVerticalScrollBarEnabled = false
                 setPadding(dp(10), dp(2), dp(10), dp(2))
-                background = rounded(0xFF0B1725.toInt(), 0f)
+                background = rounded(UiPalette.background, 0f)
                 minLines = minOf(lineCount, 4)
                 // Each section is bounded; avoid the unbounded 100,000-line
                 // measurement request used by the old RecyclerView editor.
@@ -5625,11 +5625,11 @@ class MainActivity : Activity() {
             "Virtualised text editor · " + sourceName +
                 ". 160-line pages are prepared ahead while scrolling; only a small page cache is kept in memory. Edited pages are stored separately, and Find searches the entire document.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         val layoutManager = LinearLayoutManager(this)
         val editorList = RecyclerView(this).apply {
-            setBackgroundColor(0xFF0B1725.toInt())
+            setBackgroundColor(UiPalette.background)
             this.layoutManager = layoutManager
             setHasFixedSize(false)
             setItemViewCacheSize(2)
@@ -5660,8 +5660,8 @@ class MainActivity : Activity() {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT
                     )
-                    setTextColor(Color.WHITE)
-                    setHintTextColor(0xFF6F849B.toInt())
+                    setTextColor(UiPalette.text)
+                    setHintTextColor(UiPalette.textHint)
                     textSize = 12f
                     typeface = Typeface.MONOSPACE
                     gravity = Gravity.TOP or Gravity.START
@@ -5671,7 +5671,7 @@ class MainActivity : Activity() {
                     setHorizontallyScrolling(false)
                     isVerticalScrollBarEnabled = false
                     setPadding(dp(10), dp(5), dp(10), dp(5))
-                    background = rounded(0xFF0B1725.toInt(), 0f)
+                    background = rounded(UiPalette.background, 0f)
                     minLines = 4
                     maxLines = 100_000
                 }
@@ -5734,7 +5734,7 @@ class MainActivity : Activity() {
         val searchStatus = text(
             "Ready · " + pager.pageCount + " page(s) indexed. Search includes text not yet displayed.",
             11,
-            0xFF8FA4BA.toInt()
+            UiPalette.textSecondary
         )
         fun performSearch(forward: Boolean, restart: Boolean) {
             if (closed || building) return
@@ -6025,8 +6025,8 @@ class MainActivity : Activity() {
     ) {
         val editor = EditText(this).apply {
             setText(editableText)
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF6F849B.toInt())
+            setTextColor(UiPalette.text)
+            setHintTextColor(UiPalette.textHint)
             textSize = 13f
             typeface = Typeface.MONOSPACE
             gravity = Gravity.TOP or Gravity.START
@@ -6036,14 +6036,14 @@ class MainActivity : Activity() {
             setHorizontallyScrolling(false)
             isVerticalScrollBarEnabled = true
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(0xFF0B1725.toInt(), dp(8).toFloat())
+            background = rounded(UiPalette.background, dp(8).toFloat())
             minLines = 18
             maxLines = 100_000
         }
         val status = text(
             "Edit the decoded representation. The original remains unchanged until you choose a separate output.",
             12,
-            0xFF9BAFC5.toInt()
+            UiPalette.textMuted
         )
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -6066,7 +6066,7 @@ class MainActivity : Activity() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(
-                text("Source: " + name, 11, 0xFF75B9F1.toInt(), bold = true),
+                text("Source: " + name, 11, UiPalette.accent, bold = true),
                 matchWrap(bottom = 8)
             )
             addView(editor, LinearLayout.LayoutParams(
@@ -6330,7 +6330,7 @@ class MainActivity : Activity() {
     }
     private fun addSection(parent: LinearLayout, title: String) {
         parent.addView(
-            text(title, 11, 0xFF75B9F1.toInt(), bold = true),
+            text(title, 11, UiPalette.accent, bold = true),
             matchWrap(top = 18, bottom = 8)
         )
     }
@@ -6338,16 +6338,16 @@ class MainActivity : Activity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = rounded(0xFF121F30.toInt(), dp(16).toFloat())
+            background = rounded(UiPalette.surface, dp(16).toFloat())
         }
         parent.addView(box, matchWrap())
         return box
     }
     private fun actionButton(label: String, action: () -> Unit): TextView {
-        return text(label, 14, Color.WHITE, bold = true).apply {
+        return text(label, 14, UiPalette.text, bold = true).apply {
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(13), dp(16), dp(13))
-            background = rounded(0xFF1766A8.toInt(), dp(12).toFloat())
+            background = interactiveBackground(UiPalette.primary, dp(12).toFloat())
             isClickable = true
             isFocusable = true
             setOnClickListener { action() }
@@ -6355,11 +6355,11 @@ class MainActivity : Activity() {
     }
 
     private fun compactOverlayButton(label: String, action: () -> Unit): TextView {
-        return text(label, 11, Color.WHITE, bold = true).apply {
+        return text(label, 11, UiPalette.text, bold = true).apply {
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(7), dp(10), dp(7))
             minHeight = dp(30)
-            background = rounded(0xFF1D4263.toInt(), dp(10).toFloat())
+            background = interactiveBackground(UiPalette.burgundy, dp(10).toFloat())
             isClickable = true
             isFocusable = true
             setOnClickListener { action() }
@@ -6382,8 +6382,8 @@ class MainActivity : Activity() {
         return EditText(this).apply {
             setSingleLine(true)
             textSize = 15f
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF6F849B.toInt())
+            setTextColor(UiPalette.text)
+            setHintTextColor(UiPalette.textHint)
             hint = hintText
             inputType = if (numeric) {
                 InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED or
@@ -6392,9 +6392,16 @@ class MainActivity : Activity() {
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             }
             setPadding(dp(12), dp(9), dp(12), dp(9))
-            background = rounded(0xFF0B1725.toInt(), dp(10).toFloat())
+            background = rounded(UiPalette.background, dp(10).toFloat())
             setText(value)
         }
+    }
+    private fun interactiveBackground(color: Int, radius: Float): android.graphics.drawable.Drawable {
+        return android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(UiPalette.ripple),
+            rounded(color, radius),
+            rounded(UiPalette.rippleMask, radius)
+        )
     }
     private fun rounded(color: Int, radius: Float): GradientDrawable {
         return GradientDrawable().apply {
@@ -6706,7 +6713,7 @@ class MainActivity : Activity() {
         val query = if (::advancedSearch.isInitialized) advancedSearch.text.toString().trim().lowercase() else ""
         if (query.isEmpty()) {
             advancedFieldsContainer.addView(
-                text("Search by field name to inspect or edit individual save values.", 12, 0xFF7F93A9.toInt()),
+                text("Search by field name to inspect or edit individual save values.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
@@ -6722,10 +6729,10 @@ class MainActivity : Activity() {
             val fieldCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(12), dp(12), dp(12))
-                background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+                background = rounded(UiPalette.background, dp(12).toFloat())
             }
             advancedFieldsContainer.addView(fieldCard, matchWrap(bottom = 8))
-            fieldCard.addView(text(name, 13, Color.WHITE, bold = true), matchWrap())
+            fieldCard.addView(text(name, 13, UiPalette.text, bold = true), matchWrap())
             if (editable) {
                 val numeric = type == 1 || type == 2 || type == 5
                 val input = editBox("Value", value, numeric)
@@ -6736,7 +6743,7 @@ class MainActivity : Activity() {
                 )
             } else {
                 fieldCard.addView(
-                    text(value, 12, 0xFF9BAFC5.toInt()),
+                    text(value, 12, UiPalette.textMuted),
                     matchWrap(top = 5)
                 )
             }
@@ -6745,12 +6752,12 @@ class MainActivity : Activity() {
         }
         if (shown == 0) {
             advancedFieldsContainer.addView(
-                text("No matching fields.", 12, 0xFF7F93A9.toInt()),
+                text("No matching fields.", 12, UiPalette.textSubtle),
                 matchWrap()
             )
         } else if (shown == 25) {
             advancedFieldsContainer.addView(
-                text("Showing the first 25 matches. Refine the search to narrow the list.", 11, 0xFF7F93A9.toInt()),
+                text("Showing the first 25 matches. Refine the search to narrow the list.", 11, UiPalette.textSubtle),
                 matchWrap(top = 4)
             )
         }
@@ -6767,18 +6774,18 @@ class MainActivity : Activity() {
             val fieldCard = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(12), dp(12), dp(12))
-                background = rounded(0xFF0B1725.toInt(), dp(12).toFloat())
+                background = rounded(UiPalette.background, dp(12).toFloat())
             }
             saveFieldsContainer.addView(fieldCard, matchWrap(bottom = 9))
             fieldCard.addView(
-                text(label, 16, Color.WHITE, bold = true),
+                text(label, 16, UiPalette.text, bold = true),
                 matchWrap()
             )
             fieldCard.addView(
                 text(
                     if (calibrated) "Calibration saved on this device" else "Not calibrated yet",
                     12,
-                    if (calibrated) 0xFF83C6A0.toInt() else 0xFFE6B56C.toInt()
+                    if (calibrated) UiPalette.primary else UiPalette.accent
                 ),
                 matchWrap(top = 4, bottom = 8)
             )
