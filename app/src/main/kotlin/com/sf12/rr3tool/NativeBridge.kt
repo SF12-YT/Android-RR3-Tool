@@ -144,6 +144,9 @@ internal object NativeBridge {
         zoom: Float
     )
 
+    /** Releases GL objects while the viewer's EGL context is current. */
+    external fun nativeReleaseRr3ViewerGl(handle: Long)
+
     external fun nativeFreeRr3Viewer(handle: Long)
 
     external fun nativeGetRr3ViewerError(): String

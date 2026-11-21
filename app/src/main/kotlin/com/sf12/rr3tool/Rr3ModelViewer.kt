@@ -1,42 +1,85 @@
 package com.sf12.rr3tool
 
 import android.content.Context
-import android.graphics.BitmapFactory
+import android.opengl.GLSurfaceView
 import android.view.MotionEvent
 import android.widget.FrameLayout
-import android.widget.ImageView
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
 
 /**
- * Android front end for Monkey Tool's native RR3 software renderer.
- * Model loading, camera framing, texture sampling and rasterisation all stay native.
+ * Full-screen RR3 model surface. Meshes and textures are uploaded once by the
+ * native renderer; camera changes redraw the existing GPU buffers directly.
  */
 internal class Rr3ModelViewer(
     context: Context,
     private val handle: Long,
     private val onFrameStatus: (String) -> Unit
 ) : FrameLayout(context) {
-    private val image = ImageView(context).apply {
-        scaleType = ImageView.ScaleType.FIT_CENTER
-    }
-    private val executor = Executors.newSingleThreadExecutor()
-    private val rendering = AtomicBoolean(false)
-    @Volatile private var renderRequested = false
-    @Volatile private var previewRequested = false
-    @Volatile private var lastFrameStartNanos = 0L
-    @Volatile private var disposed = false
+    private val glSurface = GLSurfaceView(context)
+    private val disposed = AtomicBoolean(false)
+    @Volatile private var rendererReady = false
+    @Volatile private var hostPaused = false
     @Volatile private var yaw = 0.6f
     @Volatile private var pitch = 0.25f
     @Volatile private var zoom = 1f
+    @Volatile private var surfaceWidth = 1
+    @Volatile private var surfaceHeight = 1
     private var lastX = 0f
     private var lastY = 0f
     private var pinchDistance = 0f
 
     init {
         setBackgroundColor(0xFF263442.toInt())
-        addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        glSurface.setEGLContextClientVersion(3)
+        glSurface.setEGLConfigChooser(8, 8, 8, 8, 16, 0)
+        glSurface.preserveEGLContextOnPause = true
+        glSurface.setRenderer(object : GLSurfaceView.Renderer {
+            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                rendererReady = false
+                val status = try {
+                    NativeBridge.nativeInitRr3ViewerGl(handle)
+                } catch (error: Exception) {
+                    error.message ?: "Could not initialise the OpenGL ES 3 viewer."
+                }
+                rendererReady = status.startsWith("OpenGL ES 3")
+                post {
+                    if (!disposed.get()) {
+                        onFrameStatus(
+                            if (rendererReady) status
+                            else "GPU viewer unavailable: $status"
+                        )
+                    }
+                }
+                if (rendererReady && !disposed.get()) glSurface.requestRender()
+            }
+
+            override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+                surfaceWidth = width.coerceAtLeast(1)
+                surfaceHeight = height.coerceAtLeast(1)
+                if (rendererReady && width > 0 && height > 0) glSurface.requestRender()
+            }
+
+            override fun onDrawFrame(gl: GL10?) {
+                if (disposed.get() || !rendererReady) return
+                try {
+                    NativeBridge.nativeDrawRr3ViewerGl(
+                        handle, surfaceWidth, surfaceHeight, yaw, pitch, zoom
+                    )
+                } catch (error: Exception) {
+                    rendererReady = false
+                    post {
+                        if (!disposed.get()) {
+                            onFrameStatus(error.message ?: "The GPU viewer failed while drawing.")
+                        }
+                    }
+                }
+            }
+        })
+        glSurface.renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+        addView(glSurface, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         setOnTouchListener { view, event ->
             view.parent?.requestDisallowInterceptTouchEvent(true)
             when (event.actionMasked) {
@@ -63,13 +106,13 @@ internal class Rr3ModelViewer(
                     }
                     lastX = event.x
                     lastY = event.y
-                    requestFrame(interactive = true)
+                    requestGpuFrame()
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     view.parent?.requestDisallowInterceptTouchEvent(false)
                     pinchDistance = 0f
-                    requestFrame(interactive = false)
+                    requestGpuFrame()
                     true
                 }
                 else -> true
@@ -79,26 +122,56 @@ internal class Rr3ModelViewer(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (w > 0 && h > 0) requestFrame()
+        requestGpuFrame()
     }
 
     fun resetCamera() {
         yaw = 0.6f
         pitch = 0.25f
         zoom = 1f
-        requestFrame()
+        requestGpuFrame()
     }
 
-    /** Redraw after the activity returns to the foreground. */
     fun refresh() {
-        requestFrame(interactive = false)
+        requestGpuFrame()
+    }
+
+    fun pauseRendering() {
+        if (hostPaused || disposed.get()) return
+        hostPaused = true
+        glSurface.onPause()
+    }
+
+    fun resumeRendering() {
+        if (!hostPaused || disposed.get()) {
+            requestGpuFrame()
+            return
+        }
+        hostPaused = false
+        glSurface.onResume()
+        requestGpuFrame()
     }
 
     fun dispose() {
-        if (disposed) return
-        disposed = true
-        executor.execute { NativeBridge.nativeFreeRr3Viewer(handle) }
-        executor.shutdown()
+        if (!disposed.compareAndSet(false, true)) return
+        rendererReady = false
+        if (glSurface.isAttachedToWindow && !hostPaused) {
+            glSurface.queueEvent {
+                try {
+                    NativeBridge.nativeReleaseRr3ViewerGl(handle)
+                } finally {
+                    NativeBridge.nativeFreeRr3Viewer(handle)
+                }
+            }
+        } else {
+            // A detached/paused GLSurfaceView is about to lose its EGL context;
+            // freeing the native session is safe and the driver releases its GL objects.
+            NativeBridge.nativeFreeRr3Viewer(handle)
+        }
+    }
+
+    private fun requestGpuFrame() {
+        if (!disposed.get() && rendererReady && !hostPaused) glSurface.requestRender()
     }
 
     private fun pointerDistance(event: MotionEvent): Float {
@@ -106,65 +179,5 @@ internal class Rr3ModelViewer(
         val dx = event.getX(0) - event.getX(1)
         val dy = event.getY(0) - event.getY(1)
         return sqrt(dx * dx + dy * dy)
-    }
-
-    private fun requestFrame(interactive: Boolean = false) {
-        if (disposed || width <= 0 || height <= 0) return
-        previewRequested = interactive
-        renderRequested = true
-        if (!rendering.compareAndSet(false, true)) return
-        executor.execute {
-            try {
-                while (renderRequested && !disposed) {
-                    renderRequested = false
-                    var usePreview = previewRequested
-                    // Keep drag rendering to at most about 20 fps. Any newer touch
-                    // input replaces the pending camera state instead of queuing frames.
-                    if (usePreview && lastFrameStartNanos != 0L) {
-                        val remaining = 50_000_000L - (System.nanoTime() - lastFrameStartNanos)
-                        if (remaining > 0L) {
-                            val waitMs = ((remaining + 999_999L) / 1_000_000L).coerceAtMost(50L)
-                            Thread.sleep(waitMs)
-                        }
-                        usePreview = previewRequested
-                    }
-                    lastFrameStartNanos = System.nanoTime()
-                    val sourceWidth = width.coerceAtLeast(1)
-                    val sourceHeight = height.coerceAtLeast(1)
-                    val maxWidth = if (usePreview) 480 else 720
-                    val maxHeight = if (usePreview) 360 else 540
-                    val scale = minOf(
-                        1f,
-                        maxWidth.toFloat() / sourceWidth,
-                        maxHeight.toFloat() / sourceHeight
-                    )
-                    val frameWidth = (sourceWidth * scale).toInt().coerceIn(160, maxWidth)
-                    val frameHeight = (sourceHeight * scale).toInt().coerceIn(160, maxHeight)
-                    val png = NativeBridge.nativeRenderRr3ViewerFrame(
-                        handle, frameWidth, frameHeight, yaw, pitch, zoom, usePreview
-                    ) ?: throw IllegalStateException(
-                        NativeBridge.nativeGetRr3ViewerError().ifBlank {
-                            "The RR3 model renderer could not produce an image."
-                        }
-                    )
-                    val bitmap = BitmapFactory.decodeByteArray(png, 0, png.size)
-                        ?: throw IllegalStateException("The rendered RR3 preview image could not be decoded.")
-                    post {
-                        if (!disposed) {
-                            image.setImageBitmap(bitmap)
-                            onFrameStatus(
-                                (if (usePreview) "Fast preview " else "Rendered ") +
-                                    bitmap.width + " × " + bitmap.height
-                            )
-                        }
-                    }
-                }
-            } catch (error: Exception) {
-                post { if (!disposed) onFrameStatus(error.message ?: "The 3D frame could not be rendered.") }
-            } finally {
-                rendering.set(false)
-                if (renderRequested && !disposed) requestFrame(previewRequested)
-            }
-        }
     }
 }

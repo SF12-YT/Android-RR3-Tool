@@ -59,7 +59,14 @@ class MainActivity : Activity() {
         val dataFolder: String,
         val modelFolder: String,
         val displayName: String,
+        val brand: String,
         val liveryEntry: GameDataFile
+    )
+    private data class LiveryCarChoice(
+        val entry: GameDataFile,
+        val carFolder: String,
+        val displayName: String,
+        val brand: String
     )
     private class GameDataTreeNode(
         val name: String,
@@ -311,11 +318,12 @@ class MainActivity : Activity() {
     private lateinit var liveryPaintStatus: TextView
     private lateinit var liveryPaintContainer: LinearLayout
     private lateinit var liveryDecodedContainer: LinearLayout
-    private val expandedLiveryYears = mutableSetOf<String>()
+    private val expandedLiveryBrands = mutableSetOf<String>()
+    private val expandedViewerBrands = mutableSetOf<String>()
     private var rr3ViewerCars: List<Rr3ViewerCar> = emptyList()
     private var rr3ViewerCatalogLoading = false
-    private lateinit var rr3ViewerCarSpinner: Spinner
-    private lateinit var rr3ViewerLoadButton: TextView
+    private var rr3ViewerLoading = false
+    private lateinit var rr3ViewerCarListContainer: LinearLayout
     private lateinit var rr3ViewerStatus: TextView
     private lateinit var rr3ViewerScreen: FrameLayout
     private lateinit var rr3ViewerScreenHost: FrameLayout
@@ -856,32 +864,12 @@ class MainActivity : Activity() {
             ),
             matchWrap(top = 6)
         )
-        val rr3ViewerCarPicker = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                setColor(0xFF0B1725.toInt())
-                cornerRadius = dp(10).toFloat()
-                setStroke(dp(1), 0xFF34506B.toInt())
-            }
-            setPadding(dp(4), 0, dp(4), 0)
-            minimumHeight = dp(48)
+        rr3ViewerCarListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
-        rr3ViewerCarSpinner = Spinner(this).apply {
-            minimumHeight = dp(48)
-            setPadding(dp(8), 0, dp(8), 0)
-        }
-        rr3ViewerCarPicker.addView(
-            rr3ViewerCarSpinner,
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48))
-        )
-        setRr3ViewerCarSpinnerItems(listOf("Index the depot to load cars"))
-        viewerCard.addView(rr3ViewerCarPicker, matchWrap(top = 12))
-        rr3ViewerLoadButton = actionButton("Load selected car") {
-            val selected = rr3ViewerCars.getOrNull(rr3ViewerCarSpinner.selectedItemPosition)
-            if (selected != null) loadRr3ViewerCar(selected)
-        }
-        viewerCard.addView(rr3ViewerLoadButton, matchWrap(top = 8))
+        viewerCard.addView(rr3ViewerCarListContainer, matchWrap(top = 12))
         rr3ViewerStatus = text(
-            "Complete startup setup, then select and load a car above.",
+            "Expand a manufacturer to browse its car models.",
             12, 0xFF9BAFC5.toInt()
         )
         viewerCard.addView(rr3ViewerStatus, matchWrap(top = 10, bottom = 8))
@@ -1248,6 +1236,7 @@ class MainActivity : Activity() {
                     .put("dataFolder", car.dataFolder)
                     .put("modelFolder", car.modelFolder)
                     .put("displayName", car.displayName)
+                    .put("brand", car.brand)
             )
         }
         root.put("cars", carArray)
@@ -1311,6 +1300,9 @@ class MainActivity : Activity() {
                         dataFolder,
                         modelFolder,
                         item.optString("displayName").ifBlank { formatLiveryCarName(modelFolder) },
+                        item.optString("brand").trim().ifBlank {
+                            inferLegacyCarBrand(item.optString("displayName"), modelFolder)
+                        },
                         cardesc
                     )
                 )
@@ -1395,7 +1387,10 @@ class MainActivity : Activity() {
                     .ifBlank { formatLiveryCarName(modelFolder) }
                 carsByDataFolder.putIfAbsent(
                     dataFolder.lowercase(Locale.ROOT),
-                    Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, cardesc)
+                    Rr3ViewerCar(
+                        item.optInt("id"), dataFolder, modelFolder, label,
+                        item.optString("make").trim().ifBlank { "Other" }, cardesc
+                    )
                 )
             }
         }
@@ -1793,6 +1788,24 @@ class MainActivity : Activity() {
         }
         return assets
     }
+    private fun inferLegacyCarBrand(displayName: String, modelFolder: String): String {
+        val cleaned = displayName.trim().replace(Regex("^[0-9]{4}\\s+"), "")
+        val folderLabel = formatLiveryCarName(
+            modelFolder.trim().replace(Regex("^[0-9]{4}_"), "")
+        )
+        val candidates = listOf(cleaned, folderLabel).filter { it.isNotBlank() }
+        val knownMultiWordMakes = listOf(
+            "Aston Martin", "Alfa Romeo", "Mercedes-AMG", "Mercedes Benz",
+            "Land Rover", "Rolls-Royce", "Lamborghini Squadra Corse"
+        )
+        for (candidate in candidates) {
+            knownMultiWordMakes.firstOrNull { candidate.startsWith(it, ignoreCase = true) }?.let {
+                return it
+            }
+        }
+        val first = candidates.firstOrNull()?.substringBefore(' ')?.trim()
+        return first?.takeIf { it.isNotBlank() } ?: "Other"
+    }
     private fun formatLiveryCarName(carName: String): String =
         carName.split('_').filter { it.isNotBlank() }.joinToString(" ") { part ->
             when (part.lowercase(Locale.ROOT)) {
@@ -1810,57 +1823,73 @@ class MainActivity : Activity() {
                 }
             }
         }
-    private fun setRr3ViewerCarSpinnerItems(labels: List<String>) {
-        val adapter = object : ArrayAdapter<String>(
-            this, android.R.layout.simple_spinner_item, labels
-        ) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                return (super.getView(position, convertView, parent) as TextView).apply {
-                    setTextColor(0xFFE6EEF8.toInt())
-                    textSize = 14f
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(12), dp(8), dp(8), dp(8))
-                    setSingleLine(true)
-                }
-            }
-            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
-                return (super.getDropDownView(position, convertView, parent) as TextView).apply {
-                    setTextColor(0xFFE6EEF8.toInt())
-                    setBackgroundColor(0xFF14263A.toInt())
-                    textSize = 14f
-                    setPadding(dp(14), dp(12), dp(14), dp(12))
-                    setSingleLine(true)
-                }
-            }
-        }
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        rr3ViewerCarSpinner.adapter = adapter
-    }
     /** The catalogue is populated only by indexGameDataFiles(); this method never reads depot files. */
     private fun renderRr3ViewerCarChoices() {
-        if (!::rr3ViewerCarSpinner.isInitialized) return
+        if (!::rr3ViewerCarListContainer.isInitialized) return
+        rr3ViewerCarListContainer.removeAllViews()
         if (indexedGameFiles.isEmpty()) {
             rr3ViewerCars = emptyList()
-            setRr3ViewerCarSpinnerItems(listOf("Index the depot to load cars"))
-            rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = "Complete the depot index before loading a car."
+            rr3ViewerCarListContainer.addView(
+                text("Index the depot to load cars.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
             return
         }
         if (rr3ViewerCars.isEmpty()) {
-            setRr3ViewerCarSpinnerItems(listOf("No cached car records"))
-            rr3ViewerLoadButton.isEnabled = false
             rr3ViewerStatus.text = rr3ViewerCatalogStatus
+            rr3ViewerCarListContainer.addView(
+                text("No cached car records.", 12, 0xFF7F93A9.toInt()),
+                matchWrap()
+            )
             return
         }
-        setRr3ViewerCarSpinnerItems(
-            rr3ViewerCars.map { it.displayName + "  ·  " + it.modelFolder }
-        )
-        rr3ViewerLoadButton.isEnabled = true
-        rr3ViewerStatus.text = "Loaded ${rr3ViewerCars.size} car choices from the Index cache. The catalogue will not be read again when this tab opens."
+        val groups = rr3ViewerCars.groupBy { it.brand.ifBlank { "Other" } }
+            .toSortedMap(compareBy<String> { it.lowercase(Locale.ROOT) })
+        for ((brand, cars) in groups) {
+            val expanded = brand in expandedViewerBrands
+            val header = text(
+                (if (expanded) "▾  " else "▸  ") + brand + "  ·  " + cars.size + " model(s)",
+                14, Color.WHITE, bold = true
+            ).apply {
+                setPadding(dp(12), dp(12), dp(10), dp(12))
+                background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (brand in expandedViewerBrands) expandedViewerBrands.remove(brand)
+                    else expandedViewerBrands.add(brand)
+                    renderRr3ViewerCarChoices()
+                }
+            }
+            rr3ViewerCarListContainer.addView(header, matchWrap(bottom = 5))
+            if (!expanded) continue
+            for (car in cars.sortedWith(
+                compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
+            )) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { loadRr3ViewerCar(car) }
+                }
+                rr3ViewerCarListContainer.addView(row, matchWrap(bottom = 5))
+                row.addView(text(car.displayName, 13, Color.WHITE, bold = true), matchWrap())
+                row.addView(
+                    text(car.modelFolder + "  ·  Tap to load", 10, 0xFF8FA4BA.toInt()),
+                    matchWrap(top = 2)
+                )
+            }
+        }
+        rr3ViewerStatus.text =
+            "Loaded ${rr3ViewerCars.size} car choices from the Index cache. Expand a brand and tap a model to load it."
     }
     private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
         if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Index first."; return }
-        rr3ViewerLoadButton.isEnabled = false
+        if (rr3ViewerLoading) return
+        rr3ViewerLoading = true
         rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior model and sidecars…"
         Thread {
             try {
@@ -1924,16 +1953,16 @@ class MainActivity : Activity() {
                     rr3ViewerScreenTitle.text = car.displayName
                     rr3ViewerScreenStatus.text = meshes.toString() + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s)"
                     rr3ViewerStatus.text = "Loaded " + car.displayName + "."
-                    rr3ViewerLoadButton.isEnabled = true
+                    rr3ViewerLoading = false
                     openRr3FullScreenViewer()
                 }
             } catch (error: Exception) { runOnUiThread {
                 rr3ViewerStatus.text = error.message ?: "Could not load this car in the 3D viewer."
-                rr3ViewerLoadButton.isEnabled = true
+                rr3ViewerLoading = false
             } }
             catch (error: OutOfMemoryError) { runOnUiThread {
                 rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."
-                rr3ViewerLoadButton.isEnabled = true
+                rr3ViewerLoading = false
             } }
         }.start()
     }
@@ -2150,48 +2179,54 @@ class MainActivity : Activity() {
             )
             return
         }
-        liveryStatus.text = "Found ${entries.size} car livery list(s). Expand a year, then select a car."
-        for ((year, cars) in entries.groupBy { it.second }.toSortedMap()) {
-            val expanded = year in expandedLiveryYears
-            val yearRow = text(
-                (if (expanded) "▾  " else "▸  ") + year + "  ·  " + cars.size + " car(s)",
-                14,
-                Color.WHITE,
-                bold = true
+        liveryStatus.text = "Found ${entries.size} car livery list(s). Expand a brand, then select a car."
+        val choices = entries.map { (entry, _, carName) ->
+            val carFolder = entry.relativePath.replace('\\', '/')
+                .substringAfter(marker)
+                .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+            val catalogueCar = rr3ViewerCars.firstOrNull {
+                it.dataFolder.equals(carFolder, ignoreCase = true)
+            }
+            LiveryCarChoice(
+                entry = entry,
+                carFolder = carFolder,
+                displayName = catalogueCar?.displayName?.ifBlank { formatLiveryCarName(carName) }
+                    ?: formatLiveryCarName(carName),
+                brand = catalogueCar?.brand?.takeIf { it.isNotBlank() && it != "Other" }
+                    ?: inferLegacyCarBrand(catalogueCar?.displayName.orEmpty(), carFolder)
+            )
+        }
+        for ((brand, cars) in choices.groupBy { it.brand }
+            .toSortedMap(compareBy<String> { it.lowercase(Locale.ROOT) })) {
+            val expanded = brand in expandedLiveryBrands
+            val brandRow = text(
+                (if (expanded) "▾  " else "▸  ") + brand + "  ·  " + cars.size + " car(s)",
+                14, Color.WHITE, bold = true
             ).apply {
                 setPadding(dp(12), dp(12), dp(10), dp(12))
                 background = rounded(0xFF13263A.toInt(), dp(9).toFloat())
                 isClickable = true
                 isFocusable = true
                 setOnClickListener {
-                    if (year in expandedLiveryYears) expandedLiveryYears.remove(year)
-                    else expandedLiveryYears.add(year)
+                    if (brand in expandedLiveryBrands) expandedLiveryBrands.remove(brand)
+                    else expandedLiveryBrands.add(brand)
                     renderLiveryCarChoices()
                 }
             }
-            liveryCarListContainer.addView(yearRow, matchWrap(bottom = 5))
+            liveryCarListContainer.addView(brandRow, matchWrap(bottom = 5))
             if (!expanded) continue
-            for ((entry, _, carName) in cars) {
-                val carFolder = entry.relativePath.replace('\\', '/')
-                    .substringAfter(marker)
-                    .removeSuffixIgnoreCaseLocal(".liveries.bin.nct")
+            for (choice in cars.sortedBy { it.displayName.lowercase(Locale.ROOT) }) {
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(dp(12), dp(10), dp(12), dp(10))
                     background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
-                    setOnClickListener { loadLiverySlots(entry) }
+                    setOnClickListener { loadLiverySlots(choice.entry) }
                 }
                 liveryCarListContainer.addView(row, matchWrap(bottom = 5))
-                row.addView(
-                    text(formatLiveryCarName(carName), 13, Color.WHITE, bold = true),
-                    matchWrap()
-                )
-                row.addView(
-                    text(carFolder, 10, 0xFF8FA4BA.toInt()),
-                    matchWrap(top = 2)
-                )
+                row.addView(text(choice.displayName, 13, Color.WHITE, bold = true), matchWrap())
+                row.addView(text(choice.carFolder, 10, 0xFF8FA4BA.toInt()), matchWrap(top = 2))
             }
         }
     }
@@ -5007,7 +5042,7 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
-        rr3ViewerSurface?.refresh()
+        rr3ViewerSurface?.resumeRendering()
         val backend = preferences.getString("game_data_backend", "root")
         if (backend == "shizuku" &&
             shizukuStorageService == null &&
@@ -5029,6 +5064,10 @@ class MainActivity : Activity() {
                 "The saved index is available. Start Shizuku and return here to reconnect for file access."
             )
         }
+    }
+    override fun onPause() {
+        rr3ViewerSurface?.pauseRendering()
+        super.onPause()
     }
     override fun onDestroy() {
         runCatching { Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener) }

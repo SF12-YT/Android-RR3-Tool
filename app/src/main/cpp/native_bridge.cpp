@@ -2837,6 +2837,8 @@ Java_com_sf12_rr3tool_NativeBridge_nativeBuildRr3ViewerPacket(
 namespace {
 struct Rr3ViewerGpuMesh {
     GLuint vao = 0;
+    GLuint vertexBuffer = 0;
+    GLuint indexBuffer = 0;
     GLuint texture = 0;
     GLsizei indexCount = 0;
     float color[4] = {1, 1, 1, 1};
@@ -2854,6 +2856,30 @@ struct Rr3ViewerGpu {
     std::vector<Rr3ViewerGpuMesh> meshes;
     bool ready = false;
 };
+
+void releaseViewerGpu(Rr3ViewerGpu& gpu) {
+    if (gpu.program != 0) glDeleteProgram(gpu.program);
+    std::vector<GLuint> vertexArrays;
+    std::vector<GLuint> buffers;
+    std::set<GLuint> textures;
+    for (const Rr3ViewerGpuMesh& mesh : gpu.meshes) {
+        if (mesh.vao != 0) vertexArrays.push_back(mesh.vao);
+        if (mesh.vertexBuffer != 0) buffers.push_back(mesh.vertexBuffer);
+        if (mesh.indexBuffer != 0) buffers.push_back(mesh.indexBuffer);
+        if (mesh.texture != 0) textures.insert(mesh.texture);
+    }
+    if (!vertexArrays.empty())
+        glDeleteVertexArrays(static_cast<GLsizei>(vertexArrays.size()), vertexArrays.data());
+    if (!buffers.empty())
+        glDeleteBuffers(static_cast<GLsizei>(buffers.size()), buffers.data());
+    if (!textures.empty()) {
+        std::vector<GLuint> textureIds(textures.begin(), textures.end());
+        glDeleteTextures(static_cast<GLsizei>(textureIds.size()), textureIds.data());
+    }
+    gpu.program = 0;
+    gpu.meshes.clear();
+    gpu.ready = false;
+}
 
 struct Rr3ViewerSession {
     nfsnl::Model model;
@@ -3233,6 +3259,9 @@ Java_com_sf12_rr3tool_NativeBridge_nativeInitRr3ViewerGl(
     if (!glGetString(GL_VERSION))
         return toJava(env, "OpenGL context is not current on the viewer thread.");
 
+    // Android may recreate the EGL context after a pause or surface detach.
+    releaseViewerGpu(session->gpu);
+
     static const char* vertexSource = R"GLSL(#version 300 es
 precision highp float;
 layout(location = 0) in vec3 aPosition;
@@ -3378,13 +3407,13 @@ void main() {
 
         glGenVertexArrays(1, &gpuMesh.vao);
         glBindVertexArray(gpuMesh.vao);
-        GLuint buffers[2] = {};
-        glGenBuffers(2, buffers);
-        glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+        glGenBuffers(1, &gpuMesh.vertexBuffer);
+        glGenBuffers(1, &gpuMesh.indexBuffer);
+        glBindBuffer(GL_ARRAY_BUFFER, gpuMesh.vertexBuffer);
         glBufferData(GL_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(vertices.size() * sizeof(ViewerVertex)),
                      vertices.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpuMesh.indexBuffer);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(mesh.indices.size() * sizeof(uint32_t)),
                      mesh.indices.data(), GL_STATIC_DRAW);
@@ -3408,7 +3437,7 @@ void main() {
     glBindTexture(GL_TEXTURE_2D, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     if (gpu.meshes.empty()) {
-        glDeleteProgram(program);
+        releaseViewerGpu(gpu);
         return toJava(env, "OpenGL could not upload any drawable RR3 meshes.");
     }
     gpu.ready = true;
@@ -3469,6 +3498,19 @@ Java_com_sf12_rr3tool_NativeBridge_nativeDrawRr3ViewerGl(
     glDisable(GL_BLEND);
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeReleaseRr3ViewerGl(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    if (glGetString(GL_VERSION)) releaseViewerGpu(session->gpu);
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
@@ -3546,6 +3588,13 @@ Java_com_sf12_rr3tool_NativeBridge_nativeRenderRr3ViewerFrame(
 extern "C" JNIEXPORT void JNICALL
 Java_com_sf12_rr3tool_NativeBridge_nativeFreeRr3Viewer(
     JNIEnv* /* env */, jobject /* thiz */, jlong handle) {
-    std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
-    gRr3ViewerSessions.erase(handle);
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+        gRr3ViewerSessions.erase(found);
+    }
+    if (glGetString(GL_VERSION)) releaseViewerGpu(session->gpu);
 }
