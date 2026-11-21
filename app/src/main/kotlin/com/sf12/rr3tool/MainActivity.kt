@@ -4652,7 +4652,7 @@ class MainActivity : Activity() {
     }
 
     private fun openCamTweaksFile(uri: Uri) {
-        camTweaksStatus.text = "Reading camera tweak data…"
+        rr3ViewerScreenStatus.text = "Reading camera tweak data…"
         Thread {
             try {
                 val name = displayName(uri)
@@ -4661,7 +4661,7 @@ class MainActivity : Activity() {
                 val bytes = input.use { it.readBytes() }
                 runOnUiThread { renderCamTweaksEditor(name, bytes) }
             } catch (error: Exception) {
-                runOnUiThread { camTweaksStatus.text = error.message ?: "Could not open camTweaks.dat." }
+                runOnUiThread { rr3ViewerScreenStatus.text = error.message ?: "Could not open camTweaks.dat." }
             }
         }.start()
     }
@@ -4672,7 +4672,7 @@ class MainActivity : Activity() {
             camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
             val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(8)) }
-            content.addView(text("The first three values are shown as X/Y/Z in the file's native units. The remaining values are left unmapped until their in-game meanings are verified. Export creates a separate file and preserves all unknown sections.", 12, UiPalette.textMuted), matchWrap(bottom = 10))
+            content.addView(text("The first three values look coordinate-like, so they are presented as X/Y/Z in the file's native units (not converted). Their exact game-space interpretation is not yet verified. Remaining values stay unmapped. Export creates a separate file and preserves unknown sections.", 12, UiPalette.textMuted), matchWrap(bottom = 10))
             content.addView(camTweaksStatus, matchWrap(bottom = 8))
             content.addView(camTweaksFieldsContainer, matchWrap())
             content.addView(camTweaksSaveButton, matchWrap(top = 10))
@@ -4707,7 +4707,7 @@ class MainActivity : Activity() {
                     val offset = recordOffset + 4 + field * 4
                     val value = buffer.getFloat(offset)
                     if (!value.isFinite()) throw IllegalArgumentException("Record $cameraId contains a non-finite parameter at slot ${field + 1}.")
-                    val label = when (field) { 0 -> "Position X · native units"; 1 -> "Position Y · native units"; 2 -> "Position Z · native units"; else -> "Unmapped value ${field - 2}" }
+                    val label = when (field) { 0 -> "Coordinate candidate X · native units"; 1 -> "Coordinate candidate Y · native units"; 2 -> "Coordinate candidate Z · native units"; else -> "Unmapped value ${field - 2}" }
                     val input = editBox(label, value.toString(), numeric = true)
                     group.addView(input, matchWrap(top = 5))
                     camTweaksInputs[offset] = input
