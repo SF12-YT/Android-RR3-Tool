@@ -1,0 +1,3 @@
+Preview build marker for the compact camTweaks editor UI.
+Source commit: e44b5a0d2cc2a401e6c3f5d55e5300ba01b3b354
+Camera name-to-ID mapping remains unverified and is not included in this preview.
