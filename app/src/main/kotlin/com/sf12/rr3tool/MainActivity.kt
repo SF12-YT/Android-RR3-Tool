@@ -8,6 +8,8 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -37,6 +39,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.ProgressBar
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONObject
@@ -296,6 +299,8 @@ class MainActivity : Activity() {
     private lateinit var camTweaksFieldsContainer: LinearLayout
     private lateinit var camTweaksSaveButton: TextView
     private var camTweaksDialog: AlertDialog? = null
+    private var indexingDialog: AlertDialog? = null
+    private var indexingStatusText: TextView? = null
     private var currentCamTweaksOriginal: ByteArray? = null
     private var currentCamTweaksName: String = "camTweaks.dat"
     private val camTweaksInputs = linkedMapOf<Int, EditText>()
@@ -1371,6 +1376,46 @@ class MainActivity : Activity() {
         if (::setupStatus.isInitialized) setupStatus.text = message
     }
 
+    private fun showIndexingOverlay(message: String) {
+        runOnUiThread {
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                findViewById<View>(android.R.id.content)?.setRenderEffect(
+                    RenderEffect.createBlurEffect(dp(9).toFloat(), dp(9).toFloat(), Shader.TileMode.CLAMP)
+                )
+            }
+            val panel = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(26), dp(24), dp(26), dp(24))
+                background = rounded(UiPalette.surface, dp(18).toFloat())
+            }
+            panel.addView(ProgressBar(this), LinearLayout.LayoutParams(dp(42), dp(42)).apply { gravity = Gravity.CENTER })
+            panel.addView(text("INDEXING RR3", 14, UiPalette.text, bold = true), matchWrap(top = 16, bottom = 6))
+            indexingStatusText = text(message, 12, UiPalette.textMuted).apply { gravity = Gravity.CENTER }
+            panel.addView(indexingStatusText, matchWrap())
+            indexingDialog?.dismiss()
+            indexingDialog = AlertDialog.Builder(this).setView(panel).setCancelable(false).create()
+            indexingDialog?.show()
+            indexingDialog?.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            indexingDialog?.window?.setLayout((resources.displayMetrics.widthPixels * 0.55f).toInt(), -2)
+        }
+    }
+
+    private fun updateIndexingOverlay(message: String) {
+        runOnUiThread { indexingStatusText?.text = message }
+    }
+
+    private fun dismissIndexingOverlay() {
+        runOnUiThread {
+            indexingDialog?.dismiss()
+            indexingDialog = null
+            indexingStatusText = null
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                findViewById<View>(android.R.id.content)?.setRenderEffect(null)
+            }
+        }
+    }
+
     private fun setIndexButtonsEnabled(enabled: Boolean) {
         if (::indexGameFilesButton.isInitialized) indexGameFilesButton.isEnabled = enabled
         if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = enabled
@@ -1380,7 +1425,8 @@ class MainActivity : Activity() {
     private fun buildRr3ViewerCarCatalog(
         files: List<GameDataFile>,
         onlyDataPaths: Set<String>? = null,
-        previousCars: List<Rr3ViewerCar> = emptyList()
+        previousCars: List<Rr3ViewerCar> = emptyList(),
+        onProgress: ((String) -> Unit)? = null
     ): Pair<List<Rr3ViewerCar>, String> {
         fun normalPath(entry: GameDataFile) =
             entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
@@ -1409,6 +1455,7 @@ class MainActivity : Activity() {
         for (car in previousCars) carsByDataFolder[car.dataFolder.lowercase(Locale.ROOT)] = car
         val batches = carDataFiles.chunked(32)
         for ((batchIndex, batch) in batches.withIndex()) {
+            onProgress?.invoke("Car Editor · " + (batch.firstOrNull()?.relativePath ?: "vehicle data") + " · batch " + (batchIndex + 1) + "/" + batches.size)
             val paths = ArrayList<String>(2 + batch.size)
             val data = ArrayList<ByteArray>(2 + batch.size)
             paths.addAll(registryPaths)
@@ -1472,7 +1519,8 @@ class MainActivity : Activity() {
             return
         }
         setIndexButtonsEnabled(false)
-        setGameDataStatus("Indexing EVERYTHING in the RR3 .depot, then caching the car catalogue…")
+        showIndexingOverlay("Scanning depot directory tree…")
+        setGameDataStatus("Indexing RR3 depot files and Car Editor records…")
         gameFilesContainer.removeAllViews()
         Thread {
             try {
@@ -1488,8 +1536,9 @@ class MainActivity : Activity() {
                 val files = GameDataBrowser.fromRootListing(
                     rootPath, listing, useShizuku = backend == "shizuku"
                 )
+                updateIndexingOverlay("Indexing Car Editor vehicle files and registries…")
                 val catalogue = try {
-                    buildRr3ViewerCarCatalog(files)
+                    buildRr3ViewerCarCatalog(files) { updateIndexingOverlay(it) }
                 } catch (error: OutOfMemoryError) {
                     emptyList<Rr3ViewerCar>() to
                         "The depot file index completed, but Android ran out of memory while caching the car catalogue. Re-index after closing other apps."
@@ -1519,6 +1568,7 @@ class MainActivity : Activity() {
                     renderLiveryCarChoices()
                     renderRr3ViewerCarChoices()
                     renderCarEditorIndexedChoices()
+                    dismissIndexingOverlay()
                     setIndexButtonsEnabled(true)
                     preferences.edit().putBoolean("setup_complete", cacheError == null).apply()
                     setupScreen.visibility = if (cacheError == null) View.GONE else View.VISIBLE
@@ -1526,11 +1576,13 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
+                    dismissIndexingOverlay()
                     setGameDataStatus(e.message ?: "Could not index the RR3 .depot.")
                     setIndexButtonsEnabled(true)
                 }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread {
+                    dismissIndexingOverlay()
                     setGameDataStatus("Android ran out of memory while indexing the RR3 .depot. Close other apps and retry.")
                     setIndexButtonsEnabled(true)
                 }
@@ -1555,6 +1607,7 @@ class MainActivity : Activity() {
             return
         }
         scanNewFilesButton.isEnabled = false
+        showIndexingOverlay("Scanning depot directory tree for new files…")
         settingsIndexStatus.text = "Checking depot paths for additions…"
         Thread {
             try {
@@ -1588,8 +1641,9 @@ class MainActivity : Activity() {
                     }
                     .map { it.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT) }
                     .toSet()
+                updateIndexingOverlay("Updating Car Editor vehicle index…")
                 val catalogue = if (newCarPaths.isNotEmpty()) {
-                    buildRr3ViewerCarCatalog(merged, newCarPaths, rr3ViewerCars)
+                    buildRr3ViewerCarCatalog(merged, newCarPaths, rr3ViewerCars) { updateIndexingOverlay(it) }
                 } else {
                     rr3ViewerCars to rr3ViewerCatalogStatus
                 }
@@ -1609,15 +1663,18 @@ class MainActivity : Activity() {
                     }
                     gameFilesStatus.text =
                         "Indexed ${indexedGameFiles.size} files across the full RR3 .depot. ${rr3ViewerCatalogStatus}"
+                    dismissIndexingOverlay()
                     scanNewFilesButton.isEnabled = true
                 }
             } catch (error: Exception) {
                 runOnUiThread {
+                    dismissIndexingOverlay()
                     settingsIndexStatus.text = error.message ?: "Could not scan for new files."
                     scanNewFilesButton.isEnabled = true
                 }
             } catch (error: OutOfMemoryError) {
                 runOnUiThread {
+                    dismissIndexingOverlay()
                     settingsIndexStatus.text = "Android ran out of memory while scanning the depot."
                     scanNewFilesButton.isEnabled = true
                 }
