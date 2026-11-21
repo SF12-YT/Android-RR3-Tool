@@ -4692,11 +4692,11 @@ class MainActivity : Activity() {
             camTweaksInputs.clear()
             camTweaksStatus = text("", 11, UiPalette.textMuted)
             camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
+            camTweaksSaveButton = compactOverlayButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
 
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setPadding(dp(12), dp(6), dp(12), dp(6))
                 background = rounded(UiPalette.surface, dp(14).toFloat())
                 elevation = dp(12).toFloat()
             }
@@ -4705,14 +4705,14 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
             }
             header.addView(text("CAMERA DATA  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
-                LinearLayout.LayoutParams(0, dp(32), 1f))
+                LinearLayout.LayoutParams(0, dp(28), 1f))
             header.addView(compactOverlayButton("Close") {
                 camTweaksOverlay?.let { overlay -> (overlay.parent as? ViewGroup)?.removeView(overlay) }
                 camTweaksOverlay = null
                 camTweaksDialog?.dismiss()
                 camTweaksDialog = null
             }, LinearLayout.LayoutParams(dp(62), dp(32)))
-            panel.addView(header, matchWrap(bottom = 5))
+            panel.addView(header, matchWrap(bottom = 3))
 
             val recordStrip = HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false
@@ -4720,14 +4720,14 @@ class MainActivity : Activity() {
             }
             val recordButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             recordStrip.addView(recordButtons)
-            panel.addView(recordStrip, matchWrap(bottom = 5))
+            panel.addView(recordStrip, matchWrap(bottom = 3))
             val valuesScroll = HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false
                 clipToPadding = false
             }
             valuesScroll.addView(camTweaksFieldsContainer)
             panel.addView(valuesScroll, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(36)
             ))
             camTweaksStatus.isSingleLine = true
             panel.addView(camTweaksStatus, matchWrap(top = 1, bottom = 2))
@@ -4754,7 +4754,7 @@ class MainActivity : Activity() {
                         val input = editBox(label, value.toString(), numeric = true).apply {
                             textSize = 12f
                         }
-                        val params = LinearLayout.LayoutParams(dp(104), dp(36)).apply {
+                        val params = LinearLayout.LayoutParams(dp(104), dp(32)).apply {
                             marginEnd = dp(6)
                         }
                         camTweaksFieldsContainer.addView(input, params)
@@ -4792,14 +4792,14 @@ class MainActivity : Activity() {
                 val chip = text("CAM $cameraId", 11, UiPalette.text, bold = true).apply {
                     tag = offset
                     gravity = Gravity.CENTER
-                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
                     background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
                     setOnClickListener { selectRecord(offset, cameraId) }
                 }
                 val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(30)
                 ).apply { marginEnd = dp(6) }
                 recordButtons.addView(chip, params)
             }
