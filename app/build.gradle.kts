@@ -13,6 +13,9 @@ android {
             storePassword = "android"
             keyAlias = "rr3tooldebug"
             keyPassword = "android"
+            // Explicitly include both Android signing schemes for broad installer compatibility.
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
