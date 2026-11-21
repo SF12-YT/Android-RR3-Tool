@@ -1408,12 +1408,13 @@ class MainActivity : Activity() {
 
     private fun indexGameDataFiles() {
         val rootPath = preferences.getString("game_data_root_dir", null)
-        val backend = preferences.getString("game_data_backend", "root")
-        if (rootPath.isNullOrBlank()) {
-            setGameDataStatus("Detect the installed RR3 depot with Root or Shizuku before indexing.")
-            setIndexButtonsEnabled(false)
-            return
-        }
+            ?.takeIf { it.isNotBlank() }
+            ?: run {
+                setGameDataStatus("Detect the installed RR3 depot with Root or Shizuku before indexing.")
+                setIndexButtonsEnabled(false)
+                return
+            }
+        val backend = preferences.getString("game_data_backend", "root") ?: "root"
         if (backend == "shizuku" && shizukuStorageService == null) {
             ensureShizukuStorageService { indexGameDataFiles() }
             return
