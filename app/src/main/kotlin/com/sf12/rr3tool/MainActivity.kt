@@ -295,6 +295,7 @@ class MainActivity : Activity() {
     private lateinit var camTweaksStatus: TextView
     private lateinit var camTweaksFieldsContainer: LinearLayout
     private lateinit var camTweaksSaveButton: TextView
+    private var camTweaksDialog: AlertDialog? = null
     private var currentCamTweaksOriginal: ByteArray? = null
     private var currentCamTweaksName: String = "camTweaks.dat"
     private val camTweaksInputs = linkedMapOf<Int, EditText>()
@@ -676,27 +677,7 @@ class MainActivity : Activity() {
         )
         dataEditorStatus = text("No data file opened.", 12, UiPalette.textMuted)
         editorCard.addView(dataEditorStatus, matchWrap(top = 10))
-        addSection(editorPage, "CAMERA TWEAKS")
-        val camTweaksCard = card(editorPage)
-        camTweaksCard.addView(text("Edit RR3 camera tweak records", 17, UiPalette.text, bold = true), matchWrap())
-        camTweaksCard.addView(
-            text(
-                "Open camTweaks.dat to edit its nine indexed records. The six float fields are shown as raw parameters because their exact in-game meanings are not yet verified. Saving preserves the header, record IDs and all remaining file data byte-for-byte.",
-                13, UiPalette.textMuted
-            ),
-            matchWrap(top = 6)
-        )
-        camTweaksCard.addView(
-            actionButton("Open camTweaks.dat") { chooseCamTweaksFile() },
-            matchWrap(top = 12)
-        )
-        camTweaksStatus = text("No camTweaks.dat file opened.", 12, UiPalette.textMuted)
-        camTweaksCard.addView(camTweaksStatus, matchWrap(top = 10))
-        camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        camTweaksCard.addView(camTweaksFieldsContainer, matchWrap(top = 10))
-        camTweaksSaveButton = actionButton("Save edited camTweaks.dat") { saveCamTweaksFile() }
-        camTweaksSaveButton.visibility = View.GONE
-        camTweaksCard.addView(camTweaksSaveButton, matchWrap(top = 10))
+        // Camera tweaks are edited from the 3D Viewer menu, alongside the live preview.
         addSection(carPage, "RR3 CAR EDITOR")
         val carCard = card(carPage)
         carCard.addView(
@@ -2189,7 +2170,7 @@ class MainActivity : Activity() {
             "Live camera controls",
             "Toggle panorama backdrop",
             "Reset camera",
-            "camTweaks.dat editor status"
+            "Edit camTweaks.dat"
         )
         AlertDialog.Builder(this)
             .setTitle("3D Viewer menu")
@@ -2206,13 +2187,7 @@ class MainActivity : Activity() {
                         rr3ViewerSurface?.resetCamera()
                         rr3ViewerSurface?.setCameraTuning(0f, 0f, 0.75f)
                     }
-                    3 -> AlertDialog.Builder(this)
-                        .setTitle("camTweaks.dat")
-                        .setMessage(
-                            "The live controls currently tune the Monkey Tool preview camera and can save a local preset. Writing the game's camTweaks.dat is not enabled because no sample file or verified field layout is available. A guessed binary layout could corrupt the source file."
-                        )
-                        .setPositiveButton("OK", null)
-                        .show()
+                    3 -> openCamTweaksForViewer()
                 }
             }
             .setNegativeButton("Close", null)
@@ -4589,6 +4564,15 @@ class MainActivity : Activity() {
     }
     private fun String.removeSuffixIgnoreCaseLocal(suffix: String): String =
         if (endsWith(suffix, ignoreCase = true)) dropLast(suffix.length) else this
+    private fun openCamTweaksForViewer() {
+        val entry = indexedGameFiles.firstOrNull { it.name.equals("camTweaks.dat", true) || it.relativePath.substringAfterLast('/').equals("camTweaks.dat", true) }
+        if (entry != null) openCamTweaksGameFile(entry) else AlertDialog.Builder(this)
+            .setTitle("camTweaks.dat not indexed")
+            .setMessage("The depot index does not contain camTweaks.dat. Select a copy manually?")
+            .setPositiveButton("Choose file") { _, _ -> chooseCamTweaksFile() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
     private fun chooseCamTweaksFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -4599,13 +4583,13 @@ class MainActivity : Activity() {
     }
 
     private fun openCamTweaksGameFile(entry: GameDataFile) {
-        camTweaksStatus.text = "Reading ${entry.relativePath}…"
+        rr3ViewerScreenStatus.text = "Loading ${entry.relativePath}…"
         Thread {
             try {
                 val bytes = readGameFile(entry)
                 runOnUiThread { renderCamTweaksEditor(entry.name, bytes) }
             } catch (error: Exception) {
-                runOnUiThread { camTweaksStatus.text = error.message ?: "Could not read camTweaks.dat." }
+                runOnUiThread { rr3ViewerScreenStatus.text = error.message ?: "Could not read camTweaks.dat." }
             }
         }.start()
     }
@@ -4627,6 +4611,14 @@ class MainActivity : Activity() {
 
     private fun renderCamTweaksEditor(name: String, bytes: ByteArray) {
         try {
+            camTweaksStatus = text("", 12, UiPalette.textMuted)
+            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
+            val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(8)) }
+            content.addView(text("The first three values are shown as X/Y/Z in the file's native units. The remaining values are left unmapped until their in-game meanings are verified. Export creates a separate file and preserves all unknown sections.", 12, UiPalette.textMuted), matchWrap(bottom = 10))
+            content.addView(camTweaksStatus, matchWrap(bottom = 8))
+            content.addView(camTweaksFieldsContainer, matchWrap())
+            content.addView(camTweaksSaveButton, matchWrap(top = 10))
             if (bytes.size < 12 ||
                 bytes[0] != 'R'.code.toByte() ||
                 bytes[1] != 'R'.code.toByte() ||
@@ -4658,21 +4650,24 @@ class MainActivity : Activity() {
                     val offset = recordOffset + 4 + field * 4
                     val value = buffer.getFloat(offset)
                     if (!value.isFinite()) throw IllegalArgumentException("Record $cameraId contains a non-finite parameter at slot ${field + 1}.")
-                    val input = editBox("Float parameter ${field + 1}", value.toString(), numeric = true)
+                    val label = when (field) { 0 -> "Position X · native units"; 1 -> "Position Y · native units"; 2 -> "Position Z · native units"; else -> "Unmapped value ${field - 2}" }
+                    val input = editBox(label, value.toString(), numeric = true)
                     group.addView(input, matchWrap(top = 5))
                     camTweaksInputs[offset] = input
                 }
             }
-            camTweaksSaveButton.visibility = View.VISIBLE
-            camTweaksStatus.text =
-                "Loaded $name · version $version · $count camera records · ${bytes.size} bytes. The remaining ${bytes.size - tableEnd.toInt()} bytes are preserved."
-            selectTabFromView("Data Editor")
+            camTweaksStatus.text = "Loaded $name · version $version · $count records. Unknown file sections are preserved."
+            val scroll = ScrollView(this).apply { addView(content) }
+            camTweaksDialog?.dismiss()
+            camTweaksDialog = AlertDialog.Builder(this).setTitle("camTweaks.dat · 3D Viewer")
+                .setView(scroll).setNegativeButton("Close", null).create()
+            camTweaksDialog?.show()
+            camTweaksDialog?.window?.setLayout((resources.displayMetrics.widthPixels * 0.82f).toInt(), (resources.displayMetrics.heightPixels * 0.82f).toInt())
         } catch (error: Exception) {
             currentCamTweaksOriginal = null
             camTweaksInputs.clear()
             camTweaksFieldsContainer.removeAllViews()
-            camTweaksSaveButton.visibility = View.GONE
-            camTweaksStatus.text = error.message ?: "Could not parse camTweaks.dat."
+            rr3ViewerScreenStatus.text = error.message ?: "Could not parse camTweaks.dat."
         }
     }
 
@@ -4695,8 +4690,8 @@ class MainActivity : Activity() {
         pendingTransformedFile?.delete()
         pendingTransformedFile = null
         pendingTransformedName = currentCamTweaksName.substringBeforeLast('.', currentCamTweaksName) + "-edited.dat"
-        pendingOutputForDataEditor = true
-        pendingOutputForBrowser = false
+        pendingOutputForDataEditor = false
+        pendingOutputForBrowser = true
         pendingOutputForCarEditor = false
         camTweaksStatus.text = "Prepared edited camera records. Choose an output location; the source file remains unchanged."
         launchRr3OutputPicker()
