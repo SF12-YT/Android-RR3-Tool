@@ -206,7 +206,6 @@ class MainActivity : Activity() {
             }
         }
     }
-    private val requestGameData = 1101
     private val requestSaveFolder = 1102
     private val requestRr3TransformInput = 1103
     private val requestRr3TransformOutput = 1104
@@ -218,11 +217,15 @@ class MainActivity : Activity() {
     private val requestLiverySwatchInput = 1110
     private lateinit var gameDataValue: TextView
     private lateinit var gameFilesStatus: TextView
+    private lateinit var setupStatus: TextView
+    private lateinit var setupScreen: LinearLayout
+    private lateinit var setupIndexButton: TextView
     private lateinit var gameFilesSearch: EditText
     private lateinit var gameFilesContainer: LinearLayout
     private lateinit var indexGameFilesButton: TextView
     private lateinit var locateRootGameDataButton: TextView
     private var indexedGameFiles: List<GameDataFile> = emptyList()
+    private var rr3ViewerCatalogStatus: String = "The RR3 car catalogue has not been indexed yet."
     private val expandedGameDataFolders = mutableSetOf<String>()
     private lateinit var saveFolderValue: TextView
     private lateinit var rootSaveValue: TextView
@@ -247,7 +250,7 @@ class MainActivity : Activity() {
                     bindShizukuStorageService()
                 } else {
                     runOnUiThread {
-                        gameFilesStatus.text = "Shizuku permission was denied. Root access or a manually accessible folder is still available."
+                        setGameDataStatus("Shizuku permission was denied. Choose Root access or start Shizuku and retry.")
                     }
                     pendingShizukuAction = null
                 }
@@ -267,7 +270,7 @@ class MainActivity : Activity() {
             pendingShizukuAction = null
             if (shizukuStorageService != null) ready?.invoke()
             else runOnUiThread {
-                gameFilesStatus.text = "Shizuku connected, but the RR3 storage service could not be created."
+                setGameDataStatus("Shizuku connected, but the RR3 storage service could not be created.")
             }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -312,9 +315,8 @@ class MainActivity : Activity() {
     private var rr3ViewerCatalogLoading = false
     private lateinit var rr3ViewerCarSpinner: Spinner
     private lateinit var rr3ViewerLoadButton: TextView
-    private lateinit var rr3ViewerOpenButton: TextView
     private lateinit var rr3ViewerStatus: TextView
-    private lateinit var rr3ViewerScreen: LinearLayout
+    private lateinit var rr3ViewerScreen: FrameLayout
     private lateinit var rr3ViewerScreenHost: FrameLayout
     private lateinit var rr3ViewerScreenTitle: TextView
     private lateinit var rr3ViewerScreenStatus: TextView
@@ -387,50 +389,57 @@ class MainActivity : Activity() {
         appRoot.addView(editorScreen, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        rr3ViewerScreen = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        rr3ViewerScreen = FrameLayout(this).apply {
             setBackgroundColor(0xFF050B13.toInt())
             visibility = View.GONE
         }
-        val rr3ViewerToolbar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setBackgroundColor(0xFF0D1B2C.toInt())
-        }
-        rr3ViewerToolbar.addView(actionButton("‹ Back") { closeRr3FullScreenViewer() })
-        rr3ViewerScreenTitle = text("3D Viewer", 17, Color.WHITE, bold = true)
-        rr3ViewerToolbar.addView(rr3ViewerScreenTitle, LinearLayout.LayoutParams(
-            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
-        ).apply { marginStart = dp(12); marginEnd = dp(8) })
-        rr3ViewerToolbar.addView(actionButton("Reset") { rr3ViewerSurface?.resetCamera() })
-        rr3ViewerScreen.addView(rr3ViewerToolbar, matchWrap())
-        rr3ViewerScreenStatus = text(
-            "Drag to rotate · Pinch to zoom",
-            11, 0xFF9BAFC5.toInt()
-        ).apply {
-            setPadding(dp(16), dp(7), dp(16), dp(7))
-            maxLines = 1
-        }
-        rr3ViewerScreen.addView(rr3ViewerScreenStatus, matchWrap())
         rr3ViewerScreenHost = FrameLayout(this).apply {
             setBackgroundColor(0xFF101B29.toInt())
         }
-        rr3ViewerScreen.addView(rr3ViewerScreenHost, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        rr3ViewerScreen.addView(rr3ViewerScreenHost, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        val rr3ViewerHint = text(
-            "Drag to rotate  ·  Pinch to zoom",
-            12, 0xFF9BAFC5.toInt()
-        ).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(9), dp(12), dp(9))
+        val rr3ViewerToolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            background = rounded(0xCC0D1B2C.toInt(), dp(16).toFloat())
         }
-        rr3ViewerScreen.addView(rr3ViewerHint, matchWrap())
+        rr3ViewerToolbar.addView(compactOverlayButton("‹ Cars") { closeRr3FullScreenViewer() })
+        rr3ViewerScreenTitle = text("3D Viewer", 13, Color.WHITE, bold = true).apply {
+            maxLines = 1
+            setPadding(dp(10), 0, dp(8), 0)
+        }
+        rr3ViewerToolbar.addView(rr3ViewerScreenTitle, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ))
+        rr3ViewerToolbar.addView(compactOverlayButton("Reset") { rr3ViewerSurface?.resetCamera() })
+        rr3ViewerScreen.addView(rr3ViewerToolbar, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        ).apply {
+            topMargin = dp(14)
+            leftMargin = dp(12)
+            rightMargin = dp(12)
+        })
+        rr3ViewerScreenStatus = text(
+            "Drag to rotate · Pinch to zoom",
+            10, 0xFFE3ECF7.toInt()
+        ).apply {
+            maxLines = 1
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = rounded(0xB20D1B2C.toInt(), dp(12).toFloat())
+        }
+        rr3ViewerScreen.addView(rr3ViewerScreenStatus, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.START
+        ).apply {
+            leftMargin = dp(14)
+            bottomMargin = dp(14)
+        })
         appRoot.addView(rr3ViewerScreen, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
-        setContentView(appRoot)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         page.addView(
             text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
@@ -451,7 +460,7 @@ class MainActivity : Activity() {
             matchWrap(top = 5, bottom = 16)
         )
         val tabNames = listOf(
-            "Game Data", "Save Editor", "Transform", "Data Editor",
+            "Index", "Save Editor", "Transform", "Data Editor",
             "Car Editor", "Liveries", "Career", "Track Inspector", "3D Viewer", "About"
         )
         val tabPages = linkedMapOf<String, LinearLayout>()
@@ -509,8 +518,8 @@ class MainActivity : Activity() {
             )
         }
         selectTabAction = { name -> selectTab(name) }
-        selectTab("Game Data")
-        val gameDataPage = tabPages.getValue("Game Data")
+        selectTab("Index")
+        val gameDataPage = tabPages.getValue("Index")
         val savePage = tabPages.getValue("Save Editor")
         val transformPage = tabPages.getValue("Transform")
         val editorPage = tabPages.getValue("Data Editor")
@@ -520,40 +529,22 @@ class MainActivity : Activity() {
         val trackPage = tabPages.getValue("Track Inspector")
         val viewerPage = tabPages.getValue("3D Viewer")
         val aboutPage = tabPages.getValue("About")
-        addSection(gameDataPage, "GAME DATA")
+        addSection(gameDataPage, "DEPOT INDEX")
         val gameCard = card(gameDataPage)
-        gameCard.addView(text("Real Racing 3 files", 17, Color.WHITE, bold = true), matchWrap())
+        gameCard.addView(text("Full RR3 asset index", 17, Color.WHITE, bold = true), matchWrap())
         gameCard.addView(
             text(
-                "Browse the installed RR3 files directly with root or Shizuku. Shizuku works without root using Android's Wireless Debugging (Android 11+), so the game folder does not need to be copied. Manual folder access remains available where Android permits it.",
+                "Browse the complete installed .depot listing. The Index operation also reads and caches the RR3 car catalogue, so opening the 3D Viewer does not read those records again.",
                 13,
                 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
         )
-        gameDataValue = text("No folder selected", 12, 0xFFB7C8D9.toInt())
-        gameCard.addView(gameDataValue, matchWrap(top = 12))
-        locateRootGameDataButton = actionButton("Auto-detect installed RR3 .depot (root)") {
-            locateRootGameDataFolder()
-        }
-        gameCard.addView(locateRootGameDataButton, matchWrap(top = 12))
-        gameCard.addView(
-            actionButton("Find installed RR3 folder without root (Shizuku)") { locateShizukuGameDataFolder() },
-            matchWrap(top = 8)
-        )
-        gameCard.addView(
-            actionButton("Choose accessible RR3 folder manually") { chooseFolder(requestGameData) },
-            matchWrap(top = 8)
-        )
-        gameFilesStatus = text(
-            "Choose root or Shizuku to detect the installed game without copying it. Shizuku needs to be running and authorised.",
-            12,
-            0xFF9BAFC5.toInt()
-        )
+        gameFilesStatus = text("The RR3 depot has not been indexed yet.", 12, 0xFF9BAFC5.toInt())
         gameCard.addView(gameFilesStatus, matchWrap(top = 10))
-        indexGameFilesButton = actionButton("Index all RR3 game assets") { indexGameDataFiles() }
+        indexGameFilesButton = actionButton("Re-index EVERYTHING") { indexGameDataFiles() }
         gameCard.addView(indexGameFilesButton, matchWrap(top = 10))
-        gameFilesSearch = editBox("Search RR3 file names and paths", "", numeric = false)
+        gameFilesSearch = editBox("Search indexed RR3 file names and paths", "", numeric = false)
         gameCard.addView(gameFilesSearch, matchWrap(top = 10))
         gameFilesContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -665,7 +656,7 @@ class MainActivity : Activity() {
         addSection(carPage, "RR3 CAR EDITOR")
         val carCard = card(carPage)
         carCard.addView(
-            text("Edit a car's structured game data", 17, Color.WHITE, bold = true),
+            text("Edit a car's structured depot index", 17, Color.WHITE, bold = true),
             matchWrap()
         )
         carCard.addView(
@@ -701,7 +692,7 @@ class MainActivity : Activity() {
             matchWrap(top = 6)
         )
         liveryStatus = text(
-            "Index the RR3 .depot in Game Data to load the available cars.",
+            "Index the RR3 .depot in Index to load the available cars.",
             12,
             0xFF9BAFC5.toInt()
         )
@@ -773,7 +764,7 @@ class MainActivity : Activity() {
         }
         liveryManualPanel.addView(liveryManualSlotsContainer, matchWrap(top = 10))
         liveryPaintStatus = text(
-            "Edit the Motorsports label and Road Cars paint-material/colour names. Index Game Data first.",
+            "Edit the Motorsports label and Road Cars paint-material/colour names. Index Index first.",
             12,
             0xFF9BAFC5.toInt()
         )
@@ -857,7 +848,7 @@ class MainActivity : Activity() {
         )
         viewerCard.addView(
             text(
-                "Choose a car from the indexed RR3 car list and load its exterior model, hardpoints and textures. Once loaded, open the dedicated landscape viewer to rotate and zoom. The preview is read-only.",
+                "Choose a car from the catalogue cached during Index, then load its exterior model and textures. The model opens in an immersive landscape viewer. The preview is read-only.",
                 13, 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
@@ -879,19 +870,15 @@ class MainActivity : Activity() {
             rr3ViewerCarSpinner,
             FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48))
         )
-        setRr3ViewerCarSpinnerItems(listOf("Index Game Data to load cars"))
+        setRr3ViewerCarSpinnerItems(listOf("Index the depot to load cars"))
         viewerCard.addView(rr3ViewerCarPicker, matchWrap(top = 12))
         rr3ViewerLoadButton = actionButton("Load selected car") {
             val selected = rr3ViewerCars.getOrNull(rr3ViewerCarSpinner.selectedItemPosition)
             if (selected != null) loadRr3ViewerCar(selected)
         }
         viewerCard.addView(rr3ViewerLoadButton, matchWrap(top = 8))
-        rr3ViewerOpenButton = actionButton("Open full-screen 3D viewer") {
-            openRr3FullScreenViewer()
-        }.apply { isEnabled = false }
-        viewerCard.addView(rr3ViewerOpenButton, matchWrap(top = 8))
         rr3ViewerStatus = text(
-            "Index the RR3 .depot in Game Data, then select and load a car above.",
+            "Complete startup setup, then select and load a car above.",
             12, 0xFF9BAFC5.toInt()
         )
         viewerCard.addView(rr3ViewerStatus, matchWrap(top = 10, bottom = 8))
@@ -929,14 +916,107 @@ class MainActivity : Activity() {
             ).apply { gravity = Gravity.CENTER },
             matchWrap(top = 24)
         )
-        restoreSelection(gameDataValue, "game_data_tree")
         val savedRootGameData = preferences.getString("game_data_root_dir", null)
         if (!savedRootGameData.isNullOrBlank()) {
-            gameDataValue.text = "Root folder: $savedRootGameData"
+            gameDataValue.text = savedRootGameData
+        } else {
+            // Older builds allowed a manually selected document folder. RR3
+            // depot access is now deliberately limited to Root or Shizuku.
+            preferences.edit()
+                .remove("game_data_tree")
+                .remove("game_data_backend")
+                .remove("setup_complete")
+                .apply()
         }
         restoreSelection(saveFolderValue, "save_tree")
         restoreRootSaveSelection()
         updateEngineStatus()
+
+        setupScreen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(9, 17, 29))
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+        }
+        val setupScroll = ScrollView(this).apply { isFillViewport = true }
+        val setupPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, dp(24))
+        }
+        setupScroll.addView(setupPage)
+        setupScreen.addView(setupScroll, matchWrap())
+        setupPage.addView(
+            text("ANDROID EDITION  •  REAL RACING 3", 11, 0xFF75B9F1.toInt()).apply {
+                letterSpacing = 0.10f
+            },
+            matchWrap()
+        )
+        setupPage.addView(text("RR3 Tool", 32, Color.WHITE, bold = true), matchWrap(top = 7))
+        setupPage.addView(
+            text(
+                "A quick two-step setup. The app reads the installed depot directly; it does not copy the game files.",
+                14, 0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 5, bottom = 20)
+        )
+        val detectCard = card(setupPage)
+        detectCard.addView(text("STEP 1  ·  DETECT RR3 FILES", 12, 0xFF75B9F1.toInt(), bold = true), matchWrap())
+        detectCard.addView(
+            text(
+                "Choose one access method. Shizuku works without root when started through Wireless Debugging. Root requires a Superuser grant.",
+                13, 0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 7)
+        )
+        locateRootGameDataButton = actionButton("Detect installed files with Root") {
+            locateRootGameDataFolder()
+        }
+        detectCard.addView(locateRootGameDataButton, matchWrap(top = 12))
+        detectCard.addView(
+            actionButton("Detect installed files with Shizuku") { locateShizukuGameDataFolder() },
+            matchWrap(top = 8)
+        )
+        gameDataValue = text(
+            savedRootGameData ?: "RR3 depot not detected yet.",
+            11, 0xFFB7C8D9.toInt()
+        ).apply {
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+            background = rounded(0xFF0B1725.toInt(), dp(9).toFloat())
+        }
+        detectCard.addView(gameDataValue, matchWrap(top = 12))
+        setupStatus = text(
+            if (savedRootGameData.isNullOrBlank()) "Detect your installed RR3 depot to continue."
+            else "RR3 depot already detected. Continue to the full index.",
+            12, 0xFF9BAFC5.toInt()
+        )
+        detectCard.addView(setupStatus, matchWrap(top = 9))
+
+        val indexCard = card(setupPage)
+        indexCard.addView(text("STEP 2  ·  INDEX EVERYTHING", 12, 0xFF75B9F1.toInt(), bold = true), matchWrap())
+        indexCard.addView(
+            text(
+                "Build one complete file index for the depot, including models, textures, animations, sidecars and RR3 car records. The car catalogue is parsed here and reused by the 3D Viewer.",
+                13, 0xFF9BAFC5.toInt()
+            ),
+            matchWrap(top = 7)
+        )
+        setupIndexButton = actionButton("Index EVERYTHING") { indexGameDataFiles() }.apply {
+            isEnabled = !savedRootGameData.isNullOrBlank()
+        }
+        indexCard.addView(setupIndexButton, matchWrap(top = 12))
+        appRoot.addView(setupScreen, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        val setupCompleted = preferences.getBoolean("setup_complete", false) &&
+            !savedRootGameData.isNullOrBlank()
+        if (setupCompleted) {
+            setupScreen.visibility = View.GONE
+            rootScrollView.visibility = View.VISIBLE
+        } else {
+            setupScreen.visibility = View.VISIBLE
+            rootScrollView.visibility = View.GONE
+        }
+        setContentView(appRoot)
+        if (setupCompleted) indexGameDataFiles()
     }
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
@@ -1134,51 +1214,146 @@ class MainActivity : Activity() {
             }
         }
     }
+    private fun setGameDataStatus(message: String) {
+        if (::gameFilesStatus.isInitialized) gameFilesStatus.text = message
+        if (::setupStatus.isInitialized) setupStatus.text = message
+    }
+
+    private fun setIndexButtonsEnabled(enabled: Boolean) {
+        if (::indexGameFilesButton.isInitialized) indexGameFilesButton.isEnabled = enabled
+        if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = enabled
+    }
+
+    /** Parses RR3 registries and per-car records during the depot index operation. */
+    private fun buildRr3ViewerCarCatalog(files: List<GameDataFile>): Pair<List<Rr3ViewerCar>, String> {
+        fun normalPath(entry: GameDataFile) =
+            entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
+        val cardesc = files.firstOrNull { normalPath(it) == "vehicles/data/cardesc.list.nct" }
+            ?: return emptyList<Rr3ViewerCar>() to "The RR3 car description registry is missing from the index."
+        val appearances = files.firstOrNull {
+            normalPath(it) == "vehicles/data/carappearances.appearances.nct"
+        } ?: return emptyList<Rr3ViewerCar>() to "The RR3 car appearances registry is missing from the index."
+        val carDataFiles = files.filter { entry ->
+            val path = normalPath(entry)
+            path.substringBeforeLast('/', "") == "vehicles/data" &&
+                Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE)
+                    .matches(path.substringAfterLast('/'))
+        }.sortedBy { normalPath(it) }
+        if (carDataFiles.isEmpty()) {
+            return emptyList<Rr3ViewerCar>() to "The RR3 registries are indexed, but no per-car data records were found."
+        }
+        val registryPaths = arrayOf(normalPath(cardesc), normalPath(appearances))
+        val registryData = arrayOf(readGameFile(cardesc), readGameFile(appearances))
+        val carsByDataFolder = LinkedHashMap<String, Rr3ViewerCar>()
+        val batches = carDataFiles.chunked(32)
+        for ((batchIndex, batch) in batches.withIndex()) {
+            val paths = ArrayList<String>(2 + batch.size)
+            val data = ArrayList<ByteArray>(2 + batch.size)
+            paths.addAll(registryPaths)
+            data.addAll(registryData)
+            for (entry in batch) {
+                paths.add(normalPath(entry))
+                data.add(readGameFile(entry))
+            }
+            val payload = JSONObject(
+                NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray())
+            )
+            if (!payload.optBoolean("ok")) {
+                throw IllegalStateException(
+                    payload.optString("error", "RR3 could not read car catalogue batch ${batchIndex + 1}.")
+                )
+            }
+            val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                if (!item.optBoolean("readable")) continue
+                val dataFolder = item.optString("folder").trim()
+                val modelFolder = item.optString("modelFolder").trim()
+                if (dataFolder.isBlank() || modelFolder.isBlank() ||
+                    modelFolder.contains('/') || modelFolder.contains("..")) continue
+                val label = listOf(
+                    item.optString("year").trim(),
+                    item.optString("make").trim(),
+                    item.optString("model").trim()
+                ).filter { it.isNotBlank() }.joinToString(" ")
+                    .ifBlank { formatLiveryCarName(modelFolder) }
+                carsByDataFolder.putIfAbsent(
+                    dataFolder.lowercase(Locale.ROOT),
+                    Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, cardesc)
+                )
+            }
+        }
+        val sorted = carsByDataFolder.values.sortedWith(
+            compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
+        )
+        return sorted to
+            "Cached ${sorted.size} RR3 car records during Index (${carDataFiles.size} source records, ${batches.size} batches)."
+    }
+
     private fun indexGameDataFiles() {
         val rootPath = preferences.getString("game_data_root_dir", null)
-        val stored = preferences.getString("game_data_tree", null)
         val backend = preferences.getString("game_data_backend", "root")
-        if (rootPath.isNullOrBlank() && stored.isNullOrBlank()) {
-            gameFilesStatus.text = "Choose root, Shizuku, or a folder Android allows you to access."
+        if (rootPath.isNullOrBlank()) {
+            setGameDataStatus("Detect the installed RR3 depot with Root or Shizuku before indexing.")
+            setIndexButtonsEnabled(false)
             return
         }
-        if (!rootPath.isNullOrBlank() && backend == "shizuku" && shizukuStorageService == null) {
+        if (backend == "shizuku" && shizukuStorageService == null) {
             ensureShizukuStorageService { indexGameDataFiles() }
             return
         }
-        indexGameFilesButton.isEnabled = false
-        gameFilesStatus.text = "Indexing all RR3 .depot assets (including textures and 3D models)…"
+        setIndexButtonsEnabled(false)
+        setGameDataStatus("Indexing EVERYTHING in the RR3 .depot, then caching the car catalogue…")
         gameFilesContainer.removeAllViews()
         Thread {
             try {
-                val files = if (!rootPath.isNullOrBlank()) {
-                    val listing = if (backend == "shizuku") {
-                        val service = shizukuStorageService
-                            ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
-                        val pipe = service.listFiles(rootPath)
-                            ?: throw IllegalStateException("Shizuku could not list the RR3 files.")
-                        ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    } else {
-                        runRootCommand("find ${shellQuote(rootPath)} -type f -print")
-                    }
-                    GameDataBrowser.fromRootListing(rootPath, listing, useShizuku = backend == "shizuku")
+                val listing = if (backend == "shizuku") {
+                    val service = shizukuStorageService
+                        ?: throw IllegalStateException("Shizuku disconnected. Start it again and retry.")
+                    val pipe = service.listFiles(rootPath)
+                        ?: throw IllegalStateException("Shizuku could not list the RR3 files.")
+                    ParcelFileDescriptor.AutoCloseInputStream(pipe).bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } else {
-                    GameDataBrowser.scan(contentResolver, Uri.parse(stored!!))
+                    runRootCommand("find ${shellQuote(rootPath)} -type f -print")
+                }
+                val files = GameDataBrowser.fromRootListing(
+                    rootPath, listing, useShizuku = backend == "shizuku"
+                )
+                val catalogue = try {
+                    buildRr3ViewerCarCatalog(files)
+                } catch (error: OutOfMemoryError) {
+                    emptyList<Rr3ViewerCar>() to
+                        "The depot file index completed, but Android ran out of memory while caching the car catalogue. Re-index after closing other apps."
+                } catch (error: Exception) {
+                    emptyList<Rr3ViewerCar>() to
+                        "The depot file index completed, but the car catalogue could not be cached: " +
+                        (error.message ?: "Unknown catalogue error.")
                 }
                 runOnUiThread {
                     indexedGameFiles = files
+                    rr3ViewerCars = catalogue.first
+                    rr3ViewerCatalogStatus = catalogue.second
                     gameFilesSearch.setText("")
-                    gameFilesStatus.text =
-                        "Indexed ${files.size} files across the full RR3 .depot, including textures, 3D models, animations and sidecars."
+                    setGameDataStatus(
+                        "Indexed ${files.size} files across the full RR3 .depot. ${catalogue.second}"
+                    )
                     renderGameFiles()
                     renderLiveryCarChoices()
                     renderRr3ViewerCarChoices()
-                    indexGameFilesButton.isEnabled = true
+                    setIndexButtonsEnabled(true)
+                    preferences.edit().putBoolean("setup_complete", true).apply()
+                    setupScreen.visibility = View.GONE
+                    rootScrollView.visibility = View.VISIBLE
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    gameFilesStatus.text = e.message ?: "Could not index the RR3 game-data folder."
-                    indexGameFilesButton.isEnabled = true
+                    setGameDataStatus(e.message ?: "Could not index the RR3 .depot.")
+                    setIndexButtonsEnabled(true)
+                }
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    setGameDataStatus("Android ran out of memory while indexing the RR3 .depot. Close other apps and retry.")
+                    setIndexButtonsEnabled(true)
                 }
             }
         }.start()
@@ -1233,7 +1408,7 @@ class MainActivity : Activity() {
         }
     }
     private fun locateShizukuGameDataFolder() {
-        gameFilesStatus.text = "Checking Shizuku and locating the installed RR3 folder…"
+        setGameDataStatus("Checking Shizuku and locating the installed RR3 folder…")
         ensureShizukuStorageService {
             val service = shizukuStorageService ?: return@ensureShizukuStorageService
             Thread {
@@ -1251,19 +1426,21 @@ class MainActivity : Activity() {
                             .remove("game_data_tree")
                             .apply()
                         gameDataValue.text = found
+                        if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = true
+                        preferences.edit().putBoolean("setup_complete", false).apply()
                         indexedGameFiles = emptyList()
                         gameFilesContainer.removeAllViews()
-                        gameFilesStatus.text = "Found RR3 .depot using Shizuku (UID $uid): $found. Tap Index and browse RR3 files."
+                        setGameDataStatus("Found RR3 .depot using Shizuku (UID $uid): $found. Step 2 is ready.")
                     }
                 } catch (e: Exception) {
-                    runOnUiThread { gameFilesStatus.text = e.message ?: "Shizuku could not access the RR3 game folder." }
+                    runOnUiThread { setGameDataStatus(e.message ?: "Shizuku could not access the RR3 game folder.") }
                 }
             }.start()
         }
     }
     private fun locateRootGameDataFolder() {
         locateRootGameDataButton.isEnabled = false
-        gameFilesStatus.text = "Requesting root and locating the RR3 .depot folder…"
+        setGameDataStatus("Requesting root and locating the RR3 .depot folder…")
         Thread {
             try {
                 val uid = runRootCommand("id -u").substringAfterLast('\n').trim()
@@ -1362,15 +1539,15 @@ class MainActivity : Activity() {
                     .apply()
                 runOnUiThread {
                     gameDataValue.text = found
+                    if (::setupIndexButton.isInitialized) setupIndexButton.isEnabled = true
+                    preferences.edit().putBoolean("setup_complete", false).apply()
                     indexedGameFiles = emptyList()
                     gameFilesContainer.removeAllViews()
-                    gameFilesStatus.text =
-                        "Found populated RR3 .depot: " + found + ". Tap Index and browse RR3 files."
+                    setGameDataStatus("Found populated RR3 .depot: " + found + ". Step 2 is ready.")
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    gameFilesStatus.text = e.message
-                        ?: "Could not detect RR3 .depot with root."
+                    setGameDataStatus(e.message ?: "Could not detect RR3 .depot with root.")
                 }
             } finally {
                 runOnUiThread { locateRootGameDataButton.isEnabled = true }
@@ -1481,7 +1658,7 @@ class MainActivity : Activity() {
         if (assets.isEmpty()) {
             throw IllegalStateException(
                 "No indexed assets were found under vehicles/$carFolder. " +
-                    "Return to Game Data and run Index all RR3 game assets."
+                    "Return to Index and run Index all RR3 game assets."
             )
         }
         return assets
@@ -1529,109 +1706,31 @@ class MainActivity : Activity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         rr3ViewerCarSpinner.adapter = adapter
     }
+    /** The catalogue is populated only by indexGameDataFiles(); this method never reads depot files. */
     private fun renderRr3ViewerCarChoices() {
-        if (!::rr3ViewerCarSpinner.isInitialized || rr3ViewerCatalogLoading) return
+        if (!::rr3ViewerCarSpinner.isInitialized) return
         if (indexedGameFiles.isEmpty()) {
             rr3ViewerCars = emptyList()
-            setRr3ViewerCarSpinnerItems(listOf("No cars indexed"))
+            setRr3ViewerCarSpinnerItems(listOf("Index the depot to load cars"))
             rr3ViewerLoadButton.isEnabled = false
-            rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."
+            rr3ViewerStatus.text = "Complete the depot index before loading a car."
             return
         }
-        fun normalPath(entry: GameDataFile) = entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
-        val cardesc = indexedGameFiles.firstOrNull { normalPath(it) == "vehicles/data/cardesc.list.nct" }
-        val appearances = indexedGameFiles.firstOrNull { normalPath(it) == "vehicles/data/carappearances.appearances.nct" }
-        if (cardesc == null || appearances == null) {
-            rr3ViewerCars = emptyList()
-            setRr3ViewerCarSpinnerItems(listOf("RR3 car registry files not indexed"))
+        if (rr3ViewerCars.isEmpty()) {
+            setRr3ViewerCarSpinnerItems(listOf("No cached car records"))
             rr3ViewerLoadButton.isEnabled = false
-            rr3ViewerStatus.text = "RR3 car registry files are missing from the index. Re-index the .depot and make sure vehicles/data is included."
+            rr3ViewerStatus.text = rr3ViewerCatalogStatus
             return
         }
-        val carDataFiles = indexedGameFiles.filter { entry ->
-            val path = normalPath(entry)
-            path.substringBeforeLast('/', "") == "vehicles/data" &&
-                Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE).matches(path.substringAfterLast('/'))
-        }.sortedBy { normalPath(it) }
-        if (carDataFiles.isEmpty()) {
-            rr3ViewerCars = emptyList()
-            setRr3ViewerCarSpinnerItems(listOf("No car data records found"))
-            rr3ViewerLoadButton.isEnabled = false
-            rr3ViewerStatus.text = "The RR3 registries are indexed, but no vehicles/data/<id>_<car>.bin.nct records were found."
-            return
-        }
-        rr3ViewerCatalogLoading = true
-        setRr3ViewerCarSpinnerItems(listOf("Reading RR3 car catalogue…"))
-        rr3ViewerLoadButton.isEnabled = false
-        rr3ViewerStatus.text = "Reading " + carDataFiles.size + " RR3 car records in small batches…"
-        Thread {
-            try {
-                val registryPaths = arrayOf(normalPath(cardesc), normalPath(appearances))
-                val registryData = arrayOf(readGameFile(cardesc), readGameFile(appearances))
-                val carsByDataFolder = LinkedHashMap<String, Rr3ViewerCar>()
-                val batches = carDataFiles.chunked(32)
-                for ((batchIndex, batch) in batches.withIndex()) {
-                    val paths = ArrayList<String>(2 + batch.size)
-                    val data = ArrayList<ByteArray>(2 + batch.size)
-                    paths.addAll(registryPaths)
-                    data.addAll(registryData)
-                    for (entry in batch) {
-                        paths.add(normalPath(entry))
-                        data.add(readGameFile(entry))
-                    }
-                    val payload = JSONObject(NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray()))
-                    if (!payload.optBoolean("ok")) {
-                        throw IllegalStateException(payload.optString("error", "RR3 could not read car catalogue batch " + (batchIndex + 1) + "."))
-                    }
-                    val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
-                    for (index in 0 until array.length()) {
-                        val item = array.optJSONObject(index) ?: continue
-                        if (!item.optBoolean("readable")) continue
-                        val dataFolder = item.optString("folder").trim()
-                        val modelFolder = item.optString("modelFolder").trim()
-                        if (dataFolder.isBlank() || modelFolder.isBlank() || modelFolder.contains('/') || modelFolder.contains("..")) continue
-                        val label = listOf(item.optString("year").trim(), item.optString("make").trim(), item.optString("model").trim())
-                            .filter { it.isNotBlank() }.joinToString(" ").ifBlank { formatLiveryCarName(modelFolder) }
-                        carsByDataFolder.putIfAbsent(dataFolder.lowercase(Locale.ROOT), Rr3ViewerCar(item.optInt("id"), dataFolder, modelFolder, label, cardesc))
-                    }
-                }
-                val sorted = carsByDataFolder.values.sortedWith(compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id }))
-                runOnUiThread {
-                    rr3ViewerCars = sorted
-                    val labels = if (sorted.isEmpty()) listOf("No readable RR3 car records found") else
-                        sorted.map { it.displayName + "  ·  " + it.modelFolder }
-                    setRr3ViewerCarSpinnerItems(labels)
-                    rr3ViewerLoadButton.isEnabled = sorted.isNotEmpty()
-                    rr3ViewerStatus.text = if (sorted.isEmpty()) {
-                        "Found " + carDataFiles.size + " car files and both registries, but none parsed as a readable RR3 car record."
-                    } else {
-                        "Loaded " + sorted.size + " real car names from RR3's registry. Read " + carDataFiles.size + " data files in " + batches.size + " batches."
-                    }
-                    rr3ViewerCatalogLoading = false
-                }
-            } catch (error: Exception) {
-                runOnUiThread {
-                    rr3ViewerCars = emptyList()
-                    setRr3ViewerCarSpinnerItems(listOf("Could not read RR3 car catalogue"))
-                    rr3ViewerLoadButton.isEnabled = false
-                    rr3ViewerStatus.text = error.message ?: "Could not read the RR3 car catalogue."
-                    rr3ViewerCatalogLoading = false
-                }
-            } catch (error: OutOfMemoryError) {
-                runOnUiThread {
-                    rr3ViewerCars = emptyList()
-                    setRr3ViewerCarSpinnerItems(listOf("Car catalogue ran out of memory"))
-                    rr3ViewerLoadButton.isEnabled = false
-                    rr3ViewerStatus.text = "Android ran out of memory while reading the car catalogue. Try closing other apps and re-indexing."
-                    rr3ViewerCatalogLoading = false
-                }
-            }
-        }.start()
+        setRr3ViewerCarSpinnerItems(
+            rr3ViewerCars.map { it.displayName + "  ·  " + it.modelFolder }
+        )
+        rr3ViewerLoadButton.isEnabled = true
+        rr3ViewerStatus.text = "Loaded ${rr3ViewerCars.size} car choices from the Index cache. The catalogue will not be read again when this tab opens."
     }
     private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
-        if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."; return }
+        if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Index first."; return }
         rr3ViewerLoadButton.isEnabled = false
-        rr3ViewerOpenButton.isEnabled = false
         rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior model and sidecars…"
         Thread {
             try {
@@ -1694,18 +1793,16 @@ class MainActivity : Activity() {
                     rr3ViewerSurface = surface
                     rr3ViewerScreenTitle.text = car.displayName
                     rr3ViewerScreenStatus.text = meshes.toString() + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s)"
-                    rr3ViewerStatus.text = "Loaded " + car.displayName + ". Open the full-screen viewer to inspect it."
-                    rr3ViewerOpenButton.isEnabled = true
+                    rr3ViewerStatus.text = "Loaded " + car.displayName + "."
                     rr3ViewerLoadButton.isEnabled = true
+                    openRr3FullScreenViewer()
                 }
             } catch (error: Exception) { runOnUiThread {
                 rr3ViewerStatus.text = error.message ?: "Could not load this car in the 3D viewer."
-                rr3ViewerOpenButton.isEnabled = rr3ViewerSurface != null
                 rr3ViewerLoadButton.isEnabled = true
             } }
             catch (error: OutOfMemoryError) { runOnUiThread {
                 rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."
-                rr3ViewerOpenButton.isEnabled = rr3ViewerSurface != null
                 rr3ViewerLoadButton.isEnabled = true
             } }
         }.start()
@@ -1913,7 +2010,7 @@ class MainActivity : Activity() {
         }.sortedWith(compareBy({ it.second }, { it.third.lowercase(Locale.ROOT) }))
         if (entries.isEmpty()) {
             liveryStatus.text = if (indexedGameFiles.isEmpty()) {
-                "Index the RR3 .depot in Game Data first."
+                "Index the RR3 .depot in Index first."
             } else {
                 "No car livery lists were found in the indexed depot (the generic default list is hidden)."
             }
@@ -2327,7 +2424,7 @@ class MainActivity : Activity() {
                         it.relativePath.equals(pending.liveryEntry.relativePath, ignoreCase = true)
                     }) {
                     throw IllegalStateException(
-                        "Preview replacement needs the indexed RR3 depot. Re-index Game Data and try again."
+                        "Preview replacement needs the indexed RR3 depot. Re-index Index and try again."
                     )
                 }
                 val carAssets = scanLiveryCarAssets(pending.liveryEntry, pending.carFolder)
@@ -2423,7 +2520,7 @@ class MainActivity : Activity() {
         }
     private fun loadLiveryPaintLabels() {
         if (indexedGameFiles.isEmpty()) {
-            liveryPaintStatus.text = "Index the RR3 .depot in Game Data first."
+            liveryPaintStatus.text = "Index the RR3 .depot in Index first."
             return
         }
         val paintEntry = indexedFileByLeaf("custom.paints.nct")
@@ -2438,7 +2535,7 @@ class MainActivity : Activity() {
         ).filter { it.second == null }.map { it.first }
         if (missing.isNotEmpty()) {
             liveryPaintStatus.text =
-                "Could not find ${missing.joinToString(", ")} in the indexed depot. Re-index Game Data and try again."
+                "Could not find ${missing.joinToString(", ")} in the indexed depot. Re-index Index and try again."
             return
         }
         liveryPaintStatus.text = "Reading paint categories and English label strings…"
@@ -5883,7 +5980,7 @@ class MainActivity : Activity() {
                 }
                 if (isGameText) {
                     // All RR3 language files now use the same disk-backed,
-                    // paged editor as files opened from the Game Data browser.
+                    // paged editor as files opened from the Index browser.
                     // Do not materialise the full gametext file in a ByteArray.
                     runOnUiThread { openEditableDataFile(uri) }
                     return@Thread
@@ -6061,6 +6158,18 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(13), dp(16), dp(13))
             background = rounded(0xFF1766A8.toInt(), dp(12).toFloat())
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun compactOverlayButton(label: String, action: () -> Unit): TextView {
+        return text(label, 11, Color.WHITE, bold = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            minHeight = dp(30)
+            background = rounded(0xFF1D4263.toInt(), dp(10).toFloat())
             isClickable = true
             isFocusable = true
             setOnClickListener { action() }
@@ -6264,19 +6373,6 @@ class MainActivity : Activity() {
             // Some document providers return a temporary grant only.
         }
         when (requestCode) {
-            requestGameData -> {
-                preferences.edit()
-                    .putString("game_data_tree", uri.toString())
-                    .remove("game_data_root_dir")
-                    .remove("game_data_backend")
-                    .apply()
-                gameDataValue.text = displayFolder(uri)
-                indexedGameFiles = emptyList()
-                gameFilesSearch.setText("")
-                gameFilesStatus.text = "Storage access granted. Searching package folders for a populated RR3 .depot…"
-                gameFilesContainer.removeAllViews()
-                indexGameDataFiles()
-            }
             requestSaveFolder -> {
                 preferences.edit().putString("save_tree", uri.toString()).remove("save_root_dir").apply()
                 saveFolderValue.text = displayFolder(uri)
