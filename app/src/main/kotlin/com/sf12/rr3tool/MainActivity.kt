@@ -4838,14 +4838,48 @@ class MainActivity : Activity() {
     private fun applyCamTweaksPreview(recordOffset: Int) {
         val data = currentCamTweaksWorking ?: return
         if (recordOffset < 12 || recordOffset + 28 > data.size) return
-        // The RRCT record's six float fields have not yet been mapped to the
-        // game's camera transform. Do not feed guessed eye/look-at coordinates
-        // into the renderer: that can send the model outside the view frustum.
-        // Keep the normal model-centred preview until the record semantics and
-        // coordinate scale are verified against the game implementation.
-        rr3ViewerSurface?.resetCamera()
+
+        val record = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val values = FloatArray(6) { field ->
+            record.getFloat(recordOffset + 4 + field * 4)
+        }
+        if (values.any { !it.isFinite() }) {
+            camTweaksStatus.text = "This camera record contains an invalid coordinate."
+            return
+        }
+
+        // camTweaks stores camera and look-at points in RR3 game coordinates.
+        // The viewer uses Y-up, while these records are Z-up, so swap Y/Z when
+        // converting. The stored coordinates are in 1/10,000 viewer units.
+        // Keep this conversion isolated here so it can be adjusted from a
+        // real in-game comparison without changing the renderer.
+        val scale = 0.0001f
+        val eyeX = values[0] * scale
+        val eyeY = values[2] * scale
+        val eyeZ = values[1] * scale
+        val targetX = values[3] * scale
+        val targetY = values[5] * scale
+        val targetZ = values[4] * scale
+        val dx = targetX - eyeX
+        val dy = targetY - eyeY
+        val dz = targetZ - eyeZ
+        val distanceSquared = dx * dx + dy * dy + dz * dz
+        if (!distanceSquared.isFinite() || distanceSquared < 0.000001f ||
+            distanceSquared > 10000f
+        ) {
+            camTweaksStatus.text =
+                "Camera coordinates are outside the preview range; the previous view was kept."
+            return
+        }
+
+        val viewer = rr3ViewerSurface
+        if (viewer == null) {
+            camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
+            return
+        }
+        viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
         camTweaksStatus.text =
-            "Record selected · camera mapping not verified; model preview kept in its normal view."
+            "Camera position applied · provisional 1:10,000 scale · Z-up converted to Y-up."
     }
 
     private fun saveCamTweaksFile() {
