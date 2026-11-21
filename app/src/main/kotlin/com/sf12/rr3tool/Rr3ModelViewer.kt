@@ -58,7 +58,7 @@ internal class Rr3ModelViewer(
                         }
                         pinchDistance = distance
                     } else {
-                        yaw += (event.x - lastX) * 0.008f
+                        yaw -= (event.x - lastX) * 0.008f
                         pitch = (pitch + (event.y - lastY) * 0.008f).coerceIn(-1.1f, 1.1f)
                     }
                     lastX = event.x

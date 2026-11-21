@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.ComponentName
 import android.content.ServiceConnection
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.graphics.Color
@@ -311,9 +312,15 @@ class MainActivity : Activity() {
     private var rr3ViewerCatalogLoading = false
     private lateinit var rr3ViewerCarSpinner: Spinner
     private lateinit var rr3ViewerLoadButton: TextView
+    private lateinit var rr3ViewerOpenButton: TextView
     private lateinit var rr3ViewerStatus: TextView
-    private lateinit var rr3ViewerSurfaceHost: FrameLayout
+    private lateinit var rr3ViewerScreen: LinearLayout
+    private lateinit var rr3ViewerScreenHost: FrameLayout
+    private lateinit var rr3ViewerScreenTitle: TextView
+    private lateinit var rr3ViewerScreenStatus: TextView
     private var rr3ViewerSurface: Rr3ModelViewer? = null
+    private var viewerPreviousRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    private var viewerPreviousSystemUiVisibility = 0
     private var selectedLiveryEntry: GameDataFile? = null
     private var selectedLiveryCarFolder: String = ""
     private var selectedLiveryBytes: ByteArray? = null
@@ -378,6 +385,49 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
         ))
         appRoot.addView(editorScreen, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        rr3ViewerScreen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF050B13.toInt())
+            visibility = View.GONE
+        }
+        val rr3ViewerToolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setBackgroundColor(0xFF0D1B2C.toInt())
+        }
+        rr3ViewerToolbar.addView(actionButton("‹ Back") { closeRr3FullScreenViewer() })
+        rr3ViewerScreenTitle = text("3D Viewer", 17, Color.WHITE, bold = true)
+        rr3ViewerToolbar.addView(rr3ViewerScreenTitle, LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ).apply { marginStart = dp(12); marginEnd = dp(8) })
+        rr3ViewerToolbar.addView(actionButton("Reset") { rr3ViewerSurface?.resetCamera() })
+        rr3ViewerScreen.addView(rr3ViewerToolbar, matchWrap())
+        rr3ViewerScreenStatus = text(
+            "Drag to rotate · Pinch to zoom",
+            11, 0xFF9BAFC5.toInt()
+        ).apply {
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            maxLines = 1
+        }
+        rr3ViewerScreen.addView(rr3ViewerScreenStatus, matchWrap())
+        rr3ViewerScreenHost = FrameLayout(this).apply {
+            setBackgroundColor(0xFF101B29.toInt())
+        }
+        rr3ViewerScreen.addView(rr3ViewerScreenHost, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        val rr3ViewerHint = text(
+            "Drag to rotate  ·  Pinch to zoom",
+            12, 0xFF9BAFC5.toInt()
+        ).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+        }
+        rr3ViewerScreen.addView(rr3ViewerHint, matchWrap())
+        appRoot.addView(rr3ViewerScreen, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
         setContentView(appRoot)
@@ -807,7 +857,7 @@ class MainActivity : Activity() {
         )
         viewerCard.addView(
             text(
-                "Choose a car from the indexed RR3 car list. The viewer reads its exterior model, hardpoints and available car textures directly from the game files. Drag to rotate and pinch to zoom. This is a read-only preview.",
+                "Choose a car from the indexed RR3 car list and load its exterior model, hardpoints and textures. Once loaded, open the dedicated landscape viewer to rotate and zoom. The preview is read-only.",
                 13, 0xFF9BAFC5.toInt()
             ),
             matchWrap(top = 6)
@@ -836,31 +886,15 @@ class MainActivity : Activity() {
             if (selected != null) loadRr3ViewerCar(selected)
         }
         viewerCard.addView(rr3ViewerLoadButton, matchWrap(top = 8))
-        viewerCard.addView(
-            actionButton("Reset camera") { rr3ViewerSurface?.resetCamera() },
-            matchWrap(top = 6)
-        )
+        rr3ViewerOpenButton = actionButton("Open full-screen 3D viewer") {
+            openRr3FullScreenViewer()
+        }.apply { isEnabled = false }
+        viewerCard.addView(rr3ViewerOpenButton, matchWrap(top = 8))
         rr3ViewerStatus = text(
-            "Index the RR3 .depot in Game Data, then select a car above.",
+            "Index the RR3 .depot in Game Data, then select and load a car above.",
             12, 0xFF9BAFC5.toInt()
         )
         viewerCard.addView(rr3ViewerStatus, matchWrap(top = 10, bottom = 8))
-        rr3ViewerSurfaceHost = FrameLayout(this).apply {
-            background = rounded(0xFF101B29.toInt(), dp(12).toFloat())
-            minimumHeight = dp(330)
-        }
-        rr3ViewerSurfaceHost.addView(
-            text("3D preview will appear here", 13, 0xFF8FA4BA.toInt()).apply {
-                gravity = Gravity.CENTER
-            },
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(330))
-        )
-        viewerCard.addView(
-            rr3ViewerSurfaceHost,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(330)).apply {
-                topMargin = dp(8)
-            }
-        )
         addSection(aboutPage, "NATIVE ENGINE")
         val engineCard = card(aboutPage)
         engineValue = text("Checking native engine…", 13, 0xFFB7C8D9.toInt())
@@ -1597,6 +1631,7 @@ class MainActivity : Activity() {
     private fun loadRr3ViewerCar(car: Rr3ViewerCar) {
         if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Game Data first."; return }
         rr3ViewerLoadButton.isEnabled = false
+        rr3ViewerOpenButton.isEnabled = false
         rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior model and sidecars…"
         Thread {
             try {
@@ -1650,19 +1685,73 @@ class MainActivity : Activity() {
                 val meshes = result.optInt("meshes"); val triangles = result.optInt("triangles"); val textures = result.optInt("textures")
                 if (meshes <= 0 || triangles <= 0) { NativeBridge.nativeFreeRr3Viewer(handle); throw IllegalStateException("The model parser found no drawable exterior triangles in " + modelEntry.relativePath + ".") }
                 runOnUiThread {
-                    rr3ViewerSurface?.dispose(); rr3ViewerSurfaceHost.removeAllViews()
+                    rr3ViewerSurface?.dispose()
                     val surface = Rr3ModelViewer(this, handle) { frameStatus ->
-                        rr3ViewerStatus.text = car.displayName + " · " + meshes + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s) · " + frameStatus + if (skippedTextures > 0) " · " + skippedTextures + " texture file(s) skipped" else ""
+                        val detail = car.displayName + " · " + meshes + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s) · " + frameStatus + if (skippedTextures > 0) " · " + skippedTextures + " texture file(s) skipped" else ""
+                        rr3ViewerStatus.text = detail
+                        rr3ViewerScreenStatus.text = detail
                     }
                     rr3ViewerSurface = surface
-                    rr3ViewerSurfaceHost.addView(surface, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-                    rr3ViewerStatus.text = "Model assembled. Rendering " + car.displayName + "…"
+                    rr3ViewerScreenTitle.text = car.displayName
+                    rr3ViewerScreenStatus.text = meshes.toString() + " mesh(es) · " + triangles + " triangles · " + textures + " texture(s)"
+                    rr3ViewerStatus.text = "Loaded " + car.displayName + ". Open the full-screen viewer to inspect it."
+                    rr3ViewerOpenButton.isEnabled = true
                     rr3ViewerLoadButton.isEnabled = true
                 }
-            } catch (error: Exception) { runOnUiThread { rr3ViewerStatus.text = error.message ?: "Could not load this car in the 3D viewer."; rr3ViewerLoadButton.isEnabled = true } }
-            catch (error: OutOfMemoryError) { runOnUiThread { rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."; rr3ViewerLoadButton.isEnabled = true } }
+            } catch (error: Exception) { runOnUiThread {
+                rr3ViewerStatus.text = error.message ?: "Could not load this car in the 3D viewer."
+                rr3ViewerOpenButton.isEnabled = rr3ViewerSurface != null
+                rr3ViewerLoadButton.isEnabled = true
+            } }
+            catch (error: OutOfMemoryError) { runOnUiThread {
+                rr3ViewerStatus.text = "Android ran out of memory while loading this car. Close other apps and try again."
+                rr3ViewerOpenButton.isEnabled = rr3ViewerSurface != null
+                rr3ViewerLoadButton.isEnabled = true
+            } }
         }.start()
     }
+    private fun openRr3FullScreenViewer() {
+        val surface = rr3ViewerSurface
+        if (surface == null) {
+            rr3ViewerStatus.text = "Load a car before opening the 3D viewer."
+            return
+        }
+        if (rr3ViewerScreen.visibility == View.VISIBLE) return
+
+        viewerPreviousRequestedOrientation = requestedOrientation
+        viewerPreviousSystemUiVisibility = window.decorView.systemUiVisibility
+
+        (surface.parent as? ViewGroup)?.removeView(surface)
+        rr3ViewerScreenHost.removeAllViews()
+        rr3ViewerScreenHost.addView(surface, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+
+        rootScrollView.visibility = View.GONE
+        editorScreen.visibility = View.GONE
+        rr3ViewerScreen.visibility = View.VISIBLE
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        surface.requestLayout()
+    }
+
+    private fun closeRr3FullScreenViewer() {
+        if (!::rr3ViewerScreen.isInitialized || rr3ViewerScreen.visibility != View.VISIBLE) return
+        rr3ViewerSurface?.let { surface ->
+            (surface.parent as? ViewGroup)?.removeView(surface)
+        }
+        rr3ViewerScreenHost.removeAllViews()
+        rr3ViewerScreen.visibility = View.GONE
+        rootScrollView.visibility = View.VISIBLE
+        requestedOrientation = viewerPreviousRequestedOrientation
+        window.decorView.systemUiVisibility = viewerPreviousSystemUiVisibility
+        rr3ViewerSurface?.refresh()
+    }
+
     private fun renderSelectedLiveryDecodedData() {
         if (!::liveryDecodedContainer.isInitialized) return
         liveryDecodedContainer.removeAllViews()
@@ -4706,7 +4795,9 @@ class MainActivity : Activity() {
     }
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        if (::editorScreen.isInitialized && editorScreen.visibility == View.VISIBLE) {
+        if (::rr3ViewerScreen.isInitialized && rr3ViewerScreen.visibility == View.VISIBLE) {
+            closeRr3FullScreenViewer()
+        } else if (::editorScreen.isInitialized && editorScreen.visibility == View.VISIBLE) {
             closeDataEditorAction?.invoke() ?: closeDataEditorScreen()
         } else super.onBackPressed()
     }
