@@ -2902,6 +2902,9 @@ struct Rr3ViewerSession {
     std::vector<nfsnl::Image> textures;
     std::vector<const nfsnl::Image*> meshTextures;
     float frameDistance = 5.0f;
+    bool cameraPoseEnabled = false;
+    float cameraEye[3] = {0.0f, 0.0f, 0.0f};
+    float cameraTarget[3] = {0.0f, 0.0f, 0.0f};
     std::string draftLod;
     int triangles = 0;
     Rr3ViewerGpu gpu;
@@ -2946,22 +2949,34 @@ void multiplyViewerMatrices(const float a[16], const float b[16], float out[16])
 
 void buildViewerMvp(const Rr3ViewerSession& session, int width, int height,
                     float yaw, float pitch, float zoom, float out[16]) {
-    const float safeYaw = std::isfinite(yaw) ? yaw : 0.6f;
-    const float safePitch = std::isfinite(pitch)
+    float cameraYaw = std::isfinite(yaw) ? yaw : 0.6f;
+    float cameraPitch = std::isfinite(pitch)
         ? std::max(-1.2f, std::min(1.2f, pitch)) : 0.25f;
     const float safeZoom = std::isfinite(zoom)
         ? std::max(0.55f, std::min(3.0f, zoom)) : 1.0f;
-    const float cy = std::cos(safeYaw), sy = std::sin(safeYaw);
-    const float cp = std::cos(safePitch), sp = std::sin(safePitch);
-    const float right[3] = {-cy, 0.0f, sy};
-    const float up[3] = {sy * sp, cp, cy * sp};
-    const float forward[3] = {sy * cp, -sp, cy * cp};
     const float* centre = session.view.centre;
     const float radius = std::max(0.05f, session.view.radius);
     const float fovY = std::isfinite(session.view.fovY)
         ? std::max(0.15f, std::min(2.6f, session.view.fovY)) : 0.75f;
     const float fitDistance = radius / std::max(0.15f, std::tan(fovY * 0.5f)) * 1.15f;
-    const float distance = std::max(session.frameDistance, fitDistance) / safeZoom;
+    float distance = std::max(session.frameDistance, fitDistance) / safeZoom;
+    if (session.cameraPoseEnabled) {
+        const float dx = session.cameraTarget[0] - session.cameraEye[0];
+        const float dy = session.cameraTarget[1] - session.cameraEye[1];
+        const float dz = session.cameraTarget[2] - session.cameraEye[2];
+        const float poseDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(poseDistance) && poseDistance > 0.001f) {
+            cameraYaw = std::atan2(dx, dz);
+            cameraPitch = -std::asin(std::max(-1.0f, std::min(1.0f, dy / poseDistance)));
+            distance = poseDistance / safeZoom;
+            centre = session.cameraTarget;
+        }
+    }
+    const float cy = std::cos(cameraYaw), sy = std::sin(cameraYaw);
+    const float cp = std::cos(cameraPitch), sp = std::sin(cameraPitch);
+    const float right[3] = {-cy, 0.0f, sy};
+    const float up[3] = {sy * sp, cp, cy * sp};
+    const float forward[3] = {sy * cp, -sp, cy * cp};
 
     // Use a conventional look-at matrix centred on the framed model bounds.
     // Mixing modelPos and centre could shift RR3 assets outside the camera frustum
@@ -3667,6 +3682,28 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3ViewerCamera(
         ? std::max(-5.0f, std::min(5.0f, panY)) : 0.0f;
     session->view.fovY = std::isfinite(fovY)
         ? std::max(0.15f, std::min(2.6f, fovY)) : 0.75f;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3ViewerCameraPose(
+    JNIEnv* /* env */, jobject /* thiz */, jlong handle,
+    jfloat eyeX, jfloat eyeY, jfloat eyeZ,
+    jfloat targetX, jfloat targetY, jfloat targetZ, jboolean enabled) {
+    std::shared_ptr<Rr3ViewerSession> session;
+    {
+        std::lock_guard<std::mutex> lock(gRr3ViewerMutex);
+        auto found = gRr3ViewerSessions.find(handle);
+        if (found == gRr3ViewerSessions.end()) return;
+        session = found->second;
+    }
+    const bool valid = enabled == JNI_TRUE &&
+        std::isfinite(eyeX) && std::isfinite(eyeY) && std::isfinite(eyeZ) &&
+        std::isfinite(targetX) && std::isfinite(targetY) && std::isfinite(targetZ);
+    session->cameraPoseEnabled = valid;
+    if (valid) {
+        session->cameraEye[0] = eyeX; session->cameraEye[1] = eyeY; session->cameraEye[2] = eyeZ;
+        session->cameraTarget[0] = targetX; session->cameraTarget[1] = targetY; session->cameraTarget[2] = targetZ;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

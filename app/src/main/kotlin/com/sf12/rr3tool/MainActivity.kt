@@ -302,6 +302,9 @@ class MainActivity : Activity() {
     private var indexingDialog: AlertDialog? = null
     private var indexingStatusText: TextView? = null
     private var currentCamTweaksOriginal: ByteArray? = null
+    private var currentCamTweaksWorking: ByteArray? = null
+    private var camTweaksOverlay: View? = null
+    private var selectedCamTweaksRecordOffset: Int? = null
     private var currentCamTweaksName: String = "camTweaks.dat"
     private val camTweaksInputs = linkedMapOf<Int, EditText>()
     private lateinit var carFieldsContainer: LinearLayout
@@ -4669,14 +4672,6 @@ class MainActivity : Activity() {
 
     private fun renderCamTweaksEditor(name: String, bytes: ByteArray) {
         try {
-            camTweaksStatus = text("", 12, UiPalette.textMuted)
-            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
-            val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(8)) }
-            content.addView(text("The first three values look coordinate-like, so they are presented as X/Y/Z in the file's native units (not converted). Their exact game-space interpretation is not yet verified. Remaining values stay unmapped. Export creates a separate file and preserves unknown sections.", 12, UiPalette.textMuted), matchWrap(bottom = 10))
-            content.addView(camTweaksStatus, matchWrap(bottom = 8))
-            content.addView(camTweaksFieldsContainer, matchWrap())
-            content.addView(camTweaksSaveButton, matchWrap(top = 10))
             if (bytes.size < 12 ||
                 bytes[0] != 'R'.code.toByte() ||
                 bytes[1] != 'R'.code.toByte() ||
@@ -4690,43 +4685,169 @@ class MainActivity : Activity() {
             if (count !in 1..64) throw IllegalArgumentException("The camera record count ($count) is outside the supported range.")
             val tableEnd = 12L + count.toLong() * 28L
             if (tableEnd > bytes.size) throw IllegalArgumentException("The camera record table extends beyond the file.")
+
             currentCamTweaksOriginal = bytes.copyOf()
+            currentCamTweaksWorking = bytes.copyOf()
             currentCamTweaksName = name
             camTweaksInputs.clear()
-            camTweaksFieldsContainer.removeAllViews()
-            for (record in 0 until count) {
-                val recordOffset = 12 + record * 28
-                val cameraId = buffer.getInt(recordOffset)
-                val group = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(12), dp(11), dp(12), dp(11))
-                    background = rounded(UiPalette.background, dp(10).toFloat())
-                }
-                camTweaksFieldsContainer.addView(group, matchWrap(bottom = 8))
-                group.addView(text("Camera record $cameraId", 14, UiPalette.text, bold = true), matchWrap())
-                for (field in 0 until 6) {
-                    val offset = recordOffset + 4 + field * 4
-                    val value = buffer.getFloat(offset)
-                    if (!value.isFinite()) throw IllegalArgumentException("Record $cameraId contains a non-finite parameter at slot ${field + 1}.")
-                    val label = when (field) { 0 -> "Coordinate candidate X · native units"; 1 -> "Coordinate candidate Y · native units"; 2 -> "Coordinate candidate Z · native units"; else -> "Unmapped value ${field - 2}" }
-                    val input = editBox(label, value.toString(), numeric = true)
-                    group.addView(input, matchWrap(top = 5))
-                    camTweaksInputs[offset] = input
-                }
+            camTweaksStatus = text("", 11, UiPalette.textMuted)
+            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            camTweaksSaveButton = actionButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
+
+            val panel = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = rounded(UiPalette.surface, dp(14).toFloat())
+                elevation = dp(12).toFloat()
             }
-            camTweaksStatus.text = "Loaded $name · version $version · $count records. Unknown file sections are preserved."
-            val scroll = ScrollView(this).apply { addView(content) }
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            header.addView(text("CAMERA PREVIEW  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
+                LinearLayout.LayoutParams(0, dp(32), 1f))
+            header.addView(compactOverlayButton("Close") {
+                camTweaksOverlay?.let { overlay -> (overlay.parent as? ViewGroup)?.removeView(overlay) }
+                camTweaksOverlay = null
+                camTweaksDialog?.dismiss()
+                camTweaksDialog = null
+            }, LinearLayout.LayoutParams(dp(62), dp(32)))
+            panel.addView(header, matchWrap(bottom = 5))
+
+            val recordStrip = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                clipToPadding = false
+            }
+            val recordButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            recordStrip.addView(recordButtons)
+            panel.addView(recordStrip, matchWrap(bottom = 5))
+            panel.addView(camTweaksFieldsContainer, matchWrap())
+            panel.addView(camTweaksStatus, matchWrap(top = 2, bottom = 4))
+            panel.addView(camTweaksSaveButton, matchWrap())
+
+            val records = (0 until count).map { index ->
+                val offset = 12 + index * 28
+                offset to buffer.getInt(offset)
+            }
+            fun selectRecord(recordOffset: Int, cameraId: Int) {
+                selectedCamTweaksRecordOffset = recordOffset
+                camTweaksInputs.clear()
+                camTweaksFieldsContainer.removeAllViews()
+                val working = currentCamTweaksWorking
+                    ?: throw IllegalStateException("Camera data is no longer available.")
+                val recordBuffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                for (rowIndex in 0..1) {
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    for (field in rowIndex * 3 until rowIndex * 3 + 3) {
+                        val valueOffset = recordOffset + 4 + field * 4
+                        val value = recordBuffer.getFloat(valueOffset)
+                        if (!value.isFinite()) throw IllegalArgumentException(
+                            "Record $cameraId contains a non-finite parameter at slot ${field + 1}."
+                        )
+                        val axis = listOf("X", "Y", "Z")[field % 3]
+                        val label = if (field < 3) "Camera $axis" else "Look-at $axis"
+                        val input = editBox(label, value.toString(), numeric = true).apply {
+                            textSize = 12f
+                        }
+                        val params = LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                            if (field % 3 != 2) marginEnd = dp(6)
+                        }
+                        row.addView(input, params)
+                        camTweaksInputs[valueOffset] = input
+                        input.addTextChangedListener(object : TextWatcher {
+                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                            override fun afterTextChanged(s: Editable?) {
+                                val parsed = s?.toString()?.trim()?.toFloatOrNull()
+                                if (parsed != null && parsed.isFinite()) {
+                                    currentCamTweaksWorking?.let { data ->
+                                        java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                            .putFloat(valueOffset, parsed)
+                                    }
+                                    if (selectedCamTweaksRecordOffset == recordOffset) {
+                                        applyCamTweaksPreview(recordOffset)
+                                    }
+                                }
+                            }
+                        })
+                    }
+                    camTweaksFieldsContainer.addView(row, matchWrap(bottom = 5))
+                }
+                for (i in 0 until recordButtons.childCount) {
+                    val child = recordButtons.getChildAt(i) as? TextView ?: continue
+                    val selected = child.tag == recordOffset
+                    child.background = rounded(
+                        if (selected) UiPalette.primary else UiPalette.background,
+                        dp(9).toFloat()
+                    )
+                    child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
+                }
+                camTweaksStatus.text = "Record $cameraId selected · preview follows the six editable values."
+                applyCamTweaksPreview(recordOffset)
+            }
+            for ((offset, cameraId) in records) {
+                val chip = text("CAM $cameraId", 11, UiPalette.text, bold = true).apply {
+                    tag = offset
+                    gravity = Gravity.CENTER
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    background = rounded(UiPalette.background, dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { selectRecord(offset, cameraId) }
+                }
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(34)
+                ).apply { marginEnd = dp(6) }
+                recordButtons.addView(chip, params)
+            }
+
+            camTweaksOverlay?.let { old -> (old.parent as? ViewGroup)?.removeView(old) }
+            camTweaksOverlay = null
             camTweaksDialog?.dismiss()
-            camTweaksDialog = AlertDialog.Builder(this).setTitle("camTweaks.dat · 3D Viewer")
-                .setView(scroll).setNegativeButton("Close", null).create()
-            camTweaksDialog?.show()
-            camTweaksDialog?.window?.setLayout((resources.displayMetrics.widthPixels * 0.82f).toInt(), (resources.displayMetrics.heightPixels * 0.82f).toInt())
+            camTweaksDialog = null
+            if (rr3ViewerScreen.visibility == View.VISIBLE && rr3ViewerSurface != null) {
+                camTweaksOverlay = panel
+                rr3ViewerScreenHost.addView(panel, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, dp(238), Gravity.BOTTOM
+                ).apply {
+                    leftMargin = dp(8)
+                    rightMargin = dp(8)
+                    bottomMargin = dp(8)
+                })
+            } else {
+                camTweaksDialog = AlertDialog.Builder(this)
+                    .setTitle("camTweaks.dat · camera records")
+                    .setView(panel)
+                    .setNegativeButton("Close", null)
+                    .create()
+                camTweaksDialog?.show()
+            }
+            if (records.isNotEmpty()) selectRecord(records.first().first, records.first().second)
         } catch (error: Exception) {
             currentCamTweaksOriginal = null
+            currentCamTweaksWorking = null
             camTweaksInputs.clear()
-            camTweaksFieldsContainer.removeAllViews()
+            if (::camTweaksFieldsContainer.isInitialized) camTweaksFieldsContainer.removeAllViews()
             rr3ViewerScreenStatus.text = error.message ?: "Could not parse camTweaks.dat."
         }
+    }
+
+    private fun applyCamTweaksPreview(recordOffset: Int) {
+        val data = currentCamTweaksWorking ?: return
+        if (recordOffset < 12 || recordOffset + 28 > data.size) return
+        val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val values = FloatArray(6) { buffer.getFloat(recordOffset + 4 + it * 4) }
+        if (values.any { !it.isFinite() }) return
+        // RR3 camera records store their position and look-at point in thousandths
+        // of a model unit; the viewer itself works in model-space units.
+        val scale = 0.001f
+        rr3ViewerSurface?.setCameraPose(
+            values[0] * scale, values[1] * scale, values[2] * scale,
+            values[3] * scale, values[4] * scale, values[5] * scale
+        )
     }
 
     private fun saveCamTweaksFile() {
@@ -4734,7 +4855,7 @@ class MainActivity : Activity() {
             camTweaksStatus.text = "Open camTweaks.dat before saving."
             return
         }
-        val edited = original.copyOf()
+        val edited = (currentCamTweaksWorking ?: original).copyOf()
         val buffer = java.nio.ByteBuffer.wrap(edited).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         for ((offset, input) in camTweaksInputs) {
             val value = input.text.toString().trim().toFloatOrNull()

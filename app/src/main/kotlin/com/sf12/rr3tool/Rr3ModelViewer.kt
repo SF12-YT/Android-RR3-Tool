@@ -33,6 +33,9 @@ internal class Rr3ModelViewer(
     @Volatile private var cameraPanX = 0f
     @Volatile private var cameraPanY = 0f
     @Volatile private var cameraFovY = 0.75f
+    @Volatile private var cameraPoseEnabled = false
+    @Volatile private var cameraEye = FloatArray(3)
+    @Volatile private var cameraTarget = FloatArray(3)
     @Volatile private var environmentEnabled = true
     private var lastX = 0f
     private var lastY = 0f
@@ -75,6 +78,12 @@ internal class Rr3ModelViewer(
                         environmentStatus = " · panorama unavailable: ${error.message ?: "decode/upload failed"}"
                     }
                     NativeBridge.nativeUpdateRr3ViewerCamera(handle, cameraPanX, cameraPanY, cameraFovY)
+                    if (cameraPoseEnabled) {
+                        NativeBridge.nativeSetRr3ViewerCameraPose(
+                            handle, cameraEye[0], cameraEye[1], cameraEye[2],
+                            cameraTarget[0], cameraTarget[1], cameraTarget[2], true
+                        )
+                    }
                 }
                 rendererReady = status.startsWith("OpenGL ES 3")
                 post {
@@ -154,6 +163,33 @@ internal class Rr3ModelViewer(
         yaw = 0.6f
         pitch = 0.25f
         zoom = 1f
+        cameraPoseEnabled = false
+        if (rendererReady) {
+            glSurface.queueEvent {
+                if (!disposed.get()) {
+                    NativeBridge.nativeSetRr3ViewerCameraPose(handle, 0f, 0f, 0f, 0f, 0f, 0f, false)
+                }
+            }
+        }
+        requestGpuFrame()
+    }
+
+    fun setCameraPose(
+        eyeX: Float, eyeY: Float, eyeZ: Float,
+        targetX: Float, targetY: Float, targetZ: Float
+    ) {
+        cameraEye = floatArrayOf(eyeX, eyeY, eyeZ)
+        cameraTarget = floatArrayOf(targetX, targetY, targetZ)
+        cameraPoseEnabled = true
+        if (rendererReady) {
+            glSurface.queueEvent {
+                if (!disposed.get()) {
+                    NativeBridge.nativeSetRr3ViewerCameraPose(
+                        handle, eyeX, eyeY, eyeZ, targetX, targetY, targetZ, true
+                    )
+                }
+            }
+        }
         requestGpuFrame()
     }
 
