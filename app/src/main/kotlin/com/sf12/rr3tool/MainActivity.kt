@@ -920,9 +920,7 @@ class MainActivity : Activity() {
             matchWrap(top = 24)
         )
         val savedRootGameData = preferences.getString("game_data_root_dir", null)
-        if (!savedRootGameData.isNullOrBlank()) {
-            gameDataValue.text = savedRootGameData
-        } else {
+        if (savedRootGameData.isNullOrBlank()) {
             // Older builds allowed a manually selected document folder. RR3
             // depot access is now deliberately limited to Root or Shizuku.
             preferences.edit()
