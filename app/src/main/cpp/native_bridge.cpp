@@ -3527,7 +3527,7 @@ void main() {
     vec2 ndc = vUv * 2.0 - 1.0;
     vec3 direction = normalize(vec3(ndc.x * uAspect * tangent,
                                     ndc.y * tangent, 1.0));
-    float longitude = atan(direction.x, direction.z) + uYaw;
+    float longitude = atan(direction.x, direction.z) - uYaw;
     float latitude = asin(clamp(direction.y, -1.0, 1.0));
     vec2 uv = vec2(fract(0.5 + longitude / 6.28318530718),
                    0.5 - latitude / 3.14159265359);
