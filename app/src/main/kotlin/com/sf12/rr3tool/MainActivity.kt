@@ -1066,6 +1066,11 @@ class MainActivity : Activity() {
             setupIndexButton.isEnabled = !savedRootGameData.isNullOrBlank()
         }
         setContentView(appRoot)
+        // If a depot has already been detected but its index is absent or
+        // incomplete, build the full file + Car Editor catalogue on startup.
+        if (!setupCompleted && !savedRootGameData.isNullOrBlank()) {
+            window.decorView.post { indexGameDataFiles() }
+        }
     }
     private fun transformNctStream(input: InputStream, output: OutputStream): Long {
         val handle = NativeBridge.nativeCreateRr3TransformStream()
@@ -1361,6 +1366,9 @@ class MainActivity : Activity() {
                 )
             }
             indexedGameFiles = restoredFiles
+            // An empty cached catalogue is not a completed Car Editor index.
+            // Force a fresh depot scan so the first launch cannot silently skip cars.
+            if (restoredCars.isEmpty()) return false
             rr3ViewerCars = restoredCars.sortedWith(
                 compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
             )
@@ -7172,15 +7180,22 @@ class MainActivity : Activity() {
                 (android.graphics.Color.blue(a) * (1f - amount) + android.graphics.Color.blue(b) * amount).toInt().coerceIn(0, 255)
             return Color.rgb(channel(from, to), green(from, to), blue(from, to))
         }
+        // Layered specular bands create a brushed / polished metal effect,
+        // rather than the flat two-tone gloss used by the previous theme.
         return GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(
-                mix(color, Color.WHITE, 0.13f),
-                color,
-                mix(color, UiPalette.navy, 0.28f)
+                mix(color, Color.WHITE, 0.58f),
+                mix(color, Color.WHITE, 0.30f),
+                mix(color, Color.WHITE, 0.06f),
+                mix(color, Color.BLACK, 0.34f),
+                mix(color, Color.WHITE, 0.38f),
+                mix(color, Color.BLACK, 0.16f),
+                mix(color, UiPalette.navy, 0.52f)
             )
         ).apply {
             cornerRadius = radius
+            setStroke(dp(1), 0x66FFFFFF)
         }
     }
     private fun matchWrap(top: Int = 0, bottom: Int = 0): LinearLayout.LayoutParams {
