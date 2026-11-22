@@ -4724,7 +4724,7 @@ class MainActivity : Activity() {
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(6), dp(12), dp(6))
-                background = rounded(UiPalette.surface, dp(14).toFloat())
+                background = glossyRounded(UiPalette.surface, dp(14).toFloat())
                 elevation = dp(12).toFloat()
             }
             val header = LinearLayout(this).apply {
@@ -4878,18 +4878,15 @@ class MainActivity : Activity() {
             return
         }
 
-        // camTweaks stores camera points as lateral / forward / up.
-        // The RR3 model viewer uses X-right / Y-up / Z-forward, so convert
-        // each point to (lateral, up, -forward). These are car-relative
-        // offsets; the native viewer anchors them to the rendered model centre.
-        // Camera coordinates are stored at 1/10,000 of a model unit.
-        val scale = 0.0001f
-        val eyeX = values[0] * scale
-        val eyeY = values[2] * scale
-        val eyeZ = -values[1] * scale
-        val targetX = values[3] * scale
-        val targetY = values[5] * scale
-        val targetZ = -values[4] * scale
+        // camTweaks v5 stores the eye XYZ followed by the target XYZ as
+        // model-space floats. Preserve their native units and axis order:
+        // the viewer mesh is uploaded in the same RR3 model coordinate space.
+        val eyeX = values[0]
+        val eyeY = values[1]
+        val eyeZ = values[2]
+        val targetX = values[3]
+        val targetY = values[4]
+        val targetZ = values[5]
         val dx = targetX - eyeX
         val dy = targetY - eyeY
         val dz = targetZ - eyeZ
@@ -4909,7 +4906,7 @@ class MainActivity : Activity() {
         }
         viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
         camTweaksStatus.text =
-            "Camera offsets applied · RR3 lateral/forward/up mapped to model axes."
+            "Camera XYZ pose applied in native RR3 model coordinates."
     }
 
     private fun saveCamTweaksFile() {
@@ -7155,13 +7152,34 @@ class MainActivity : Activity() {
     private fun interactiveBackground(color: Int, radius: Float): android.graphics.drawable.Drawable {
         return android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(UiPalette.ripple),
-            rounded(color, radius),
+            glossyRounded(color, radius),
             rounded(UiPalette.rippleMask, radius)
         )
     }
     private fun rounded(color: Int, radius: Float): GradientDrawable {
         return GradientDrawable().apply {
             setColor(color)
+            cornerRadius = radius
+        }
+    }
+    private fun glossyRounded(color: Int, radius: Float): GradientDrawable {
+        fun mix(from: Int, to: Int, amount: Float): Int {
+            fun channel(a: Int, b: Int) =
+                (android.graphics.Color.red(a) * (1f - amount) + android.graphics.Color.red(b) * amount).toInt().coerceIn(0, 255)
+            fun green(a: Int, b: Int) =
+                (android.graphics.Color.green(a) * (1f - amount) + android.graphics.Color.green(b) * amount).toInt().coerceIn(0, 255)
+            fun blue(a: Int, b: Int) =
+                (android.graphics.Color.blue(a) * (1f - amount) + android.graphics.Color.blue(b) * amount).toInt().coerceIn(0, 255)
+            return Color.rgb(channel(from, to), green(from, to), blue(from, to))
+        }
+        return GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                mix(color, Color.WHITE, 0.13f),
+                color,
+                mix(color, UiPalette.navy, 0.28f)
+            )
+        ).apply {
             cornerRadius = radius
         }
     }
