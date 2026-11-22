@@ -3701,15 +3701,15 @@ Java_com_sf12_rr3tool_NativeBridge_nativeSetRr3ViewerCameraPose(
         std::isfinite(targetX) && std::isfinite(targetY) && std::isfinite(targetZ);
     session->cameraPoseEnabled = valid;
     if (valid) {
-        // camTweaks points are offsets from the car's model origin. The
-        // viewer frames the mesh around its geometric centre, so translate
-        // both points into that same frame before building the look-at view.
-        session->cameraEye[0] = session->view.centre[0] + eyeX;
-        session->cameraEye[1] = session->view.centre[1] + eyeY;
-        session->cameraEye[2] = session->view.centre[2] + eyeZ;
-        session->cameraTarget[0] = session->view.centre[0] + targetX;
-        session->cameraTarget[1] = session->view.centre[1] + targetY;
-        session->cameraTarget[2] = session->view.centre[2] + targetZ;
+        // camTweaks v5 points are already expressed in the RR3 model's
+        // coordinate space. Do not scale, rotate, or translate them by the
+        // viewer's bounds centre; the look-at matrix uses the target directly.
+        session->cameraEye[0] = eyeX;
+        session->cameraEye[1] = eyeY;
+        session->cameraEye[2] = eyeZ;
+        session->cameraTarget[0] = targetX;
+        session->cameraTarget[1] = targetY;
+        session->cameraTarget[2] = targetZ;
     }
 }
 
