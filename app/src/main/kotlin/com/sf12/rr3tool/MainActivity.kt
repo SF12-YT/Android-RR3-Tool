@@ -361,6 +361,7 @@ class MainActivity : Activity() {
     private var selectedLiverySourceName: String = ""
     private var selectedLiverySourceSize: Long = 0L
     private var pendingLiverySwatchEdit: PendingLiverySwatchEdit? = null
+    private var liveryAddPreflightRunning = false
     private val preferences by lazy {
         getSharedPreferences("rr3_tool", MODE_PRIVATE)
     }
@@ -2691,9 +2692,15 @@ class MainActivity : Activity() {
             }
         }
         if (allowAdd) {
+            val addStatus = text(
+                "Ready to prepare a new livery slot.",
+                11,
+                UiPalette.textMuted
+            )
+            target.addView(addStatus, matchWrap(top = 8))
             target.addView(
-                actionButton("Add a new livery slot") { prepareAddLiverySlot() },
-                matchWrap(top = 9)
+                actionButton("Add a new livery slot") { prepareAddLiverySlot(addStatus) },
+                matchWrap(top = 5)
             )
         }
     }
@@ -3446,44 +3453,64 @@ class MainActivity : Activity() {
             }
         }.start()
     }
-    private fun prepareAddLiverySlot() {
+    private fun prepareAddLiverySlot(statusView: TextView) {
+        fun report(message: String) {
+            liveryStatus.text = message
+            statusView.text = message
+        }
+        if (liveryAddPreflightRunning) {
+            report("Already preparing the livery assets. Please wait…")
+            return
+        }
         val entry = selectedLiveryEntry ?: run {
-            liveryStatus.text = "Select a car first."
+            report("Select a car and load its livery list first.")
             return
         }
         val carFolder = selectedLiveryCarFolder
         val liveryBytes = selectedLiveryBytes ?: run {
-            liveryStatus.text = "Reload the car's livery list before adding a slot."
+            report("Reload the car's livery list before adding a slot.")
             return
         }
         val liveryArray = selectedLiveryArray ?: run {
-            liveryStatus.text = "Reload the car's livery list before adding a slot."
+            report("Reload the car's livery list before adding a slot.")
             return
         }
         if (liveryArray.length() == 0) {
-            liveryStatus.text = "This car has no existing livery to copy as a template."
+            report("This car has no existing livery to copy as a template.")
             return
         }
-        liveryStatus.text = "Preparing the texture assets for $carFolder…"
+
+        // Capture the selected inputs before leaving the UI thread. The user
+        // can change cars while the asset scan is running.
+        liveryAddPreflightRunning = true
+        report("Preparing texture assets for $carFolder…")
         Thread {
             try {
                 val carAssets = scanLiveryCarAssets(entry, carFolder)
                 val assetList = indexedGameFiles.firstOrNull {
-                    it.relativePath.substringAfterLast('/').equals("asset_list_base.txtCache.txt", ignoreCase = true)
+                    it.relativePath.substringAfterLast('/').equals(
+                        "asset_list_base.txtCache.txt",
+                        ignoreCase = true
+                    )
                 } ?: throw IllegalStateException(
-                    "The depot's asset_list_base.txtCache.txt was not indexed. Re-index the RR3 depot before adding a livery."
+                    "asset_list_base.txtCache.txt is missing from the depot index. Re-index RR3 and try again."
                 )
                 runOnUiThread {
-                    liveryStatus.text = "Ready to add a livery slot to $carFolder."
-                    showAddLiverySlotDialog(entry, carFolder, liveryBytes, liveryArray, carAssets, assetList)
+                    liveryAddPreflightRunning = false
+                    report("Assets ready. Choose a template and enter the new livery details.")
+                    showAddLiverySlotDialog(
+                        entry, carFolder, liveryBytes, liveryArray, carAssets, assetList
+                    )
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    liveryStatus.text = e.message ?: "Could not prepare the livery editor."
+                    liveryAddPreflightRunning = false
+                    report(e.message ?: "Could not prepare the livery editor.")
                 }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread {
-                    liveryStatus.text = "Android ran out of memory while preparing the livery assets."
+                    liveryAddPreflightRunning = false
+                    report("Android ran out of memory while preparing the livery assets.")
                 }
             }
         }.start()
@@ -4810,11 +4837,14 @@ class MainActivity : Activity() {
             camTweaksDialog = null
             if (rr3ViewerScreen.visibility == View.VISIBLE && rr3ViewerSurface != null) {
                 camTweaksOverlay = panel
+                val panelWidth = minOf(
+                    dp(560),
+                    (resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(dp(240))
+                )
                 rr3ViewerScreenHost.addView(panel, FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT, dp(160), Gravity.BOTTOM
+                    panelWidth, dp(160), Gravity.BOTTOM or Gravity.START
                 ).apply {
                     leftMargin = dp(8)
-                    rightMargin = dp(8)
                     bottomMargin = dp(8)
                 })
             } else {
@@ -4848,18 +4878,18 @@ class MainActivity : Activity() {
             return
         }
 
-        // camTweaks stores camera and look-at points in RR3 game coordinates.
-        // These records are Z-up; the viewer is Y-up. Convert with a proper
-        // +90-degree X-axis rotation: (x, y, z) -> (x, z, -y). Swapping the
-        // axes without negating one of them mirrors the camera positions.
-        // The stored coordinates use 1/10,000 of a viewer model unit.
+        // RR3 model vertices and camTweaks camera records use the same
+        // local X/Y/Z axes (Y is up). Keep the axes in their stored order:
+        // the previous axis swap moved the camera's height into depth and
+        // left it at Y=0, which made every preset view sit underneath the car.
+        // Camera coordinates are stored at 1/10,000 of a model unit.
         val scale = 0.0001f
         val eyeX = values[0] * scale
-        val eyeY = values[2] * scale
-        val eyeZ = -values[1] * scale
+        val eyeY = values[1] * scale
+        val eyeZ = values[2] * scale
         val targetX = values[3] * scale
-        val targetY = values[5] * scale
-        val targetZ = -values[4] * scale
+        val targetY = values[4] * scale
+        val targetZ = values[5] * scale
         val dx = targetX - eyeX
         val dy = targetY - eyeY
         val dz = targetZ - eyeZ
@@ -4879,7 +4909,7 @@ class MainActivity : Activity() {
         }
         viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
         camTweaksStatus.text =
-            "Camera position applied · 1:10,000 scale · Z-up rotated into Y-up coordinates."
+            "Camera position applied · native RR3 X/Y/Z coordinates · 1:10,000 scale."
     }
 
     private fun saveCamTweaksFile() {
@@ -6993,10 +7023,19 @@ class MainActivity : Activity() {
     private fun launchRr3OutputPicker() {
         val outputIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/octet-stream"
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             putExtra(Intent.EXTRA_TITLE, pendingTransformedName)
         }
-        startActivityForResult(outputIntent, requestRr3TransformOutput)
+        try {
+            startActivityForResult(outputIntent, requestRr3TransformOutput)
+        } catch (error: Exception) {
+            setPendingOutputStatus(
+                "Android could not open a document save screen: " +
+                    (error.message ?: error.javaClass.simpleName) +
+                    ". The rebuilt file is still held in the app; enable a Files/Documents provider and retry."
+            )
+        }
     }
     private fun writeTransformedRr3File(uri: Uri) {
         val bytes = pendingTransformedData
@@ -7248,14 +7287,20 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (requestCode == requestRr3TransformOutput) {
+            if (resultCode == RESULT_OK && data?.data != null) {
+                writeTransformedRr3File(data.data!!)
+            } else {
+                setPendingOutputStatus(
+                    "Save cancelled. Your rebuilt file is still ready in the app; run Export again to choose a destination."
+                )
+            }
+            return
+        }
         if (resultCode != RESULT_OK || data?.data == null) return
         val uri = data.data ?: return
         if (requestCode == requestRr3TransformInput) {
             transformRr3File(uri)
-            return
-        }
-        if (requestCode == requestRr3TransformOutput) {
-            writeTransformedRr3File(uri)
             return
         }
         if (requestCode == requestEditableDataInput) {
