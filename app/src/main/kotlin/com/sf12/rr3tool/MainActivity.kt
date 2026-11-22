@@ -4913,8 +4913,11 @@ class MainActivity : Activity() {
             return
         }
         viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
-        camTweaksStatus.text =
-            "Camera XYZ pose applied in native RR3 model coordinates."
+        camTweaksStatus.text = String.format(
+            Locale.US,
+            "Preview applied · eye %.3f, %.3f, %.3f · target %.3f, %.3f, %.3f",
+            eyeX, eyeY, eyeZ, targetX, targetY, targetZ
+        )
     }
 
     private fun saveCamTweaksFile() {
