@@ -210,6 +210,20 @@ internal class Rr3ModelViewer(
     fun setCameraAngles(nextYaw: Float, nextPitch: Float) {
         yaw = nextYaw
         pitch = nextPitch.coerceIn(-1.1f, 1.1f)
+        // A manual drag takes control away from a loaded camTweaks pose.
+        // Otherwise the explicit pose overrides yaw/pitch in the native renderer.
+        if (cameraPoseEnabled) {
+            cameraPoseEnabled = false
+            if (rendererReady) {
+                glSurface.queueEvent {
+                    if (!disposed.get()) {
+                        NativeBridge.nativeSetRr3ViewerCameraPose(
+                            handle, 0f, 0f, 0f, 0f, 0f, 0f, false
+                        )
+                    }
+                }
+            }
+        }
         requestGpuFrame()
     }
 
