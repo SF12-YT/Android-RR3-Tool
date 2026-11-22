@@ -4878,18 +4878,18 @@ class MainActivity : Activity() {
             return
         }
 
-        // RR3 model vertices and camTweaks camera records use the same
-        // local X/Y/Z axes (Y is up). Keep the axes in their stored order:
-        // the previous axis swap moved the camera's height into depth and
-        // left it at Y=0, which made every preset view sit underneath the car.
+        // camTweaks stores camera points as lateral / forward / up.
+        // The RR3 model viewer uses X-right / Y-up / Z-forward, so convert
+        // each point to (lateral, up, -forward). These are car-relative
+        // offsets; the native viewer anchors them to the rendered model centre.
         // Camera coordinates are stored at 1/10,000 of a model unit.
         val scale = 0.0001f
         val eyeX = values[0] * scale
-        val eyeY = values[1] * scale
-        val eyeZ = values[2] * scale
+        val eyeY = values[2] * scale
+        val eyeZ = -values[1] * scale
         val targetX = values[3] * scale
-        val targetY = values[4] * scale
-        val targetZ = values[5] * scale
+        val targetY = values[5] * scale
+        val targetZ = -values[4] * scale
         val dx = targetX - eyeX
         val dy = targetY - eyeY
         val dz = targetZ - eyeZ
@@ -4909,7 +4909,7 @@ class MainActivity : Activity() {
         }
         viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
         camTweaksStatus.text =
-            "Camera position applied · native RR3 X/Y/Z coordinates · 1:10,000 scale."
+            "Camera offsets applied · RR3 lateral/forward/up mapped to model axes."
     }
 
     private fun saveCamTweaksFile() {
