@@ -4849,17 +4849,17 @@ class MainActivity : Activity() {
         }
 
         // camTweaks stores camera and look-at points in RR3 game coordinates.
-        // The viewer uses Y-up, while these records are Z-up, so swap Y/Z when
-        // converting. The stored coordinates are in 1/10,000 viewer units.
-        // Keep this conversion isolated here so it can be adjusted from a
-        // real in-game comparison without changing the renderer.
+        // These records are Z-up; the viewer is Y-up. Convert with a proper
+        // +90-degree X-axis rotation: (x, y, z) -> (x, z, -y). Swapping the
+        // axes without negating one of them mirrors the camera positions.
+        // The stored coordinates use 1/10,000 of a viewer model unit.
         val scale = 0.0001f
         val eyeX = values[0] * scale
         val eyeY = values[2] * scale
-        val eyeZ = values[1] * scale
+        val eyeZ = -values[1] * scale
         val targetX = values[3] * scale
         val targetY = values[5] * scale
-        val targetZ = values[4] * scale
+        val targetZ = -values[4] * scale
         val dx = targetX - eyeX
         val dy = targetY - eyeY
         val dz = targetZ - eyeZ
@@ -4879,7 +4879,7 @@ class MainActivity : Activity() {
         }
         viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
         camTweaksStatus.text =
-            "Camera position applied · provisional 1:10,000 scale · Z-up converted to Y-up."
+            "Camera position applied · 1:10,000 scale · Z-up rotated into Y-up coordinates."
     }
 
     private fun saveCamTweaksFile() {
