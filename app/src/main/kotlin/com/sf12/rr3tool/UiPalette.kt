@@ -3,12 +3,12 @@ package com.sf12.rr3tool
 import android.graphics.Color
 
 /**
- * RR3 Tool's black / brilliant-red palette with restrained navy-blue accents.
+ * RR3 Tool's black / electric-red palette with restrained navy-blue accents.
  */
 internal object UiPalette {
     val background: Int = Color.rgb(7, 9, 13)          // #07090D
     val surface: Int = Color.rgb(18, 24, 36)            // #121824
-    val primary: Int = Color.rgb(245, 27, 63)           // #F51B3F brilliant red
+    val primary: Int = Color.rgb(255, 0, 56)           // #FF0038 brilliant red
     val accent: Int = Color.rgb(62, 91, 137)            // #3E5B89 navy blue
     val danger: Int = Color.rgb(181, 18, 45)             // #B5122D
     val burgundy: Int = Color.rgb(16, 27, 44)            // #101B2C
@@ -22,6 +22,6 @@ internal object UiPalette {
 
     val surfaceOverlay: Int = 0xE6121824.toInt()
     val surfaceOverlayLight: Int = 0xD9121824.toInt()
-    val ripple: Int = 0x55F51B3F
+    val ripple: Int = 0x66FF0038
     val rippleMask: Int = Color.WHITE
 }
