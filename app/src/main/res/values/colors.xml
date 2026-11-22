@@ -2,7 +2,7 @@
 <resources>
     <color name="rr3_background">#07090D</color>
     <color name="rr3_surface">#121824</color>
-    <color name="rr3_red">#F51B3F</color>
+    <color name="rr3_red">#FF0038</color>
     <color name="rr3_navy">#3E5B89</color>
     <color name="rr3_navy_deep">#14233A</color>
     <color name="rr3_danger">#B5122D</color>
