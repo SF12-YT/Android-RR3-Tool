@@ -5384,7 +5384,7 @@ class MainActivity : Activity() {
             carEditorIndexedCarsContainer.addView(header, matchWrap(bottom = 4))
             if (!expanded) continue
             for (car in cars) {
-                val expectedName = car.dataFolder.substringAfterLast('/') + ".bin.nct"
+                val expectedName = car.id.toString() + "_" + car.dataFolder.substringAfterLast('/') + ".bin.nct"
                 val entry = indexedGameFiles.firstOrNull {
                     it.name.equals(expectedName, ignoreCase = true) ||
                         it.relativePath.substringAfterLast('/').equals(expectedName, ignoreCase = true)
