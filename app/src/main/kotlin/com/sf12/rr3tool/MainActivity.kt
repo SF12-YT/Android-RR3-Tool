@@ -303,8 +303,12 @@ class MainActivity : Activity() {
     private var indexingStatusText: TextView? = null
     private var currentCamTweaksOriginal: ByteArray? = null
     private var currentCamTweaksWorking: ByteArray? = null
+    private var currentCamTweaksDecoded: CamTweaksV5? = null
     private var camTweaksOverlay: View? = null
     private var selectedCamTweaksRecordOffset: Int? = null
+    private var selectedCamTweaksTransformOffset: Int? = null
+    private var activeRr3ViewerCarId: Int? = null
+    private lateinit var camTweaksTransformStatus: TextView
     private var currentCamTweaksName: String = "camTweaks.dat"
     private val camTweaksInputs = linkedMapOf<Int, EditText>()
     private lateinit var carFieldsContainer: LinearLayout
@@ -2166,6 +2170,7 @@ class MainActivity : Activity() {
                         rr3ViewerScreenStatus.text = detail
                     }
                     rr3ViewerSurface = surface
+                    activeRr3ViewerCarId = car.id
                     surface.setCameraTuning(
                         preferences.getFloat("viewer_camera_pan_x", 0f),
                         preferences.getFloat("viewer_camera_pan_y", 0f),
@@ -4707,27 +4712,20 @@ class MainActivity : Activity() {
 
     private fun renderCamTweaksEditor(name: String, bytes: ByteArray) {
         try {
-            if (bytes.size < 12 ||
-                bytes[0] != 'R'.code.toByte() ||
-                bytes[1] != 'R'.code.toByte() ||
-                bytes[2] != 'C'.code.toByte() ||
-                bytes[3] != 'T'.code.toByte()
-            ) throw IllegalArgumentException("This file does not have the expected RRCT camTweaks header.")
-            val buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            val version = buffer.getInt(4)
-            val count = buffer.getInt(8)
-            if (version != 5) throw IllegalArgumentException("Unsupported camTweaks version $version. Expected version 5.")
-            if (count !in 1..64) throw IllegalArgumentException("The camera record count ($count) is outside the supported range.")
-            val tableEnd = 12L + count.toLong() * 28L
-            if (tableEnd > bytes.size) throw IllegalArgumentException("The camera record table extends beyond the file.")
-
+            val decoded = CamTweaksV5.parse(bytes)
             currentCamTweaksOriginal = bytes.copyOf()
             currentCamTweaksWorking = bytes.copyOf()
+            currentCamTweaksDecoded = decoded
             currentCamTweaksName = name
+            selectedCamTweaksTransformOffset = null
             camTweaksInputs.clear()
-            camTweaksStatus = text("", 11, UiPalette.textMuted)
-            camTweaksFieldsContainer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            camTweaksSaveButton = compactOverlayButton("Export edited camTweaks.dat") { saveCamTweaksFile() }
+            camTweaksStatus = text("", 10, UiPalette.textMuted)
+            camTweaksFieldsContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            camTweaksSaveButton = compactOverlayButton("Export edited camTweaks.dat") {
+                saveCamTweaksFile()
+            }
 
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -4739,80 +4737,206 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            header.addView(text("CAMERA DATA  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
-                LinearLayout.LayoutParams(0, dp(28), 1f))
+            header.addView(
+                text("CAMERA DATA  ·  camTweaks.dat", 13, UiPalette.text, bold = true),
+                LinearLayout.LayoutParams(0, dp(28), 1f)
+            )
             header.addView(compactOverlayButton("Close") {
-                camTweaksOverlay?.let { overlay -> (overlay.parent as? ViewGroup)?.removeView(overlay) }
+                camTweaksOverlay?.let { overlay ->
+                    (overlay.parent as? ViewGroup)?.removeView(overlay)
+                }
                 camTweaksOverlay = null
                 camTweaksDialog?.dismiss()
                 camTweaksDialog = null
             }, LinearLayout.LayoutParams(dp(62), dp(32)))
-            panel.addView(header, matchWrap(bottom = 3))
+            panel.addView(header, matchWrap(bottom = 1))
 
-            val recordStrip = HorizontalScrollView(this).apply {
+            val summary = text(
+                "v${decoded.version}  ·  ${decoded.modes.size} mode definitions  ·  " +
+                    "${decoded.transforms.size} car transforms  ·  " +
+                    "${decoded.trailingData.size} trailing bytes retained",
+                9, UiPalette.textSecondary
+            )
+            panel.addView(summary, matchWrap(bottom = 3))
+
+            val modeStrip = HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false
                 clipToPadding = false
             }
-            val recordButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            recordStrip.addView(recordButtons)
-            panel.addView(recordStrip, matchWrap(bottom = 3))
+            val modeButtons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            modeStrip.addView(modeButtons)
+            panel.addView(modeStrip, matchWrap(bottom = 3))
+
             val valuesScroll = HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false
                 clipToPadding = false
             }
             valuesScroll.addView(camTweaksFieldsContainer)
-            panel.addView(valuesScroll, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(36)
-            ))
+            panel.addView(
+                valuesScroll,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(36)
+                )
+            )
+
+            val transformStrip = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                clipToPadding = false
+            }
+            val transformButtons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            transformStrip.addView(transformButtons)
+            panel.addView(transformStrip, matchWrap(top = 3, bottom = 2))
+
+            camTweaksTransformStatus = text(
+                "Select a transform record to inspect its position and quaternion.",
+                9, UiPalette.textSecondary
+            ).apply {
+                maxLines = 2
+                isSingleLine = false
+            }
+            panel.addView(camTweaksTransformStatus, matchWrap(bottom = 1))
+
             camTweaksStatus.isSingleLine = true
             panel.addView(camTweaksStatus, matchWrap(top = 1, bottom = 2))
             panel.addView(camTweaksSaveButton, matchWrap())
 
-            val records = (0 until count).map { index ->
-                val offset = 12 + index * 28
-                offset to buffer.getInt(offset)
+            fun selectTransform(transform: CamTweaksV5.CarTransform) {
+                selectedCamTweaksTransformOffset = transform.recordOffset
+                for (i in 0 until transformButtons.childCount) {
+                    val child = transformButtons.getChildAt(i) as? TextView ?: continue
+                    val selected = child.tag == transform.recordOffset
+                    child.background = rounded(
+                        if (selected) UiPalette.primary else UiPalette.background,
+                        dp(9).toFloat()
+                    )
+                    child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
+                }
+
+                val p = transform.position
+                val q = transform.rotation
+                // Candidate axis/unit conversion only; this is diagnostic and is
+                // intentionally not passed to the renderer until independently verified.
+                val candidateX = p[0] / 2048f
+                val candidateY = p[2] / 2048f
+                val candidateZ = -p[1] / 2048f
+                camTweaksTransformStatus.text = String.format(
+                    Locale.US,
+                    "#%d · car %d · mode %d · raw P (%.3f, %.3f, %.3f)\n" +
+                        "Q (%.5f, %.5f, %.5f, %.5f), |Q| %.5f · candidate P (%.4f, %.4f, %.4f) [unverified]",
+                    transform.recordIndex + 1,
+                    transform.carId,
+                    transform.cameraModeId,
+                    p[0], p[1], p[2],
+                    q[0], q[1], q[2], q[3],
+                    transform.quaternionLength,
+                    candidateX, candidateY, candidateZ
+                )
             }
-            fun selectRecord(recordOffset: Int, cameraId: Int) {
+
+            val activeCarId = activeRr3ViewerCarId
+            val visibleTransforms = decoded.transforms.filter { transform ->
+                transform.carId == -1 || (activeCarId != null && transform.carId == activeCarId)
+            }
+            for (transform in visibleTransforms) {
+                val owner = if (transform.carId == -1) "DEFAULT" else "CAR ${transform.carId}"
+                val chip = text(
+                    "$owner · M${transform.cameraModeId} · #${transform.recordIndex + 1}",
+                    9, UiPalette.text, bold = true
+                ).apply {
+                    tag = transform.recordOffset
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), dp(5), dp(8), dp(5))
+                    background = rounded(UiPalette.background, dp(9).toFloat())
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { selectTransform(transform) }
+                }
+                transformButtons.addView(
+                    chip,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        dp(28)
+                    ).apply { marginEnd = dp(5) }
+                )
+            }
+            if (visibleTransforms.isEmpty()) {
+                val empty = text(
+                    if (activeCarId == null) {
+                        "No global/default transforms were found."
+                    } else {
+                        "No transform records found for car $activeCarId or the global defaults."
+                    },
+                    9, UiPalette.textMuted
+                )
+                transformButtons.addView(empty, matchWrap())
+            }
+
+            fun updateModeStatus(recordOffset: Int, cameraModeId: Int) {
+                val working = currentCamTweaksWorking ?: return
+                val recordBuffer = java.nio.ByteBuffer.wrap(working)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val values = FloatArray(6) { field ->
+                    recordBuffer.getFloat(recordOffset + 4 + field * 4)
+                }
+                camTweaksStatus.text = String.format(
+                    Locale.US,
+                    "Mode %d · raw slots: %s · transform application disabled pending validation",
+                    cameraModeId,
+                    values.joinToString(", ") { "%.2f".format(Locale.US, it) }
+                )
+            }
+
+            fun selectRecord(recordOffset: Int, cameraModeId: Int) {
                 selectedCamTweaksRecordOffset = recordOffset
                 camTweaksInputs.clear()
                 camTweaksFieldsContainer.removeAllViews()
                 val working = currentCamTweaksWorking
                     ?: throw IllegalStateException("Camera data is no longer available.")
-                val recordBuffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val recordBuffer = java.nio.ByteBuffer.wrap(working)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 for (field in 0 until 6) {
-                        val valueOffset = recordOffset + 4 + field * 4
-                        val value = recordBuffer.getFloat(valueOffset)
-                        if (!value.isFinite()) throw IllegalArgumentException(
-                            "Record $cameraId contains a non-finite parameter at slot ${field + 1}."
-                        )
-                        val label = "Value ${field + 1}"
-                        val input = editBox(label, value.toString(), numeric = true).apply {
-                            textSize = 12f
-                        }
-                        val params = LinearLayout.LayoutParams(dp(104), dp(32)).apply {
-                            marginEnd = dp(6)
-                        }
-                        camTweaksFieldsContainer.addView(input, params)
-                        camTweaksInputs[valueOffset] = input
-                        input.addTextChangedListener(object : TextWatcher {
-                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-                            override fun afterTextChanged(s: Editable?) {
-                                val parsed = s?.toString()?.trim()?.toFloatOrNull()
-                                if (parsed != null && parsed.isFinite()) {
-                                    currentCamTweaksWorking?.let { data ->
-                                        java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                            .putFloat(valueOffset, parsed)
-                                    }
-                                    if (selectedCamTweaksRecordOffset == recordOffset) {
-                                        applyCamTweaksPreview(recordOffset)
-                                    }
+                    val valueOffset = recordOffset + 4 + field * 4
+                    val value = recordBuffer.getFloat(valueOffset)
+                    val label = "RAW ${field + 1}"
+                    val input = editBox(label, value.toString(), numeric = true).apply {
+                        textSize = 12f
+                    }
+                    val params = LinearLayout.LayoutParams(dp(104), dp(32)).apply {
+                        marginEnd = dp(6)
+                    }
+                    camTweaksFieldsContainer.addView(input, params)
+                    camTweaksInputs[valueOffset] = input
+                    input.addTextChangedListener(object : TextWatcher {
+                        override fun beforeTextChanged(
+                            s: CharSequence?, start: Int, count: Int, after: Int
+                        ) = Unit
+
+                        override fun onTextChanged(
+                            s: CharSequence?, start: Int, before: Int, count: Int
+                        ) = Unit
+
+                        override fun afterTextChanged(s: Editable?) {
+                            val parsed = s?.toString()?.trim()?.toFloatOrNull()
+                            if (parsed != null && parsed.isFinite()) {
+                                currentCamTweaksWorking?.let { data ->
+                                    java.nio.ByteBuffer.wrap(data)
+                                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                        .putFloat(valueOffset, parsed)
+                                }
+                                if (selectedCamTweaksRecordOffset == recordOffset) {
+                                    updateModeStatus(recordOffset, cameraModeId)
                                 }
                             }
-                        })
+                        }
+                    })
                 }
-                for (i in 0 until recordButtons.childCount) {
-                    val child = recordButtons.getChildAt(i) as? TextView ?: continue
+                for (i in 0 until modeButtons.childCount) {
+                    val child = modeButtons.getChildAt(i) as? TextView ?: continue
                     val selected = child.tag == recordOffset
                     child.background = rounded(
                         if (selected) UiPalette.primary else UiPalette.background,
@@ -4820,26 +4944,52 @@ class MainActivity : Activity() {
                     )
                     child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
                 }
-                camTweaksStatus.text = "Record $cameraId selected · preview follows the six editable values."
-                applyCamTweaksPreview(recordOffset)
+                updateModeStatus(recordOffset, cameraModeId)
+
+                val preferredTransform = decoded.transforms.firstOrNull {
+                    activeCarId != null &&
+                        it.carId == activeCarId &&
+                        it.cameraModeId == cameraModeId.toLong()
+                } ?: decoded.transforms.firstOrNull {
+                    it.carId == -1 && it.cameraModeId == cameraModeId.toLong()
+                }
+                if (preferredTransform != null &&
+                    preferredTransform.recordOffset in visibleTransforms.map { it.recordOffset }
+                ) {
+                    selectTransform(preferredTransform)
+                } else {
+                    camTweaksTransformStatus.text =
+                        "No matching transform for car ${activeCarId ?: "—"} / mode $cameraModeId; choose another record above."
+                }
             }
-            for ((offset, cameraId) in records) {
-                val chip = text("CAM $cameraId", 11, UiPalette.text, bold = true).apply {
-                    tag = offset
+
+            for (mode in decoded.modes) {
+                val chip = text(
+                    "MODE ${mode.cameraModeId}",
+                    10, UiPalette.text, bold = true
+                ).apply {
+                    tag = mode.recordOffset
                     gravity = Gravity.CENTER
                     setPadding(dp(10), dp(5), dp(10), dp(5))
                     background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
-                    setOnClickListener { selectRecord(offset, cameraId) }
+                    setOnClickListener {
+                        selectRecord(mode.recordOffset, mode.cameraModeId)
+                    }
                 }
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(30)
-                ).apply { marginEnd = dp(6) }
-                recordButtons.addView(chip, params)
+                modeButtons.addView(
+                    chip,
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        dp(30)
+                    ).apply { marginEnd = dp(6) }
+                )
             }
 
-            camTweaksOverlay?.let { old -> (old.parent as? ViewGroup)?.removeView(old) }
+            camTweaksOverlay?.let { old ->
+                (old.parent as? ViewGroup)?.removeView(old)
+            }
             camTweaksOverlay = null
             camTweaksDialog?.dismiss()
             camTweaksDialog = null
@@ -4849,75 +4999,44 @@ class MainActivity : Activity() {
                     dp(560),
                     (resources.displayMetrics.widthPixels - dp(24)).coerceAtLeast(dp(240))
                 )
-                rr3ViewerScreenHost.addView(panel, FrameLayout.LayoutParams(
-                    panelWidth, dp(160), Gravity.BOTTOM or Gravity.START
-                ).apply {
-                    leftMargin = dp(8)
-                    bottomMargin = dp(8)
-                })
+                rr3ViewerScreenHost.addView(
+                    panel,
+                    FrameLayout.LayoutParams(panelWidth, dp(264), Gravity.BOTTOM or Gravity.START)
+                        .apply {
+                            leftMargin = dp(8)
+                            bottomMargin = dp(8)
+                        }
+                )
             } else {
                 camTweaksDialog = AlertDialog.Builder(this)
-                    .setTitle("camTweaks.dat · camera records")
+                    .setTitle("camTweaks.dat · v5 decoder")
                     .setView(panel)
                     .setNegativeButton("Close", null)
                     .create()
                 camTweaksDialog?.show()
+                camTweaksDialog?.window?.setLayout(
+                    (resources.displayMetrics.widthPixels * 0.96f).toInt(),
+                    (resources.displayMetrics.heightPixels * 0.82f).toInt()
+                )
             }
-            if (records.isNotEmpty()) selectRecord(records.first().first, records.first().second)
+
+            val firstMode = decoded.modes.firstOrNull()
+            if (firstMode != null) {
+                selectRecord(firstMode.recordOffset, firstMode.cameraModeId)
+            }
+            camTweaksStatus.contentDescription =
+                "Mode parameters are shown as raw values. No camera pose is applied."
         } catch (error: Exception) {
             currentCamTweaksOriginal = null
             currentCamTweaksWorking = null
+            currentCamTweaksDecoded = null
             camTweaksInputs.clear()
-            if (::camTweaksFieldsContainer.isInitialized) camTweaksFieldsContainer.removeAllViews()
-            rr3ViewerScreenStatus.text = error.message ?: "Could not parse camTweaks.dat."
+            if (::camTweaksFieldsContainer.isInitialized) {
+                camTweaksFieldsContainer.removeAllViews()
+            }
+            rr3ViewerScreenStatus.text =
+                error.message ?: "Could not parse camTweaks.dat."
         }
-    }
-
-    private fun applyCamTweaksPreview(recordOffset: Int) {
-        val data = currentCamTweaksWorking ?: return
-        if (recordOffset < 12 || recordOffset + 28 > data.size) return
-
-        val record = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        val values = FloatArray(6) { field ->
-            record.getFloat(recordOffset + 4 + field * 4)
-        }
-        if (values.any { !it.isFinite() }) {
-            camTweaksStatus.text = "This camera record contains an invalid coordinate."
-            return
-        }
-
-        // camTweaks v5 stores the eye XYZ followed by the target XYZ as
-        // model-space floats. Preserve their native units and axis order:
-        // the viewer mesh is uploaded in the same RR3 model coordinate space.
-        val eyeX = values[0]
-        val eyeY = values[1]
-        val eyeZ = values[2]
-        val targetX = values[3]
-        val targetY = values[4]
-        val targetZ = values[5]
-        val dx = targetX - eyeX
-        val dy = targetY - eyeY
-        val dz = targetZ - eyeZ
-        val distanceSquared = dx * dx + dy * dy + dz * dz
-        if (!distanceSquared.isFinite() || distanceSquared < 0.000001f ||
-            distanceSquared > 10000f
-        ) {
-            camTweaksStatus.text =
-                "Camera coordinates are outside the preview range; the previous view was kept."
-            return
-        }
-
-        val viewer = rr3ViewerSurface
-        if (viewer == null) {
-            camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
-            return
-        }
-        viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
-        camTweaksStatus.text = String.format(
-            Locale.US,
-            "Preview applied · eye %.3f, %.3f, %.3f · target %.3f, %.3f, %.3f",
-            eyeX, eyeY, eyeZ, targetX, targetY, targetZ
-        )
     }
 
     private fun saveCamTweaksFile() {
