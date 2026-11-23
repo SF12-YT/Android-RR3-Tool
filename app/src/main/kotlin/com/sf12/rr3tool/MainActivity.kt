@@ -1379,6 +1379,9 @@ class MainActivity : Activity() {
             rr3ViewerCatalogStatus = cached.optString(
                 "catalogStatus", "Restored the cached RR3 car catalogue."
             )
+            if (::carEditorStatus.isInitialized) {
+                carEditorStatus.text = "Loaded ${rr3ViewerCars.size} cached cars. ${rr3ViewerCatalogStatus}"
+            }
             true
         } catch (_: Exception) {
             false
@@ -1446,80 +1449,132 @@ class MainActivity : Activity() {
         onProgress: ((String) -> Unit)? = null
     ): Pair<List<Rr3ViewerCar>, String> {
         fun normalPath(entry: GameDataFile) =
-            entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
-        val cardesc = files.firstOrNull { normalPath(it) == "vehicles/data/cardesc.list.nct" }
-            ?: return emptyList<Rr3ViewerCar>() to "The RR3 car description registry is missing from the index."
+            entry.relativePath.replace('\\\\', '/').trimStart('/').lowercase(Locale.ROOT)
+
+        // cardesc and carappearances are useful registries, but the native
+        // reader can enumerate per-car files without either one. Do not make
+        // a missing or unreadable appearance table erase the Car Editor list.
+        val cardesc = files.firstOrNull {
+            normalPath(it) == "vehicles/data/cardesc.list.nct"
+        }
         val appearances = files.firstOrNull {
             normalPath(it) == "vehicles/data/carappearances.appearances.nct"
-        } ?: return emptyList<Rr3ViewerCar>() to "The RR3 car appearances registry is missing from the index."
+        }
         val carDataFiles = files.filter { entry ->
             val path = normalPath(entry)
             path.substringBeforeLast('/', "") == "vehicles/data" &&
-                Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE)
+                Regex("^[0-9]{1,6}_.+\\\\.bin\\\\.nct$", RegexOption.IGNORE_CASE)
                     .matches(path.substringAfterLast('/'))
         }.filter { onlyDataPaths == null || normalPath(it) in onlyDataPaths }
             .sortedBy { normalPath(it) }
+
         if (carDataFiles.isEmpty()) {
             return if (onlyDataPaths != null) {
                 previousCars to "No new per-car records were found; the cached car catalogue was retained."
             } else {
-                emptyList<Rr3ViewerCar>() to "The RR3 registries are indexed, but no per-car data records were found."
+                emptyList<Rr3ViewerCar>() to
+                    "No per-car .bin.nct files were found directly under vehicles/data."
             }
         }
-        val registryPaths = arrayOf(normalPath(cardesc), normalPath(appearances))
-        val registryData = arrayOf(readGameFile(cardesc), readGameFile(appearances))
+
+        val registryEntries = listOfNotNull(cardesc, appearances)
+        val registryPaths = registryEntries.map(::normalPath).toTypedArray()
+        val registryData = registryEntries.map(::readGameFile)
         val carsByDataFolder = LinkedHashMap<String, Rr3ViewerCar>()
-        for (car in previousCars) carsByDataFolder[car.dataFolder.lowercase(Locale.ROOT)] = car
+        for (car in previousCars) {
+            carsByDataFolder[car.dataFolder.lowercase(Locale.ROOT)] = car
+        }
+
+        var missingAppearanceMappings = 0
+        var readableRecords = 0
         val batches = carDataFiles.chunked(32)
         for ((batchIndex, batch) in batches.withIndex()) {
-            onProgress?.invoke("Car Editor · " + (batch.firstOrNull()?.relativePath ?: "vehicle data") + " · batch " + (batchIndex + 1) + "/" + batches.size)
-            val paths = ArrayList<String>(2 + batch.size)
-            val data = ArrayList<ByteArray>(2 + batch.size)
+            onProgress?.invoke(
+                "Car Editor · " + (batch.firstOrNull()?.relativePath ?: "vehicle data") +
+                    " · batch " + (batchIndex + 1) + "/" + batches.size
+            )
+            val paths = ArrayList<String>(registryPaths.size + batch.size)
+            val data = ArrayList<ByteArray>(registryData.size + batch.size)
             paths.addAll(registryPaths)
             data.addAll(registryData)
             for (entry in batch) {
                 paths.add(normalPath(entry))
                 data.add(readGameFile(entry))
             }
+
             val payload = JSONObject(
                 NativeBridge.nativeInspectRr3CarCatalogue(paths.toTypedArray(), data.toTypedArray())
             )
             if (!payload.optBoolean("ok")) {
                 throw IllegalStateException(
-                    payload.optString("error", "RR3 could not read car catalogue batch ${batchIndex + 1}.")
+                    payload.optString(
+                        "error",
+                        "RR3 could not read car catalogue batch ${batchIndex + 1}."
+                    )
                 )
             }
+
             val array = payload.optJSONArray("cars") ?: org.json.JSONArray()
             for (index in 0 until array.length()) {
                 val item = array.optJSONObject(index) ?: continue
                 if (!item.optBoolean("readable")) continue
                 val dataFolder = item.optString("folder").trim()
-                val modelFolder = item.optString("modelFolder").trim()
-                if (dataFolder.isBlank() || modelFolder.isBlank() ||
-                    modelFolder.contains('/') || modelFolder.contains("..")) continue
+                if (dataFolder.isBlank() || dataFolder.contains('/') || dataFolder.contains("..")) continue
+
+                val mappedModelFolder = item.optString("modelFolder").trim()
+                if (mappedModelFolder.isNotBlank() &&
+                    (mappedModelFolder.contains('/') || mappedModelFolder.contains(".."))
+                ) continue
+
+                // Car Editor needs the readable data file, not the appearance
+                // registry. Keep the record visible when that optional mapping
+                // is unavailable; use the data folder as a display/lookup fallback.
+                val modelFolder = mappedModelFolder.ifBlank {
+                    missingAppearanceMappings++
+                    dataFolder
+                }
+                readableRecords++
+
                 val label = listOf(
                     item.optString("year").trim(),
                     item.optString("make").trim(),
                     item.optString("model").trim()
                 ).filter { it.isNotBlank() }.joinToString(" ")
-                    .ifBlank { formatLiveryCarName(modelFolder) }
+                    .ifBlank { formatLiveryCarName(dataFolder) }
+
                 carsByDataFolder.putIfAbsent(
                     dataFolder.lowercase(Locale.ROOT),
                     Rr3ViewerCar(
-                        item.optInt("id"), dataFolder, modelFolder, label,
-                        item.optString("make").trim().ifBlank { "Other" }, cardesc
+                        item.optInt("id"),
+                        dataFolder,
+                        modelFolder,
+                        label,
+                        item.optString("make").trim().ifBlank { "Other" },
+                        cardesc ?: registryEntries.firstOrNull() ?: batch.first()
                     )
                 )
             }
         }
+
         val sorted = carsByDataFolder.values.sortedWith(
             compareBy<Rr3ViewerCar>({ it.displayName.lowercase(Locale.ROOT) }, { it.id })
         )
-        return sorted to if (onlyDataPaths == null) {
-            "Cached ${sorted.size} RR3 car records during initial Index (${carDataFiles.size} source records, ${batches.size} batches)."
+        val baseStatus = if (onlyDataPaths == null) {
+            "Indexed ${sorted.size} readable RR3 car records from ${carDataFiles.size} source files (${batches.size} batches)."
         } else {
             "Added ${(sorted.size - previousCars.size).coerceAtLeast(0)} new car record(s); catalogue now contains ${sorted.size} cars."
         }
+        val mappingNote = if (missingAppearanceMappings > 0) {
+            " ${missingAppearanceMappings} record(s) lacked an appearance-to-model mapping; they remain available in Car Editor using their data-folder name."
+        } else {
+            ""
+        }
+        val readNote = if (readableRecords == 0 && sorted.isEmpty()) {
+            " The files were found, but none of the per-car records passed the native car-data parser."
+        } else {
+            ""
+        }
+        return sorted to (baseStatus + mappingNote + readNote)
     }
 
     private fun indexGameDataFiles() {
@@ -1576,6 +1631,11 @@ class MainActivity : Activity() {
                     indexedGameFiles = files
                     rr3ViewerCars = catalogue.first
                     rr3ViewerCatalogStatus = catalogue.second
+                    carEditorStatus.text = if (rr3ViewerCars.isEmpty()) {
+                        "Car catalogue unavailable. ${rr3ViewerCatalogStatus}"
+                    } else {
+                        "Indexed ${rr3ViewerCars.size} cars. ${rr3ViewerCatalogStatus}"
+                    }
                     gameFilesSearch.setText("")
                     setGameDataStatus(
                         "Indexed ${files.size} files across the full RR3 .depot. ${catalogue.second}" +
@@ -4854,48 +4914,97 @@ class MainActivity : Activity() {
                     return
                 }
 
-                var eyeX = values[0]
-                var eyeY = values[1]
-                var eyeZ = values[2]
-                var targetX = values[3]
-                var targetY = values[4]
-                var targetZ = values[5]
+                // RR3 camera-mode points are stored in game axes (lateral,
+                // forward, up) at 1/10,000 scale. The GL viewer uses X-right,
+                // Y-up, Z-forward. Keep the conversion in one place.
+                val rawMagnitude = values.maxOf { kotlin.math.abs(it) }
+                val modeScale = if (rawMagnitude > 20f) 0.0001f else 1f
+                fun toViewerAxes(x: Float, y: Float, z: Float): FloatArray =
+                    floatArrayOf(x * modeScale, z * modeScale, -y * modeScale)
 
-                if (transform != null) {
-                    val q = transform.rotation
-                    val qLength = transform.quaternionLength.toFloat()
-                    if (!qLength.isFinite() || qLength < 0.00001f) {
-                        camTweaksStatus.text =
-                            "Transform #${transform.recordIndex + 1} has an invalid quaternion; previous view kept."
-                        return
-                    }
+                val localEye = toViewerAxes(values[0], values[1], values[2])
+                val localTarget = toViewerAxes(values[3], values[4], values[5])
 
-                    // The v5 mode record supplies the local eye and target points.
-                    // The car/mode transform maps those points into model space.
-                    val qx = q[0] / qLength
-                    val qy = q[1] / qLength
-                    val qz = q[2] / qLength
-                    val qw = q[3] / qLength
-                    val eye = rotateByQuaternion(values[0], values[1], values[2], qx, qy, qz, qw)
-                    val target = rotateByQuaternion(values[3], values[4], values[5], qx, qy, qz, qw)
-                    val p = transform.position
-                    eyeX = p[0] + eye[0]
-                    eyeY = p[1] + eye[1]
-                    eyeZ = p[2] + eye[2]
-                    targetX = p[0] + target[0]
-                    targetY = p[1] + target[1]
-                    targetZ = p[2] + target[2]
+                fun rotateByQuaternion(
+                    point: FloatArray,
+                    qx: Float, qy: Float, qz: Float, qw: Float
+                ): FloatArray {
+                    val x = point[0]
+                    val y = point[1]
+                    val z = point[2]
+                    val tx = 2f * (qy * z - qz * y)
+                    val ty = 2f * (qz * x - qx * z)
+                    val tz = 2f * (qx * y - qy * x)
+                    return floatArrayOf(
+                        x + qw * tx + qy * tz - qz * ty,
+                        y + qw * ty + qz * tx - qx * tz,
+                        z + qw * tz + qx * ty - qy * tx
+                    )
                 }
 
-                val dx = targetX - eyeX
-                val dy = targetY - eyeY
-                val dz = targetZ - eyeZ
-                val distanceSquared = dx * dx + dy * dy + dz * dz
-                if (!distanceSquared.isFinite() || distanceSquared < 0.000001f ||
-                    distanceSquared > 10000f
-                ) {
-                    camTweaksStatus.text =
-                        "Mode ${mode.cameraModeId} produced an invalid camera span; previous view kept."
+                fun buildPose(useTransform: Boolean): FloatArray? {
+                    var eye = localEye
+                    var target = localTarget
+                    if (useTransform && transform != null) {
+                        val q = transform.rotation
+                        val qLength = transform.quaternionLength.toFloat()
+                        if (!qLength.isFinite() || qLength < 0.00001f) return null
+
+                        val qx = q[0] / qLength
+                        val qy = q[1] / qLength
+                        val qz = q[2] / qLength
+                        val qw = q[3] / qLength
+                        eye = rotateByQuaternion(localEye, qx, qy, qz, qw)
+                        target = rotateByQuaternion(localTarget, qx, qy, qz, qw)
+
+                        // The transform translation is stored in the RR3
+                        // lateral/forward/up frame at 1/2048 model-unit scale.
+                        val p = transform.position
+                        val position = floatArrayOf(
+                            p[0] / 2048f,
+                            p[2] / 2048f,
+                            -p[1] / 2048f
+                        )
+                        eye = floatArrayOf(
+                            position[0] + eye[0],
+                            position[1] + eye[1],
+                            position[2] + eye[2]
+                        )
+                        target = floatArrayOf(
+                            position[0] + target[0],
+                            position[1] + target[1],
+                            position[2] + target[2]
+                        )
+                    }
+                    val dx = target[0] - eye[0]
+                    val dy = target[1] - eye[1]
+                    val dz = target[2] - eye[2]
+                    val spanSquared = dx * dx + dy * dy + dz * dz
+                    if (!spanSquared.isFinite() || spanSquared < 0.000001f ||
+                        spanSquared > 10000f
+                    ) return null
+                    return floatArrayOf(
+                        eye[0], eye[1], eye[2],
+                        target[0], target[1], target[2]
+                    )
+                }
+
+                // Prefer the car-specific transform. If its transform is
+                // malformed, try the mode-local camera points rather than
+                // leaving every mode unusable.
+                val transformedPose = if (transform != null) buildPose(true) else null
+                val pose = transformedPose ?: buildPose(false)
+                if (pose == null) {
+                    camTweaksStatus.text = String.format(
+                        Locale.US,
+                        "Mode %d still has an invalid camera span after RR3 unit/axis conversion (raw span %.3f).",
+                        mode.cameraModeId,
+                        kotlin.math.sqrt(
+                            (values[3] - values[0]) * (values[3] - values[0]) +
+                                (values[4] - values[1]) * (values[4] - values[1]) +
+                                (values[5] - values[2]) * (values[5] - values[2])
+                        )
+                    )
                     return
                 }
 
@@ -4905,28 +5014,37 @@ class MainActivity : Activity() {
                     return
                 }
 
-                viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
-                val transformLabel = transform?.let {
-                    "car ${it.carId}, transform #${it.recordIndex + 1}"
-                } ?: "mode coordinates (no matching transform)"
+                viewer.setCameraPose(
+                    pose[0], pose[1], pose[2],
+                    pose[3], pose[4], pose[5]
+                )
+                val transformLabel = if (transformedPose != null) {
+                    "car ${transform?.carId}, transform #${transform?.recordIndex?.plus(1)}"
+                } else if (transform != null) {
+                    "mode-local fallback (car transform was not usable)"
+                } else {
+                    "mode-local coordinates"
+                }
                 camTweaksStatus.text = String.format(
                     Locale.US,
-                    "Live preview · mode %d · %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f)",
-                    mode.cameraModeId, transformLabel,
-                    eyeX, eyeY, eyeZ, targetX, targetY, targetZ
+                    "Preview applied · mode %d · %s · eye (%.4f, %.4f, %.4f) · target (%.4f, %.4f, %.4f)",
+                    mode.cameraModeId,
+                    transformLabel,
+                    pose[0], pose[1], pose[2],
+                    pose[3], pose[4], pose[5]
                 )
                 if (transform != null) {
                     val q = transform.rotation
                     camTweaksTransformStatus.text = String.format(
                         Locale.US,
-                        "Applied transform #%d · car %d · mode %d · position (%.3f, %.3f, %.3f) · quaternion (%.4f, %.4f, %.4f, %.4f)",
+                        "Transform #%d · car %d · mode %d · raw P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
                         transform.recordIndex + 1, transform.carId, transform.cameraModeId,
                         transform.position[0], transform.position[1], transform.position[2],
                         q[0], q[1], q[2], q[3]
                     )
                 } else {
                     camTweaksTransformStatus.text =
-                        "No matching car transform · using the mode's eye/target coordinates directly."
+                        "No matching car transform · mode-local camera points applied."
                 }
             }
 
@@ -5240,7 +5358,7 @@ class MainActivity : Activity() {
         carEditorIndexedCarsContainer.removeAllViews()
         if (indexedGameFiles.isEmpty() || rr3ViewerCars.isEmpty()) {
             carEditorIndexedCarsContainer.addView(
-                text("Index the RR3 depot to browse installed cars here.", 12, UiPalette.textSubtle),
+                text("No indexed car records are available. " + rr3ViewerCatalogStatus, 12, UiPalette.textSubtle),
                 matchWrap()
             )
             return
