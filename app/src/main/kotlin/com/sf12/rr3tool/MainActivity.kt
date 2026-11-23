@@ -1449,7 +1449,7 @@ class MainActivity : Activity() {
         onProgress: ((String) -> Unit)? = null
     ): Pair<List<Rr3ViewerCar>, String> {
         fun normalPath(entry: GameDataFile) =
-            entry.relativePath.replace('\\\\', '/').trimStart('/').lowercase(Locale.ROOT)
+            entry.relativePath.replace('\\', '/').trimStart('/').lowercase(Locale.ROOT)
 
         // cardesc and carappearances are useful registries, but the native
         // reader can enumerate per-car files without either one. Do not make
@@ -1463,7 +1463,7 @@ class MainActivity : Activity() {
         val carDataFiles = files.filter { entry ->
             val path = normalPath(entry)
             path.substringBeforeLast('/', "") == "vehicles/data" &&
-                Regex("^[0-9]{1,6}_.+\\\\.bin\\\\.nct$", RegexOption.IGNORE_CASE)
+                Regex("^[0-9]{1,6}_.+\\.bin\\.nct$", RegexOption.IGNORE_CASE)
                     .matches(path.substringAfterLast('/'))
         }.filter { onlyDataPaths == null || normalPath(it) in onlyDataPaths }
             .sortedBy { normalPath(it) }
