@@ -4723,7 +4723,7 @@ class MainActivity : Activity() {
             camTweaksFieldsContainer = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
             }
-            camTweaksSaveButton = compactOverlayButton("Export edited camTweaks.dat") {
+            camTweaksSaveButton = compactOverlayButton("Export mode edits") {
                 saveCamTweaksFile()
             }
 
@@ -5061,7 +5061,7 @@ class MainActivity : Activity() {
         pendingOutputForDataEditor = false
         pendingOutputForBrowser = true
         pendingOutputForCarEditor = false
-        camTweaksStatus.text = "Prepared edited camera records. Choose an output location; the source file remains unchanged."
+        camTweaksStatus.text = "Prepared edited global mode definitions. Car transforms and trailing bytes are unchanged."
         launchRr3OutputPicker()
     }
 
