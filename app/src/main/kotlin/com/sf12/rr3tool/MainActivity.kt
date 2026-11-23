@@ -4805,11 +4805,182 @@ class MainActivity : Activity() {
             panel.addView(camTweaksStatus, matchWrap(top = 1, bottom = 2))
             panel.addView(camTweaksSaveButton, matchWrap())
 
-            fun selectTransform(transform: CamTweaksV5.CarTransform) {
-                selectedCamTweaksTransformOffset = transform.recordOffset
-                for (i in 0 until transformButtons.childCount) {
-                    val child = transformButtons.getChildAt(i) as? TextView ?: continue
-                    val selected = child.tag == transform.recordOffset
+            val activeCarId = activeRr3ViewerCarId
+            val visibleTransforms = decoded.transforms.filter { transform ->
+                transform.carId == -1 || (activeCarId != null && transform.carId == activeCarId)
+            }
+            var selectedTransform: CamTweaksV5.CarTransform? = null
+            var selectMode: ((CamTweaksV5.ModeDefinition, CamTweaksV5.CarTransform?) -> Unit)? = null
+
+            fun updateModeStatus(mode: CamTweaksV5.ModeDefinition) {
+                val working = currentCamTweaksWorking ?: return
+                val buffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val values = FloatArray(6) { field ->
+                    buffer.getFloat(mode.recordOffset + 4 + field * 4)
+                }
+                camTweaksStatus.text = String.format(
+                    Locale.US,
+                    "Mode %d · camera values: %s",
+                    mode.cameraModeId,
+                    values.joinToString(", ") { "%.3f".format(Locale.US, it) }
+                )
+            }
+
+            fun rotateByQuaternion(
+                x: Float, y: Float, z: Float,
+                qx: Float, qy: Float, qz: Float, qw: Float
+            ): FloatArray {
+                val tx = 2f * (qy * z - qz * y)
+                val ty = 2f * (qz * x - qx * z)
+                val tz = 2f * (qx * y - qy * x)
+                return floatArrayOf(
+                    x + qw * tx + qy * tz - qz * ty,
+                    y + qw * ty + qz * tx - qx * tz,
+                    z + qw * tz + qx * ty - qy * tx
+                )
+            }
+
+            fun applyModePreview(
+                mode: CamTweaksV5.ModeDefinition,
+                transform: CamTweaksV5.CarTransform?
+            ) {
+                val working = currentCamTweaksWorking ?: return
+                val buffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val values = FloatArray(6) { field ->
+                    buffer.getFloat(mode.recordOffset + 4 + field * 4)
+                }
+                if (values.any { !it.isFinite() }) {
+                    camTweaksStatus.text = "This camera mode contains a non-finite value."
+                    return
+                }
+
+                var eyeX = values[0]
+                var eyeY = values[1]
+                var eyeZ = values[2]
+                var targetX = values[3]
+                var targetY = values[4]
+                var targetZ = values[5]
+
+                if (transform != null) {
+                    val q = transform.rotation
+                    val qLength = transform.quaternionLength.toFloat()
+                    if (!qLength.isFinite() || qLength < 0.00001f) {
+                        camTweaksStatus.text =
+                            "Transform #${transform.recordIndex + 1} has an invalid quaternion; previous view kept."
+                        return
+                    }
+
+                    // The v5 mode record supplies the local eye and target points.
+                    // The car/mode transform maps those points into model space.
+                    val qx = q[0] / qLength
+                    val qy = q[1] / qLength
+                    val qz = q[2] / qLength
+                    val qw = q[3] / qLength
+                    val eye = rotateByQuaternion(values[0], values[1], values[2], qx, qy, qz, qw)
+                    val target = rotateByQuaternion(values[3], values[4], values[5], qx, qy, qz, qw)
+                    val p = transform.position
+                    eyeX = p[0] + eye[0]
+                    eyeY = p[1] + eye[1]
+                    eyeZ = p[2] + eye[2]
+                    targetX = p[0] + target[0]
+                    targetY = p[1] + target[1]
+                    targetZ = p[2] + target[2]
+                }
+
+                val dx = targetX - eyeX
+                val dy = targetY - eyeY
+                val dz = targetZ - eyeZ
+                val distanceSquared = dx * dx + dy * dy + dz * dz
+                if (!distanceSquared.isFinite() || distanceSquared < 0.000001f ||
+                    distanceSquared > 10000f
+                ) {
+                    camTweaksStatus.text =
+                        "Mode ${mode.cameraModeId} produced an invalid camera span; previous view kept."
+                    return
+                }
+
+                val viewer = rr3ViewerSurface
+                if (viewer == null) {
+                    camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
+                    return
+                }
+
+                viewer.setCameraPose(eyeX, eyeY, eyeZ, targetX, targetY, targetZ)
+                val transformLabel = transform?.let {
+                    "car ${it.carId}, transform #${it.recordIndex + 1}"
+                } ?: "mode coordinates (no matching transform)"
+                camTweaksStatus.text = String.format(
+                    Locale.US,
+                    "Live preview · mode %d · %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f)",
+                    mode.cameraModeId, transformLabel,
+                    eyeX, eyeY, eyeZ, targetX, targetY, targetZ
+                )
+                if (transform != null) {
+                    val q = transform.rotation
+                    camTweaksTransformStatus.text = String.format(
+                        Locale.US,
+                        "Applied transform #%d · car %d · mode %d · position (%.3f, %.3f, %.3f) · quaternion (%.4f, %.4f, %.4f, %.4f)",
+                        transform.recordIndex + 1, transform.carId, transform.cameraModeId,
+                        transform.position[0], transform.position[1], transform.position[2],
+                        q[0], q[1], q[2], q[3]
+                    )
+                } else {
+                    camTweaksTransformStatus.text =
+                        "No matching car transform · using the mode's eye/target coordinates directly."
+                }
+            }
+
+            selectMode = { mode, transformOverride ->
+                selectedCamTweaksRecordOffset = mode.recordOffset
+                camTweaksInputs.clear()
+                camTweaksFieldsContainer.removeAllViews()
+                val working = currentCamTweaksWorking
+                    ?: throw IllegalStateException("Camera data is no longer available.")
+                val buffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+
+                for (field in 0 until 6) {
+                    val valueOffset = mode.recordOffset + 4 + field * 4
+                    val input = editBox(
+                        "RAW ${field + 1}",
+                        buffer.getFloat(valueOffset).toString(),
+                        numeric = true
+                    ).apply { textSize = 12f }
+                    camTweaksFieldsContainer.addView(
+                        input,
+                        LinearLayout.LayoutParams(dp(104), dp(32)).apply {
+                            marginEnd = dp(6)
+                        }
+                    )
+                    camTweaksInputs[valueOffset] = input
+                    input.addTextChangedListener(object : TextWatcher {
+                        override fun beforeTextChanged(
+                            s: CharSequence?, start: Int, count: Int, after: Int
+                        ) = Unit
+
+                        override fun onTextChanged(
+                            s: CharSequence?, start: Int, before: Int, count: Int
+                        ) = Unit
+
+                        override fun afterTextChanged(s: Editable?) {
+                            val parsed = s?.toString()?.trim()?.toFloatOrNull()
+                            if (parsed != null && parsed.isFinite()) {
+                                currentCamTweaksWorking?.let { data ->
+                                    java.nio.ByteBuffer.wrap(data)
+                                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                        .putFloat(valueOffset, parsed)
+                                }
+                                if (selectedCamTweaksRecordOffset == mode.recordOffset) {
+                                    updateModeStatus(mode)
+                                    applyModePreview(mode, selectedTransform)
+                                }
+                            }
+                        }
+                    })
+                }
+
+                for (i in 0 until modeButtons.childCount) {
+                    val child = modeButtons.getChildAt(i) as? TextView ?: continue
+                    val selected = child.tag == mode.recordOffset
                     child.background = rounded(
                         if (selected) UiPalette.primary else UiPalette.background,
                         dp(9).toFloat()
@@ -4817,31 +4988,33 @@ class MainActivity : Activity() {
                     child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
                 }
 
-                val p = transform.position
-                val q = transform.rotation
-                // Candidate axis/unit conversion only; this is diagnostic and is
-                // intentionally not passed to the renderer until independently verified.
-                val candidateX = p[0] / 2048f
-                val candidateY = p[2] / 2048f
-                val candidateZ = -p[1] / 2048f
-                camTweaksTransformStatus.text = String.format(
-                    Locale.US,
-                    "#%d · car %d · mode %d · raw P (%.3f, %.3f, %.3f)\n" +
-                        "Q (%.5f, %.5f, %.5f, %.5f), |Q| %.5f · candidate P (%.4f, %.4f, %.4f) [unverified]",
-                    transform.recordIndex + 1,
-                    transform.carId,
-                    transform.cameraModeId,
-                    p[0], p[1], p[2],
-                    q[0], q[1], q[2], q[3],
-                    transform.quaternionLength,
-                    candidateX, candidateY, candidateZ
-                )
+                val preferredTransform = transformOverride?.takeIf {
+                    it.cameraModeId == mode.cameraModeId.toLong() &&
+                        it.recordOffset in visibleTransforms.map { visible -> visible.recordOffset }
+                } ?: decoded.transforms.firstOrNull {
+                    activeCarId != null &&
+                        it.carId == activeCarId &&
+                        it.cameraModeId == mode.cameraModeId.toLong()
+                } ?: decoded.transforms.firstOrNull {
+                    it.carId == -1 && it.cameraModeId == mode.cameraModeId.toLong()
+                }
+
+                selectedTransform = preferredTransform
+                selectedCamTweaksTransformOffset = preferredTransform?.recordOffset
+                for (i in 0 until transformButtons.childCount) {
+                    val child = transformButtons.getChildAt(i) as? TextView ?: continue
+                    val selected = child.tag == selectedCamTweaksTransformOffset
+                    child.background = rounded(
+                        if (selected) UiPalette.primary else UiPalette.background,
+                        dp(9).toFloat()
+                    )
+                    child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
+                }
+
+                updateModeStatus(mode)
+                applyModePreview(mode, preferredTransform)
             }
 
-            val activeCarId = activeRr3ViewerCarId
-            val visibleTransforms = decoded.transforms.filter { transform ->
-                transform.carId == -1 || (activeCarId != null && transform.carId == activeCarId)
-            }
             for (transform in visibleTransforms) {
                 val owner = if (transform.carId == -1) "DEFAULT" else "CAR ${transform.carId}"
                 val chip = text(
@@ -4854,7 +5027,17 @@ class MainActivity : Activity() {
                     background = rounded(UiPalette.background, dp(9).toFloat())
                     isClickable = true
                     isFocusable = true
-                    setOnClickListener { selectTransform(transform) }
+                    setOnClickListener {
+                        val matchingMode = decoded.modes.firstOrNull {
+                            it.cameraModeId.toLong() == transform.cameraModeId
+                        }
+                        if (matchingMode != null) {
+                            selectMode?.invoke(matchingMode, transform)
+                        } else {
+                            camTweaksStatus.text =
+                                "Transform #${transform.recordIndex + 1} has no matching mode definition."
+                        }
+                    }
                 }
                 transformButtons.addView(
                     chip,
@@ -4876,93 +5059,6 @@ class MainActivity : Activity() {
                 transformButtons.addView(empty, matchWrap())
             }
 
-            fun updateModeStatus(recordOffset: Int, cameraModeId: Int) {
-                val working = currentCamTweaksWorking ?: return
-                val recordBuffer = java.nio.ByteBuffer.wrap(working)
-                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                val values = FloatArray(6) { field ->
-                    recordBuffer.getFloat(recordOffset + 4 + field * 4)
-                }
-                camTweaksStatus.text = String.format(
-                    Locale.US,
-                    "Mode %d · raw slots: %s · transform application disabled pending validation",
-                    cameraModeId,
-                    values.joinToString(", ") { "%.2f".format(Locale.US, it) }
-                )
-            }
-
-            fun selectRecord(recordOffset: Int, cameraModeId: Int) {
-                selectedCamTweaksRecordOffset = recordOffset
-                camTweaksInputs.clear()
-                camTweaksFieldsContainer.removeAllViews()
-                val working = currentCamTweaksWorking
-                    ?: throw IllegalStateException("Camera data is no longer available.")
-                val recordBuffer = java.nio.ByteBuffer.wrap(working)
-                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                for (field in 0 until 6) {
-                    val valueOffset = recordOffset + 4 + field * 4
-                    val value = recordBuffer.getFloat(valueOffset)
-                    val label = "RAW ${field + 1}"
-                    val input = editBox(label, value.toString(), numeric = true).apply {
-                        textSize = 12f
-                    }
-                    val params = LinearLayout.LayoutParams(dp(104), dp(32)).apply {
-                        marginEnd = dp(6)
-                    }
-                    camTweaksFieldsContainer.addView(input, params)
-                    camTweaksInputs[valueOffset] = input
-                    input.addTextChangedListener(object : TextWatcher {
-                        override fun beforeTextChanged(
-                            s: CharSequence?, start: Int, count: Int, after: Int
-                        ) = Unit
-
-                        override fun onTextChanged(
-                            s: CharSequence?, start: Int, before: Int, count: Int
-                        ) = Unit
-
-                        override fun afterTextChanged(s: Editable?) {
-                            val parsed = s?.toString()?.trim()?.toFloatOrNull()
-                            if (parsed != null && parsed.isFinite()) {
-                                currentCamTweaksWorking?.let { data ->
-                                    java.nio.ByteBuffer.wrap(data)
-                                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                                        .putFloat(valueOffset, parsed)
-                                }
-                                if (selectedCamTweaksRecordOffset == recordOffset) {
-                                    updateModeStatus(recordOffset, cameraModeId)
-                                }
-                            }
-                        }
-                    })
-                }
-                for (i in 0 until modeButtons.childCount) {
-                    val child = modeButtons.getChildAt(i) as? TextView ?: continue
-                    val selected = child.tag == recordOffset
-                    child.background = rounded(
-                        if (selected) UiPalette.primary else UiPalette.background,
-                        dp(9).toFloat()
-                    )
-                    child.setTextColor(if (selected) Color.WHITE else UiPalette.text)
-                }
-                updateModeStatus(recordOffset, cameraModeId)
-
-                val preferredTransform = decoded.transforms.firstOrNull {
-                    activeCarId != null &&
-                        it.carId == activeCarId &&
-                        it.cameraModeId == cameraModeId.toLong()
-                } ?: decoded.transforms.firstOrNull {
-                    it.carId == -1 && it.cameraModeId == cameraModeId.toLong()
-                }
-                if (preferredTransform != null &&
-                    preferredTransform.recordOffset in visibleTransforms.map { it.recordOffset }
-                ) {
-                    selectTransform(preferredTransform)
-                } else {
-                    camTweaksTransformStatus.text =
-                        "No matching transform for car ${activeCarId ?: "—"} / mode $cameraModeId; choose another record above."
-                }
-            }
-
             for (mode in decoded.modes) {
                 val chip = text(
                     "MODE ${mode.cameraModeId}",
@@ -4975,7 +5071,7 @@ class MainActivity : Activity() {
                     isClickable = true
                     isFocusable = true
                     setOnClickListener {
-                        selectRecord(mode.recordOffset, mode.cameraModeId)
+                        selectMode?.invoke(mode, null)
                     }
                 }
                 modeButtons.addView(
@@ -5022,10 +5118,10 @@ class MainActivity : Activity() {
 
             val firstMode = decoded.modes.firstOrNull()
             if (firstMode != null) {
-                selectRecord(firstMode.recordOffset, firstMode.cameraModeId)
+                selectMode?.invoke(firstMode, null)
             }
             camTweaksStatus.contentDescription =
-                "Mode parameters are shown as raw values. No camera pose is applied."
+                "Selecting a mode or transform applies its camera pose to the live 3D viewer."
         } catch (error: Exception) {
             currentCamTweaksOriginal = null
             currentCamTweaksWorking = null
