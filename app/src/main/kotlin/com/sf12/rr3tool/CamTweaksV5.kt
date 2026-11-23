@@ -43,7 +43,6 @@ internal data class CamTweaksV5(
     }
 
     companion object {
-        private const val MAGIC = "RRCT"
         private const val EXPECTED_VERSION = 5
         private const val MODE_RECORD_SIZE = 28
         private const val TRANSFORM_RECORD_SIZE = 36
