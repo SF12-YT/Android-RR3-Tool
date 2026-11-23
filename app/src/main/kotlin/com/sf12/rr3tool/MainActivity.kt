@@ -4914,96 +4914,26 @@ class MainActivity : Activity() {
                     return
                 }
 
-                // RR3 camera-mode points are stored in game axes (lateral,
-                // forward, up) at 1/10,000 scale. The GL viewer uses X-right,
-                // Y-up, Z-forward. Keep the conversion in one place.
-                val rawMagnitude = values.maxOf { kotlin.math.abs(it) }
-                val modeScale = if (rawMagnitude > 20f) 0.0001f else 1f
-                fun toViewerAxes(x: Float, y: Float, z: Float): FloatArray =
-                    floatArrayOf(x * modeScale, z * modeScale, -y * modeScale)
+                // The v5 mode record already stores eye and target points in
+                // RR3 model space. Pass them straight through: no axis swap,
+                // unit scaling, quaternion rotation, or position translation.
+                val eyeX = values[0]
+                val eyeY = values[1]
+                val eyeZ = values[2]
+                val targetX = values[3]
+                val targetY = values[4]
+                val targetZ = values[5]
 
-                val localEye = toViewerAxes(values[0], values[1], values[2])
-                val localTarget = toViewerAxes(values[3], values[4], values[5])
-
-                fun rotateByQuaternion(
-                    point: FloatArray,
-                    qx: Float, qy: Float, qz: Float, qw: Float
-                ): FloatArray {
-                    val x = point[0]
-                    val y = point[1]
-                    val z = point[2]
-                    val tx = 2f * (qy * z - qz * y)
-                    val ty = 2f * (qz * x - qx * z)
-                    val tz = 2f * (qx * y - qy * x)
-                    return floatArrayOf(
-                        x + qw * tx + qy * tz - qz * ty,
-                        y + qw * ty + qz * tx - qx * tz,
-                        z + qw * tz + qx * ty - qy * tx
-                    )
-                }
-
-                fun buildPose(useTransform: Boolean): FloatArray? {
-                    var eye = localEye
-                    var target = localTarget
-                    if (useTransform && transform != null) {
-                        val q = transform.rotation
-                        val qLength = transform.quaternionLength.toFloat()
-                        if (!qLength.isFinite() || qLength < 0.00001f) return null
-
-                        val qx = q[0] / qLength
-                        val qy = q[1] / qLength
-                        val qz = q[2] / qLength
-                        val qw = q[3] / qLength
-                        eye = rotateByQuaternion(localEye, qx, qy, qz, qw)
-                        target = rotateByQuaternion(localTarget, qx, qy, qz, qw)
-
-                        // The transform translation is stored in the RR3
-                        // lateral/forward/up frame at 1/2048 model-unit scale.
-                        val p = transform.position
-                        val position = floatArrayOf(
-                            p[0] / 2048f,
-                            p[2] / 2048f,
-                            -p[1] / 2048f
-                        )
-                        eye = floatArrayOf(
-                            position[0] + eye[0],
-                            position[1] + eye[1],
-                            position[2] + eye[2]
-                        )
-                        target = floatArrayOf(
-                            position[0] + target[0],
-                            position[1] + target[1],
-                            position[2] + target[2]
-                        )
-                    }
-                    val dx = target[0] - eye[0]
-                    val dy = target[1] - eye[1]
-                    val dz = target[2] - eye[2]
-                    val spanSquared = dx * dx + dy * dy + dz * dz
-                    if (!spanSquared.isFinite() || spanSquared < 0.000001f ||
-                        spanSquared > 10000f
-                    ) return null
-                    return floatArrayOf(
-                        eye[0], eye[1], eye[2],
-                        target[0], target[1], target[2]
-                    )
-                }
-
-                // Prefer the car-specific transform. If its transform is
-                // malformed, try the mode-local camera points rather than
-                // leaving every mode unusable.
-                val transformedPose = if (transform != null) buildPose(true) else null
-                val pose = transformedPose ?: buildPose(false)
-                if (pose == null) {
+                val dx = targetX - eyeX
+                val dy = targetY - eyeY
+                val dz = targetZ - eyeZ
+                val spanSquared = dx * dx + dy * dy + dz * dz
+                if (!spanSquared.isFinite() || spanSquared < 0.000001f) {
                     camTweaksStatus.text = String.format(
                         Locale.US,
-                        "Mode %d still has an invalid camera span after RR3 unit/axis conversion (raw span %.3f).",
+                        "Mode %d has an invalid eye-to-target span (%.6f).",
                         mode.cameraModeId,
-                        kotlin.math.sqrt(
-                            (values[3] - values[0]) * (values[3] - values[0]) +
-                                (values[4] - values[1]) * (values[4] - values[1]) +
-                                (values[5] - values[2]) * (values[5] - values[2])
-                        )
+                        kotlin.math.sqrt(spanSquared.coerceAtLeast(0f))
                     )
                     return
                 }
@@ -5015,37 +4945,31 @@ class MainActivity : Activity() {
                 }
 
                 viewer.setCameraPose(
-                    pose[0], pose[1], pose[2],
-                    pose[3], pose[4], pose[5]
+                    eyeX, eyeY, eyeZ,
+                    targetX, targetY, targetZ
                 )
-                val transformLabel = if (transformedPose != null) {
-                    "car ${transform?.carId}, transform #${transform?.recordIndex?.plus(1)}"
-                } else if (transform != null) {
-                    "mode-local fallback (car transform was not usable)"
-                } else {
-                    "mode-local coordinates"
-                }
+
+                val transformLabel = transform?.let {
+                    "mode coordinates · matching record #${it.recordIndex + 1} (metadata)"
+                } ?: "mode coordinates · no matching car record"
                 camTweaksStatus.text = String.format(
                     Locale.US,
                     "Preview applied · mode %d · %s · eye (%.4f, %.4f, %.4f) · target (%.4f, %.4f, %.4f)",
                     mode.cameraModeId,
                     transformLabel,
-                    pose[0], pose[1], pose[2],
-                    pose[3], pose[4], pose[5]
+                    eyeX, eyeY, eyeZ,
+                    targetX, targetY, targetZ
                 )
-                if (transform != null) {
-                    val q = transform.rotation
-                    camTweaksTransformStatus.text = String.format(
+                camTweaksTransformStatus.text = transform?.let {
+                    val q = it.rotation
+                    String.format(
                         Locale.US,
-                        "Transform #%d · car %d · mode %d · raw P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
-                        transform.recordIndex + 1, transform.carId, transform.cameraModeId,
-                        transform.position[0], transform.position[1], transform.position[2],
+                        "Transform record #%d · car %d · mode %d · parsed for reference only · P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
+                        it.recordIndex + 1, it.carId, it.cameraModeId,
+                        it.position[0], it.position[1], it.position[2],
                         q[0], q[1], q[2], q[3]
                     )
-                } else {
-                    camTweaksTransformStatus.text =
-                        "No matching car transform · mode-local camera points applied."
-                }
+                } ?: "No matching car transform record. Using the mode's RR3 model-space eye/target directly."
             }
 
             selectMode = { mode, transformOverride ->
