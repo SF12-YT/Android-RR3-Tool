@@ -9,6 +9,8 @@ import android.widget.FrameLayout
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.asin
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -197,6 +199,18 @@ internal class Rr3ModelViewer(
     ) {
         cameraEye = floatArrayOf(eyeX, eyeY, eyeZ)
         cameraTarget = floatArrayOf(targetX, targetY, targetZ)
+
+        // Seed the interactive orbit angles from the loaded pose so the first
+        // drag starts exactly where camTweaks placed the camera.
+        val dx = targetX - eyeX
+        val dy = targetY - eyeY
+        val dz = targetZ - eyeZ
+        val poseDistance = sqrt(dx * dx + dy * dy + dz * dz)
+        if (poseDistance.isFinite() && poseDistance > 0.001f) {
+            yaw = atan2(dx, dz)
+            pitch = (-asin((dy / poseDistance).coerceIn(-1f, 1f)))
+                .coerceIn(-1.1f, 1.1f)
+        }
         cameraPoseEnabled = true
         if (rendererReady) {
             glSurface.queueEvent {
