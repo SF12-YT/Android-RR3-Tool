@@ -2319,8 +2319,15 @@ class MainActivity : Activity() {
                         rr3ViewerScreenStatus.text = if (enabled) "Panorama backdrop enabled" else "Panorama backdrop disabled"
                     }
                     2 -> {
+                        preferences.edit()
+                            .remove("viewer_camera_pan_x")
+                            .remove("viewer_camera_pan_y")
+                            .remove("viewer_camera_fov")
+                            .remove("viewer_camera_yaw")
+                            .remove("viewer_camera_pitch")
+                            .remove("viewer_camera_zoom")
+                            .apply()
                         rr3ViewerSurface?.resetCamera()
-                        rr3ViewerSurface?.setCameraTuning(0f, 0f, 0.75f)
                     }
                     3 -> openCamTweaksForViewer()
                 }
@@ -2366,20 +2373,26 @@ class MainActivity : Activity() {
             })
             root.addView(seek, matchWrap(bottom = 2))
         }
-        fun updateCamera() {
-            rr3ViewerSurface?.setCameraTuning(panX, panY, fovDegrees * Math.PI.toFloat() / 180f)
+        fun updateTuning() {
+            rr3ViewerSurface?.setCameraTuning(
+                panX, panY, fovDegrees * Math.PI.toFloat() / 180f
+            )
+        }
+        fun updateOrbit() {
             rr3ViewerSurface?.setCameraAngles(
                 yawDegrees * Math.PI.toFloat() / 180f,
                 pitchDegrees * Math.PI.toFloat() / 180f
             )
+        }
+        fun updateZoom() {
             rr3ViewerSurface?.setCameraZoom(zoom)
         }
-        addCameraSlider("Camera position X", -2f, 2f, panX) { panX = it; updateCamera() }
-        addCameraSlider("Camera position Y", -2f, 2f, panY) { panY = it; updateCamera() }
-        addCameraSlider("Camera yaw (degrees)", 0f, 360f, yawDegrees) { yawDegrees = it; updateCamera() }
-        addCameraSlider("Camera pitch (degrees)", -63f, 63f, pitchDegrees) { pitchDegrees = it; updateCamera() }
-        addCameraSlider("Field of view (degrees)", 25f, 110f, fovDegrees) { fovDegrees = it; updateCamera() }
-        addCameraSlider("Camera distance", 0.55f, 3f, zoom) { zoom = it; updateCamera() }
+        addCameraSlider("Camera position X", -2f, 2f, panX) { panX = it; updateTuning() }
+        addCameraSlider("Camera position Y", -2f, 2f, panY) { panY = it; updateTuning() }
+        addCameraSlider("Camera yaw (degrees)", 0f, 360f, yawDegrees) { yawDegrees = it; updateOrbit() }
+        addCameraSlider("Camera pitch (degrees)", -63f, 63f, pitchDegrees) { pitchDegrees = it; updateOrbit() }
+        addCameraSlider("Field of view (degrees)", 25f, 110f, fovDegrees) { fovDegrees = it; updateTuning() }
+        addCameraSlider("Zoom", 0.55f, 3f, zoom) { zoom = it; updateZoom() }
         AlertDialog.Builder(this)
             .setTitle("Live viewer camera preview")
             .setMessage("Changes update the preview immediately. Save stores a local viewer preset, not game camTweaks.dat.")
@@ -2395,7 +2408,7 @@ class MainActivity : Activity() {
                     .apply()
                 rr3ViewerScreenStatus.text = "Local viewer camera preset saved"
             }
-            .setNeutralButton("Reset") { _, _ ->
+            .setNeutralButton("Reset Camera") { _, _ ->
                 preferences.edit()
                     .remove("viewer_camera_pan_x")
                     .remove("viewer_camera_pan_y")
@@ -2409,7 +2422,7 @@ class MainActivity : Activity() {
                 yawDegrees = 0.6f * 180f / Math.PI.toFloat()
                 pitchDegrees = 0.25f * 180f / Math.PI.toFloat()
                 zoom = 1f
-                updateCamera()
+                rr3ViewerSurface?.resetCamera()
             }
             .setNegativeButton("Close", null)
             .show()
