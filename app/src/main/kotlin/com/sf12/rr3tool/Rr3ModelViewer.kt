@@ -9,6 +9,8 @@ import android.widget.FrameLayout
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -137,10 +139,21 @@ internal class Rr3ModelViewer(
                     } else {
                         yaw -= (event.x - lastX) * 0.008f
                         pitch = (pitch + (event.y - lastY) * 0.008f).coerceIn(-1.1f, 1.1f)
+                        // Keep a loaded camTweaks target and distance while orbiting.
+                        syncExplicitPoseToOrbitAngles()
                     }
                     lastX = event.x
                     lastY = event.y
                     requestGpuFrame()
+                    true
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val remainingPointer = if (event.actionIndex == 0) 1 else 0
+                    if (remainingPointer < event.pointerCount) {
+                        lastX = event.getX(remainingPointer)
+                        lastY = event.getY(remainingPointer)
+                    }
+                    pinchDistance = 0f
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -163,11 +176,15 @@ internal class Rr3ModelViewer(
         yaw = 0.6f
         pitch = 0.25f
         zoom = 1f
+        cameraPanX = 0f
+        cameraPanY = 0f
+        cameraFovY = 0.75f
         cameraPoseEnabled = false
         if (rendererReady) {
             glSurface.queueEvent {
                 if (!disposed.get()) {
                     NativeBridge.nativeSetRr3ViewerCameraPose(handle, 0f, 0f, 0f, 0f, 0f, 0f, false)
+                    NativeBridge.nativeUpdateRr3ViewerCamera(handle, 0f, 0f, cameraFovY)
                 }
             }
         }
@@ -210,21 +227,46 @@ internal class Rr3ModelViewer(
     fun setCameraAngles(nextYaw: Float, nextPitch: Float) {
         yaw = nextYaw
         pitch = nextPitch.coerceIn(-1.1f, 1.1f)
-        // A manual drag takes control away from a loaded camTweaks pose.
-        // Otherwise the explicit pose overrides yaw/pitch in the native renderer.
-        if (cameraPoseEnabled) {
-            cameraPoseEnabled = false
-            if (rendererReady) {
-                glSurface.queueEvent {
-                    if (!disposed.get()) {
-                        NativeBridge.nativeSetRr3ViewerCameraPose(
-                            handle, 0f, 0f, 0f, 0f, 0f, 0f, false
-                        )
-                    }
+        // Keep camTweaks active and rotate around its target instead of
+        // dropping back to the model-centred free-orbit camera.
+        syncExplicitPoseToOrbitAngles()
+        requestGpuFrame()
+    }
+
+    private fun syncExplicitPoseToOrbitAngles() {
+        if (!cameraPoseEnabled) return
+
+        val target = cameraTarget.copyOf()
+        val currentEye = cameraEye
+        val dx = target[0] - currentEye[0]
+        val dy = target[1] - currentEye[1]
+        val dz = target[2] - currentEye[2]
+        val distance = sqrt(dx * dx + dy * dy + dz * dz)
+        if (!distance.isFinite() || distance <= 0.001f) return
+
+        // Match buildViewerMvp's yaw/pitch convention while keeping the
+        // original camTweaks target and eye-to-target distance unchanged.
+        val cosPitch = cos(pitch)
+        val nextEye = floatArrayOf(
+            target[0] - sin(yaw) * cosPitch * distance,
+            target[1] + sin(pitch) * distance,
+            target[2] - cos(yaw) * cosPitch * distance
+        )
+        cameraEye = nextEye
+
+        if (rendererReady) {
+            val eyeSnapshot = nextEye.copyOf()
+            val targetSnapshot = target.copyOf()
+            glSurface.queueEvent {
+                if (!disposed.get()) {
+                    NativeBridge.nativeSetRr3ViewerCameraPose(
+                        handle,
+                        eyeSnapshot[0], eyeSnapshot[1], eyeSnapshot[2],
+                        targetSnapshot[0], targetSnapshot[1], targetSnapshot[2], true
+                    )
                 }
             }
         }
-        requestGpuFrame()
     }
 
     fun setCameraZoom(nextZoom: Float) {
