@@ -5028,11 +5028,11 @@ class MainActivity : Activity() {
                 val rb20PreviewPose = if (activeCarId == 577) {
                     when (mode.cameraModeId) {
                         0 -> floatArrayOf(
-                            0.000f, 0.740f, -0.460f,
+                            0.000f, 0.740f, -0.200f,
                             0.000f, 0.700f, -2.350f
                         )
                         2 -> floatArrayOf(
-                            0.000f, 0.740f, -0.460f,
+                            0.000f, 0.740f, -0.200f,
                             0.000f, 0.700f, 1.650f
                         )
                         1 -> floatArrayOf(
