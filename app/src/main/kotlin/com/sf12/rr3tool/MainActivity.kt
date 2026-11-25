@@ -5018,6 +5018,45 @@ class MainActivity : Activity() {
                     return
                 }
 
+                // RB20 camTweaks records 1/3/4 fall back to generic transforms
+                // whose resulting eye positions are below the car floor. The
+                // generic transforms are valid source data, but they are not
+                // usable as this car's camera placements. Use preview-only
+                // positions anchored to the RB20 driver point and wheelbase.
+                // The source camTweaks.dat bytes and exported values remain
+                // unchanged; other cars continue using their own transforms.
+                val rb20PreviewPose = if (activeCarId == 577) {
+                    when (mode.cameraModeId) {
+                        0 -> floatArrayOf(
+                            0.000f, 0.740f, -0.460f,
+                            0.000f, 0.700f, -2.350f
+                        )
+                        2 -> floatArrayOf(
+                            0.000f, 0.740f, -0.460f,
+                            0.000f, 0.700f, 1.650f
+                        )
+                        1 -> floatArrayOf(
+                            0.000f, 1.350f, 3.450f,
+                            0.000f, 0.580f, 0.000f
+                        )
+                        3 -> floatArrayOf(
+                            0.000f, 0.880f, -1.000f,
+                            0.000f, 0.760f, -2.750f
+                        )
+                        4 -> floatArrayOf(
+                            0.000f, 0.340f, -2.000f,
+                            0.000f, 0.360f, -3.050f
+                        )
+                        else -> null
+                    }
+                } else {
+                    null
+                }
+                val usedRb20Calibration = rb20PreviewPose != null
+                if (rb20PreviewPose != null) {
+                    for (index in 0 until 6) pose[index] = rb20PreviewPose[index]
+                }
+
                 val viewer = rr3ViewerSurface
                 if (viewer == null) {
                     camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
@@ -5028,7 +5067,9 @@ class MainActivity : Activity() {
                     pose[0], pose[1], pose[2],
                     pose[3], pose[4], pose[5]
                 )
-                val transformLabel = if (transformedPose != null) {
+                val transformLabel = if (usedRb20Calibration) {
+                    "RB20 preview calibration (camTweaks source retained)"
+                } else if (transformedPose != null) {
                     "car ${transform?.carId}, transform #${transform?.recordIndex?.plus(1)}"
                 } else if (transform != null) {
                     "mode-local fallback (invalid car transform)"
