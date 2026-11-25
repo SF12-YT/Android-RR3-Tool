@@ -2170,7 +2170,7 @@ class MainActivity : Activity() {
         if (indexedGameFiles.isEmpty()) { rr3ViewerStatus.text = "Index the RR3 .depot in Index first."; return }
         if (rr3ViewerLoading) return
         rr3ViewerLoading = true
-        rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior model and sidecars…"
+        rr3ViewerStatus.text = "Finding " + car.displayName + " (" + car.modelFolder + ") exterior/interior models and sidecars…"
         Thread {
             try {
                 val assets = scanLiveryCarAssets(car.liveryEntry, car.modelFolder)
@@ -2204,8 +2204,12 @@ class MainActivity : Activity() {
                     val ext = leaf.substringAfterLast('.', "")
                     val isPoint = ext == "points"
                     val isShared = ext == "m3g" && leaf.contains("_shared")
+                    // The RR3 cockpit is a separate <car>_int_a.m3g model.
+                    // Include it as a sidecar so cockpit camera presets are
+                    // previewed against the actual interior geometry.
+                    val isInterior = ext == "m3g" && leaf == expectedStem + "_int_a.m3g"
                     val isTexture = ext in setOf("sba", "pvr", "dds", "png", "jpg", "jpeg")
-                    if (!isPoint && !isShared && !isTexture) continue
+                    if (!isPoint && !isShared && !isInterior && !isTexture) continue
                     try {
                         val raw = readGameFile(entry); val (innerName, bytes) = unwrappedGameFile(entry, raw)
                         val innerExt = innerName.substringAfterLast('.', "").lowercase(Locale.ROOT)
@@ -2214,7 +2218,7 @@ class MainActivity : Activity() {
                         if (tex && bytes.size > 16 * 1024 * 1024) { skippedTextures++; continue }
                         if (supportBytes + bytes.size > 64L * 1024L * 1024L) { if (tex) { skippedTextures++; continue }; throw IllegalStateException("This car's model sidecars exceed the 64 MiB preview limit.") }
                         supportBytes += bytes.size.toLong(); supportPaths.add(plainName(entry.relativePath)); supportData.add(bytes)
-                    } catch (error: Exception) { if (isPoint || isShared) throw error; skippedTextures++ }
+                    } catch (error: Exception) { if (isPoint || isShared || isInterior) throw error; skippedTextures++ }
                 }
                 val result = JSONObject(NativeBridge.nativeCreateRr3Viewer(modelPath, car.dataFolder, modelBytes, supportPaths.toTypedArray(), supportData.toTypedArray()))
                 if (!result.optBoolean("ok")) throw IllegalStateException(result.optString("error", "Monkey Tool could not prepare this RR3 model."))
