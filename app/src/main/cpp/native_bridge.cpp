@@ -3184,6 +3184,42 @@ Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
                                  noCommonTextures, haveLiveries ? &liveries : nullptr,
                                  &textureReport);
 
+        // RR3 stores the cockpit in a separate <car>_int_a.m3g. The camera
+        // points are in the same car-space frame; place the interior's
+        // origin-authored parts from the merged exterior/interior hardpoints,
+        // then add its meshes to the same scene as the exterior shell.
+        int interiorMeshCount = 0;
+        const std::string interiorPath = nfsnl::rr3InteriorModelNameFor(modelPath);
+        if (!interiorPath.empty()) {
+            if (nfsnl::Bytes* interiorBytes = findFile(interiorPath)) {
+                nfsnl::Model interior =
+                    nfsnl::loadModel(interiorBytes->data(), interiorBytes->size());
+                if (interior.valid && !interior.meshes.empty()) {
+                    float cockpitWheelCentre[3] = {};
+                    if (nfsnl::rr3CockpitWheelCentre(
+                            interiorBytes->data(), interiorBytes->size(),
+                            points, cockpitWheelCentre)) {
+                        nfsnl::rr3AlignSteering(session->model, cockpitWheelCentre);
+                    }
+
+                    nfsnl::rr3PlaceParts(interior, points);
+                    std::string interiorTextureReport;
+                    nfsnl::rr3AssignTextures(
+                        interior, interiorPath, lookupTexture, noCommonTextures,
+                        nullptr, &interiorTextureReport);
+
+                    interiorMeshCount = static_cast<int>(interior.meshes.size());
+                    session->model.meshes.reserve(
+                        session->model.meshes.size() + interior.meshes.size());
+                    for (const nfsnl::Mesh& mesh : interior.meshes)
+                        session->model.meshes.push_back(mesh);
+                } else {
+                    session->model.warnings.push_back(
+                        "The dedicated cockpit model could not be parsed: " + interiorPath);
+                }
+            }
+        }
+
         std::string topLod;
         std::string draftLod;
         for (const nfsnl::Mesh& mesh : session->model.meshes) {
@@ -3262,6 +3298,7 @@ Java_com_sf12_rr3tool_NativeBridge_nativeCreateRr3Viewer(
             << ",\"meshes\":" << visibleMeshes
             << ",\"triangles\":" << triangles
             << ",\"textures\":" << texturedMeshes
+            << ",\"interiorMeshes\":" << interiorMeshCount
             << ",\"lod\":" << jsonString(topLod) << '}';
         return toJava(env, out.str());
     } catch (const std::bad_alloc&) {
