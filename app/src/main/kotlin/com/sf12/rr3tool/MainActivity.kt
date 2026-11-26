@@ -4807,8 +4807,7 @@ class MainActivity : Activity() {
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(6), dp(12), dp(6))
-                background = glossyRounded(UiPalette.surface, dp(14).toFloat())
-                elevation = dp(12).toFloat()
+                background = rounded(UiPalette.surface, dp(14).toFloat())
             }
             val header = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -5018,45 +5017,6 @@ class MainActivity : Activity() {
                     return
                 }
 
-                // RB20 camTweaks records 1/3/4 fall back to generic transforms
-                // whose resulting eye positions are below the car floor. The
-                // generic transforms are valid source data, but they are not
-                // usable as this car's camera placements. Use preview-only
-                // positions anchored to the RB20 driver point and wheelbase.
-                // The source camTweaks.dat bytes and exported values remain
-                // unchanged; other cars continue using their own transforms.
-                val rb20PreviewPose = if (activeCarId == 577) {
-                    when (mode.cameraModeId) {
-                        0 -> floatArrayOf(
-                            0.000f, 0.740f, -0.200f,
-                            0.000f, 0.700f, -2.350f
-                        )
-                        2 -> floatArrayOf(
-                            0.000f, 0.740f, -0.200f,
-                            0.000f, 0.700f, 1.650f
-                        )
-                        1 -> floatArrayOf(
-                            0.000f, 1.350f, 3.450f,
-                            0.000f, 0.580f, 0.000f
-                        )
-                        3 -> floatArrayOf(
-                            0.000f, 0.880f, -1.000f,
-                            0.000f, 0.760f, -2.750f
-                        )
-                        4 -> floatArrayOf(
-                            0.000f, 0.340f, -2.000f,
-                            0.000f, 0.360f, -3.050f
-                        )
-                        else -> null
-                    }
-                } else {
-                    null
-                }
-                val usedRb20Calibration = rb20PreviewPose != null
-                if (rb20PreviewPose != null) {
-                    for (index in 0 until 6) pose[index] = rb20PreviewPose[index]
-                }
-
                 val viewer = rr3ViewerSurface
                 if (viewer == null) {
                     camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
@@ -5067,14 +5027,17 @@ class MainActivity : Activity() {
                     pose[0], pose[1], pose[2],
                     pose[3], pose[4], pose[5]
                 )
-                val transformLabel = if (usedRb20Calibration) {
-                    "RB20 preview calibration (camTweaks source retained)"
-                } else if (transformedPose != null) {
-                    "car ${transform?.carId}, transform #${transform?.recordIndex?.plus(1)}"
-                } else if (transform != null) {
-                    "mode-local fallback (invalid car transform)"
-                } else {
-                    "mode-local coordinates"
+                val transformLabel = when {
+                    transformedPose != null && transform?.carId == activeCarId && activeCarId != null ->
+                        "car $activeCarId transform #${transform.recordIndex + 1}"
+                    transformedPose != null && transform?.carId == -1 && activeCarId != null ->
+                        "global/default transform · no car-specific record for $activeCarId"
+                    transformedPose != null && transform != null ->
+                        "global/default transform #${transform.recordIndex + 1}"
+                    transform != null ->
+                        "mode-local fallback (invalid car transform)"
+                    else ->
+                        "mode-local coordinates"
                 }
                 camTweaksStatus.text = String.format(
                     Locale.US,
@@ -7544,7 +7507,7 @@ class MainActivity : Activity() {
     private fun interactiveBackground(color: Int, radius: Float): android.graphics.drawable.Drawable {
         return android.graphics.drawable.RippleDrawable(
             android.content.res.ColorStateList.valueOf(UiPalette.ripple),
-            glossyRounded(color, radius),
+            rounded(color, radius),
             rounded(UiPalette.rippleMask, radius)
         )
     }
@@ -7552,34 +7515,6 @@ class MainActivity : Activity() {
         return GradientDrawable().apply {
             setColor(color)
             cornerRadius = radius
-        }
-    }
-    private fun glossyRounded(color: Int, radius: Float): GradientDrawable {
-        fun mix(from: Int, to: Int, amount: Float): Int {
-            fun channel(a: Int, b: Int) =
-                (android.graphics.Color.red(a) * (1f - amount) + android.graphics.Color.red(b) * amount).toInt().coerceIn(0, 255)
-            fun green(a: Int, b: Int) =
-                (android.graphics.Color.green(a) * (1f - amount) + android.graphics.Color.green(b) * amount).toInt().coerceIn(0, 255)
-            fun blue(a: Int, b: Int) =
-                (android.graphics.Color.blue(a) * (1f - amount) + android.graphics.Color.blue(b) * amount).toInt().coerceIn(0, 255)
-            return Color.rgb(channel(from, to), green(from, to), blue(from, to))
-        }
-        // Layered specular bands create a brushed / polished metal effect,
-        // rather than the flat two-tone gloss used by the previous theme.
-        return GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(
-                mix(color, Color.WHITE, 0.58f),
-                mix(color, Color.WHITE, 0.30f),
-                mix(color, Color.WHITE, 0.06f),
-                mix(color, Color.BLACK, 0.34f),
-                mix(color, Color.WHITE, 0.38f),
-                mix(color, Color.BLACK, 0.16f),
-                mix(color, UiPalette.navy, 0.52f)
-            )
-        ).apply {
-            cornerRadius = radius
-            setStroke(dp(1), 0x66FFFFFF)
         }
     }
     private fun matchWrap(top: Int = 0, bottom: Int = 0): LinearLayout.LayoutParams {
