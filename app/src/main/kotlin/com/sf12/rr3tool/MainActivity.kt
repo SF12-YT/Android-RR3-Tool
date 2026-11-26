@@ -5028,7 +5028,7 @@ class MainActivity : Activity() {
                     pose[3], pose[4], pose[5]
                 )
                 val transformLabel = when {
-                    transformedPose != null && transform?.carId == activeCarId && activeCarId != null ->
+                    transformedPose != null && transform != null && transform.carId == activeCarId && activeCarId != null ->
                         "car $activeCarId transform #${transform.recordIndex + 1}"
                     transformedPose != null && transform?.carId == -1 && activeCarId != null ->
                         "global/default transform · no car-specific record for $activeCarId"
