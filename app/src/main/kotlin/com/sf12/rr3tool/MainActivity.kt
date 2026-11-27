@@ -4933,19 +4933,16 @@ class MainActivity : Activity() {
                     return
                 }
 
-                // Mode points are lateral/forward/up offsets. Larger stored
-                // values use the game's 1/10,000 camera-coordinate scale.
+                // Mode records store the camera position first and the look-at
+                // target second. Larger values use the game's 1/10,000 scale.
                 val rawMagnitude = values.maxOf { kotlin.math.abs(it) }
                 val modeScale = if (rawMagnitude > 20f) 0.0001f else 1f
-                // CamTweaks stores the look-at point first and the camera
-                // position second. The RB20 mode-0 eye resolves beside
-                // POINT_DRIVER when the second triplet is used as the eye.
-                val localTarget = floatArrayOf(
+                val localEye = floatArrayOf(
                     values[0] * modeScale,
                     values[1] * modeScale,
                     values[2] * modeScale
                 )
-                val localEye = floatArrayOf(
+                val localTarget = floatArrayOf(
                     values[3] * modeScale,
                     values[4] * modeScale,
                     values[5] * modeScale
