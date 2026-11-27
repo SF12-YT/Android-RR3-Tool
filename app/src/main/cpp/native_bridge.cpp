@@ -2066,24 +2066,38 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
         md5.push_back(hex[(byte >> 4) & 0x0f]);
         md5.push_back(hex[byte & 0x0f]);
     }
-    // This file is being replaced, so its cached MD5 must change too.
-    // keepIfListed=true preserves the old digest and leaves the depot cache stale.
-    nfsnl::rr3AssetListSet(list, assetPath, md5, false);
+    std::string expectedPath = "/" + assetPath;
+    for (char& c : expectedPath) if (c == static_cast<char>(92)) c = '/';
+
+    // For an existing asset, preserve the official server MD5 in the cache.
+    // RR3 compares this cache with the server's asset list to decide whether
+    // to download a file. Replacing the official digest with our edited file's
+    // MD5 makes RR3 download the original asset again (often hanging at 99%).
+    // A genuinely new path has no official digest, so rr3AssetListSet adds it
+    // with the MD5 of the supplied bytes.
+    bool wasListed = false;
+    std::string expectedDigest = md5;
+    for (const auto& entry : list.entries) {
+        if (entry.first == expectedPath) {
+            wasListed = true;
+            expectedDigest = entry.second;
+            break;
+        }
+    }
+    nfsnl::rr3AssetListSet(list, assetPath, md5, true);
 
     nfsnl::Bytes output = nfsnl::rr3AssetListWrite(list);
     if (output.empty() || output.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
         return nullptr;
 
-    // Read the generated cache back and confirm the exact replacement digest
-    // is present before returning an exportable asset-list file.
+    // Read the generated cache back and confirm the right digest is present:
+    // the official digest for existing files, or the computed digest for new ones.
     nfsnl::Rr3AssetList verified;
     if (!nfsnl::rr3AssetListRead(output, verified)) return nullptr;
-    std::string expectedPath = "/" + assetPath;
-    for (char& c : expectedPath) if (c == static_cast<char>(92)) c = '/';
     bool digestVerified = false;
     for (const auto& entry : verified.entries) {
         if (entry.first == expectedPath) {
-            digestVerified = entry.second == md5;
+            digestVerified = entry.second == expectedDigest;
             break;
         }
     }
