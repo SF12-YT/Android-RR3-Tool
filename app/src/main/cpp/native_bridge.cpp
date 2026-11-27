@@ -2075,11 +2075,9 @@ Java_com_sf12_rr3tool_NativeBridge_nativeUpdateRr3AssetList(
     // MD5 makes RR3 download the original asset again (often hanging at 99%).
     // A genuinely new path has no official digest, so rr3AssetListSet adds it
     // with the MD5 of the supplied bytes.
-    bool wasListed = false;
     std::string expectedDigest = md5;
     for (const auto& entry : list.entries) {
         if (entry.first == expectedPath) {
-            wasListed = true;
             expectedDigest = entry.second;
             break;
         }
