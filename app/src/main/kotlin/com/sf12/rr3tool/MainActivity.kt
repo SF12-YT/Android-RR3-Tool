@@ -5051,12 +5051,12 @@ class MainActivity : Activity() {
                     transform.recordIndex + 1,
                     values[4]
                 )
-                val scaleLabel = when (diagnosticVariant / 2) {
+                val scaleLabel = when (poseVariant / 2) {
                     0 -> "raw"
                     1 -> "/256"
                     else -> "/2048"
                 }
-                val axisLabel = if (diagnosticVariant % 2 == 0) "-Z" else "+Z"
+                val axisLabel = if (poseVariant % 2 == 0) "-Z" else "+Z"
                 camTweaksTransformStatus.text = String.format(
                     Locale.US,
                     "TEST %d/12 · %s · %s quaternion · forward %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
