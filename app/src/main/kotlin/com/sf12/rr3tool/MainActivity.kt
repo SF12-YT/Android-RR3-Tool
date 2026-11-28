@@ -4938,9 +4938,6 @@ class MainActivity : Activity() {
                 )
             }
 
-            fun toViewerAxes(x: Float, y: Float, z: Float): FloatArray =
-                floatArrayOf(x, z, -y)
-
             fun applyModePreview(
                 mode: CamTweaksV5.ModeDefinition,
                 transform: CamTweaksV5.CarTransform?
@@ -4992,17 +4989,13 @@ class MainActivity : Activity() {
                 val qw = q[3] / qLength
                 val p = transform.position
 
-                // RR3 camera-local forward is treated as -Y in the source
-                // axes; toViewerAxes maps that direction to +Z.
-                val forwardSource = rotateByQuaternion(
-                    0f, -1f, 0f, qx, qy, qz, qw
+                // RR3 car models use X-right, Y-up and Z-forward. The
+                // camTweaks transform is already in that same car/model space,
+                // so keep its position and quaternion axes unchanged.
+                val forward = rotateByQuaternion(
+                    0f, 0f, 1f, qx, qy, qz, qw
                 )
-                val eye = toViewerAxes(
-                    p[0] / 2048f, p[1] / 2048f, p[2] / 2048f
-                )
-                val forward = toViewerAxes(
-                    forwardSource[0], forwardSource[1], forwardSource[2]
-                )
+                val eye = floatArrayOf(p[0], p[1], p[2])
                 val forwardLength = kotlin.math.sqrt(
                     forward[0] * forward[0] +
                         forward[1] * forward[1] +
