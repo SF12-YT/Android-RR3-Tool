@@ -8,6 +8,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
+import java.util.LinkedHashMap
+import java.util.concurrent.Executors
 
 internal data class TextSearchHit(
     val pageIndex: Int,
@@ -26,10 +28,17 @@ internal data class TextSearchHit(
  */
 internal class DiskBackedTextDocument(
     private val sourceFile: File,
-    private val pageSize: Int = 80
+    private val pageSize: Int = 160
 ) : Closeable {
     private val pageStarts = ArrayList<Long>()
     private val pageLineCounts = ArrayList<Int>()
+    // A small LRU avoids reopening and decoding nearby pages on every fling.
+    // Large/exceptional pages are deliberately not cached.
+    private val pageCache = LinkedHashMap<Int, String>(8, 0.75f, true)
+    private val prefetchingPages = HashSet<Int>()
+    private val prefetchExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "rr3-text-page-prefetch").apply { isDaemon = true }
+    }
     private val editDirectory = File(sourceFile.parentFile, sourceFile.name + ".edits")
     private val sourceLength = sourceFile.length()
     private var nextSequentialPage = 0
@@ -55,26 +64,60 @@ internal class DiskBackedTextDocument(
         var bytesSeen = 0L
         var newlineCount = 0L
         var lastByte = -1
+        // A CR may be the complete line ending or the first half of CRLF.
+        // Delay indexing it until the next byte is known so page boundaries
+        // never split a CRLF pair. This also supports CR-only RR3 text files.
+        var pendingCrEnd = -1L
         val buffer = ByteArray(64 * 1024)
+
+        fun recordLineEnding(endOffset: Long) {
+            if (newlineCount % pageSize == 0L &&
+                endOffset < sourceLength &&
+                pageStarts.lastOrNull() != endOffset
+            ) {
+                pageStarts.add(endOffset)
+            }
+        }
 
         BufferedInputStream(FileInputStream(sourceFile), buffer.size).use { input ->
             while (true) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 for (index in 0 until count) {
-                    lastByte = buffer[index].toInt() and 0xFF
-                    bytesSeen++
-                    if (lastByte == 0x0A) {
+                    val value = buffer[index].toInt() and 0xFF
+                    if (pendingCrEnd >= 0L) {
+                        if (value == 0x0A) {
+                            bytesSeen++
+                            lastByte = value
+                            newlineCount++
+                            recordLineEnding(bytesSeen)
+                            pendingCrEnd = -1L
+                            continue
+                        }
                         newlineCount++
-                        if (newlineCount % pageSize == 0L && bytesSeen < sourceLength) {
-                            pageStarts.add(bytesSeen)
+                        recordLineEnding(pendingCrEnd)
+                        pendingCrEnd = -1L
+                    }
+
+                    bytesSeen++
+                    lastByte = value
+                    when (value) {
+                        0x0D -> pendingCrEnd = bytesSeen
+                        0x0A -> {
+                            newlineCount++
+                            recordLineEnding(bytesSeen)
                         }
                     }
                 }
             }
         }
+        if (pendingCrEnd >= 0L) {
+            newlineCount++
+            recordLineEnding(pendingCrEnd)
+        }
 
-        val totalLines = newlineCount + if (bytesSeen > 0L && lastByte != 0x0A) 1L else 0L
+        val totalLines = newlineCount +
+            if (bytesSeen > 0L && lastByte != 0x0A && lastByte != 0x0D) 1L else 0L
         val requiredPages = if (totalLines == 0L) {
             1
         } else {
@@ -106,9 +149,13 @@ internal class DiskBackedTextDocument(
         checkOpen()
         require(pageIndex in 0 until pageCount) { "Text page index is outside the document." }
 
+        pageCache[pageIndex]?.let { return it }
+
         val edited = editedPageFile(pageIndex)
         if (edited.isFile) {
-            return edited.readText(StandardCharsets.UTF_8)
+            val text = normalizeLineEndings(edited.readText(StandardCharsets.UTF_8))
+            cachePage(pageIndex, text, edited.length())
+            return text
         }
 
         val start = pageStarts[pageIndex]
@@ -124,9 +171,60 @@ internal class DiskBackedTextDocument(
             file.seek(start)
             file.readFully(bytes)
         }
-        return String(bytes, StandardCharsets.UTF_8)
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
+        val text = normalizeLineEndings(String(bytes, StandardCharsets.UTF_8))
+        cachePage(pageIndex, text, length)
+        return text
+    }
+
+    /**
+     * Read likely next/previous pages away from the UI thread. RecyclerView
+     * still has a synchronous fallback, but most page binds should hit cache.
+     */
+    fun prefetchPages(firstPage: Int, lastPage: Int) {
+        if (firstPage > lastPage) return
+        val queued = synchronized(this) {
+            if (closed) return
+            (firstPage.coerceAtLeast(0)..lastPage.coerceAtMost(pageCount - 1))
+                .filter { page ->
+                    if (page in pageCache || page in prefetchingPages) return@filter false
+                    val edited = editedPageFile(page)
+                    val bytes = if (edited.isFile) edited.length() else sourcePageLength(page)
+                    bytes in 1..MAX_CACHED_PAGE_BYTES
+                }
+                .onEach { prefetchingPages.add(it) }
+        }
+        for (page in queued) {
+            try {
+                prefetchExecutor.execute {
+                    try {
+                        readPage(page)
+                    } catch (_: Exception) {
+                        // Binding reports real read failures; prefetch is opportunistic.
+                    } finally {
+                        synchronized(this) { prefetchingPages.remove(page) }
+                    }
+                }
+            } catch (_: RuntimeException) {
+                synchronized(this) { prefetchingPages.remove(page) }
+            }
+        }
+    }
+
+    private fun sourcePageLength(pageIndex: Int): Long {
+        val start = pageStarts[pageIndex]
+        val end = if (pageIndex + 1 < pageStarts.size) pageStarts[pageIndex + 1] else sourceLength
+        return (end - start).coerceAtLeast(0L)
+    }
+
+    private fun cachePage(pageIndex: Int, text: String, sourceBytes: Long) {
+        if (sourceBytes !in 1..MAX_CACHED_PAGE_BYTES) return
+        pageCache[pageIndex] = text
+        while (pageCache.size > MAX_CACHED_PAGES) {
+            val eldest = pageCache.entries.iterator()
+            if (!eldest.hasNext()) break
+            eldest.next()
+            eldest.remove()
+        }
     }
 
     @Synchronized
@@ -136,8 +234,9 @@ internal class DiskBackedTextDocument(
 
         val destination = editedPageFile(pageIndex)
         val temporary = File(editDirectory, "page_" + pageIndex + ".tmp")
+        val textWithOriginalLineEndings = restoreOriginalLineEndings(pageIndex, text)
         FileOutputStream(temporary).buffered().use { output ->
-            output.write(text.toByteArray(StandardCharsets.UTF_8))
+            output.write(textWithOriginalLineEndings.toByteArray(StandardCharsets.UTF_8))
             output.flush()
         }
         if (destination.exists() && !destination.delete()) {
@@ -148,6 +247,7 @@ internal class DiskBackedTextDocument(
             temporary.delete()
             throw IllegalStateException("Could not save edited text page " + pageIndex + ".")
         }
+        cachePage(pageIndex, normalizeLineEndings(text), destination.length())
     }
 
     /**
@@ -263,6 +363,68 @@ internal class DiskBackedTextDocument(
         editDirectory.deleteRecursively()
     }
 
+    /**
+     * The editor displays all line endings as '\n', but RR3 language files can
+     * use CRLF. Reapply the source page's exact newline sequence when saving;
+     * otherwise one edited page can introduce mixed line endings into the
+     * encrypted game-text file.
+     */
+    private fun restoreOriginalLineEndings(pageIndex: Int, text: String): String {
+        val start = pageStarts[pageIndex]
+        val end = if (pageIndex + 1 < pageStarts.size) pageStarts[pageIndex + 1] else sourceLength
+        val length = (end - start).coerceAtLeast(0L)
+        if (length == 0L) return text
+        require(length <= MAX_PAGE_BYTES) {
+            "A single text page is too large to save safely (" + length + " bytes)."
+        }
+
+        val sourceBytes = ByteArray(length.toInt())
+        RandomAccessFile(sourceFile, "r").use { file ->
+            file.seek(start)
+            file.readFully(sourceBytes)
+        }
+
+        val endings = ArrayList<String>()
+        var index = 0
+        while (index < sourceBytes.size) {
+            when (sourceBytes[index].toInt() and 0xFF) {
+                0x0D -> {
+                    if (index + 1 < sourceBytes.size &&
+                        (sourceBytes[index + 1].toInt() and 0xFF) == 0x0A
+                    ) {
+                        endings.add("\r\n")
+                        index += 2
+                    } else {
+                        endings.add("\r")
+                        index++
+                    }
+                }
+                0x0A -> {
+                    endings.add("\n")
+                    index++
+                }
+                else -> index++
+            }
+        }
+        if (endings.isEmpty()) return text
+
+        val fallback = endings.first()
+        var newlineIndex = 0
+        return buildString(text.length + endings.count { it.length > 1 }) {
+            for (character in text) {
+                if (character == '\n') {
+                    append(endings.getOrNull(newlineIndex) ?: fallback)
+                    newlineIndex++
+                } else {
+                    append(character)
+                }
+            }
+        }
+    }
+
+    private fun normalizeLineEndings(text: String): String =
+        text.replace("\r\n", "\n").replace('\r', '\n')
+
     private fun editedPageFile(pageIndex: Int): File =
         File(editDirectory, "page_" + pageIndex + ".txt")
 
@@ -279,10 +441,15 @@ internal class DiskBackedTextDocument(
     @Synchronized
     override fun close() {
         closed = true
+        pageCache.clear()
+        prefetchingPages.clear()
+        prefetchExecutor.shutdownNow()
     }
 
     companion object {
         private const val MAX_PAGE_BYTES = 32L * 1024L * 1024L
+        private const val MAX_CACHED_PAGE_BYTES = 512L * 1024L
+        private const val MAX_CACHED_PAGES = 8
         private const val COPY_BUFFER_SIZE = 64 * 1024
     }
 }

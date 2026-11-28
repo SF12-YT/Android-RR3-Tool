@@ -568,22 +568,41 @@ Bytes rr3CarPlain(const Rr3Car& car) {
 
 bool rr3CarWrite(const Rr3Car& car, Bytes& out, std::string& report) {
     Bytes plain = rr3CarPlain(car);
+    if (plain.empty()) {
+        report = "the rebuilt car data is empty";
+        return false;
+    }
+
+    // Re-encrypt the complete rebuilt stream. Reusing the original ciphertext
+    // at matching byte offsets is only safe when every preceding field keeps
+    // its length. A changed string shifts the later bytes, and therefore
+    // shifts the RC4 keystream position for every following byte.
     Bytes enc;
     size_t uncertain = 0, past = 0;
-    nctEncode(plain.data(), plain.size(), enc, &uncertain, &past);
-    // where a byte is the same as the original's at the same place, the
-    // original's encoded byte is exact whatever the pad says
-    size_t risky = 0;
-    for (size_t i = 0; i < plain.size(); ++i) {
-        if (i < car.plainOriginal.size() && plain[i] == car.plainOriginal[i]) { enc[i] = car.original[i]; continue; }
-        if (!nctPadByteKnown(i)) ++risky;
+    if (!nctEncode(plain.data(), plain.size(), enc, &uncertain, &past) ||
+        enc.size() != plain.size() || past != 0 || uncertain != 0) {
+        report = "the rebuilt car data could not be fully re-encrypted";
+        return false;
     }
+
+    // Decode and parse the result again before allowing it to leave the
+    // editor. This catches a malformed token stream before it can be installed.
+    Rr3Car verified;
+    if (!rr3CarRead(enc.data(), enc.size(), verified)) {
+        report = "the rebuilt car file failed its read-back check: " + verified.why;
+        return false;
+    }
+    if (rr3CarPlain(verified) != plain) {
+        report = "the rebuilt car file did not preserve the complete token stream";
+        return false;
+    }
+
     out.swap(enc);
     char b[200];
-    snprintf(b, sizeof(b), "%zu bytes (was %zu); %zu changed byte(s) fall where the .nct pad is not certain",
-             out.size(), car.original.size(), risky);
+    snprintf(b, sizeof(b), "%zu bytes (was %zu); fully re-encrypted and read-back verified",
+             out.size(), car.original.size());
     report = b;
-    return risky == 0 && past == 0;
+    return true;
 }
 
 } // namespace nfsnl

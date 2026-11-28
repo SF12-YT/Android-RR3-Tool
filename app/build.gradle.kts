@@ -7,6 +7,18 @@ android {
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
+    signingConfigs {
+        create("ciDebug") {
+            storeFile = file("${System.getProperty("user.home")}/.android/rr3tool-debug.keystore")
+            storePassword = "android"
+            keyAlias = "rr3tooldebug"
+            keyPassword = "android"
+            // Explicitly include both Android signing schemes for broad installer compatibility.
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     defaultConfig {
         applicationId = "com.sf12.rr3tool"
         minSdk = 26
@@ -25,6 +37,12 @@ android {
         }
     }
 
+    buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("ciDebug")
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
@@ -40,7 +58,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
 }
 
 dependencies {
