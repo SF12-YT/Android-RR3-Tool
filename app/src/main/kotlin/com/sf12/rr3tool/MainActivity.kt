@@ -4886,6 +4886,9 @@ class MainActivity : Activity() {
                 transform.carId == -1 || (activeCarId != null && transform.carId == activeCarId)
             }
             var selectedTransform: CamTweaksV5.CarTransform? = null
+            var selectedPreviewMode: CamTweaksV5.ModeDefinition? = null
+            var diagnosticVariant = 0
+            var diagnosticButton: TextView? = null
             var selectMode: ((CamTweaksV5.ModeDefinition, CamTweaksV5.CarTransform?) -> Unit)? = null
 
             fun cameraModeName(id: Int): String = when (id) {
@@ -4989,11 +4992,17 @@ class MainActivity : Activity() {
                 val qw = q[3] / qLength
                 val p = transform.position
 
-                // RR3 car models use X-right, Y-up and Z-forward. The
-                // camTweaks transform is already in that same car/model space,
-                // so keep its position and quaternion axes unchanged.
+                // Diagnostic candidates: raw, /256, /2048 position scale;
+                // alternate local camera forward between -Z and +Z.
+                // CamTweaks coordinate conventions remain unverified.
+                val scale = when (diagnosticVariant / 2) {
+                    0 -> 1f
+                    1 -> 1f / 256f
+                    else -> 1f / 2048f
+                }
+                val forwardAxis = if (diagnosticVariant % 2 == 0) -1f else 1f
                 val forward = rotateByQuaternion(
-                    0f, 0f, 1f, qx, qy, qz, qw
+                    0f, 0f, forwardAxis, qx, qy, qz, qw
                 )
                 val eye = floatArrayOf(p[0], p[1], p[2])
                 val forwardLength = kotlin.math.sqrt(
@@ -5033,14 +5042,28 @@ class MainActivity : Activity() {
                     transform.recordIndex + 1,
                     values[4]
                 )
+                val scaleLabel = when (diagnosticVariant / 2) {
+                    0 -> "raw"
+                    1 -> "/256"
+                    else -> "/2048"
+                }
+                val axisLabel = if (diagnosticVariant % 2 == 0) "-Z" else "+Z"
                 camTweaksTransformStatus.text = String.format(
                     Locale.US,
-                    "Transform #%d · car %d · mode %d · P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
-                    transform.recordIndex + 1, transform.carId, transform.cameraModeId,
-                    p[0], p[1], p[2], q[0], q[1], q[2], q[3]
+                    "TEST %d · %s · forward %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
+                    diagnosticVariant + 1, scaleLabel, axisLabel,
+                    eye[0], eye[1], eye[2], target[0], target[1], target[2],
+                    q[0], q[1], q[2], q[3]
                 )
             }
+            diagnosticButton = compactOverlayButton("Test pose 1/6") {
+                diagnosticVariant = (diagnosticVariant + 1) % 6
+                diagnosticButton?.text = "Test pose " + (diagnosticVariant + 1) + "/6"
+                selectedPreviewMode?.let { mode -> applyModePreview(mode, selectedTransform) }
+            }
+            panel.addView(diagnosticButton, matchWrap(top = 2, bottom = 2))
             selectMode = { mode, transformOverride ->
+                selectedPreviewMode = mode
                 selectedCamTweaksRecordOffset = mode.recordOffset
                 camTweaksInputs.clear()
                 camTweaksFieldsContainer.removeAllViews()
