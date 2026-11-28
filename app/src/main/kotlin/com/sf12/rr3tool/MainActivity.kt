@@ -4993,18 +4993,27 @@ class MainActivity : Activity() {
                 val p = transform.position
 
                 // Diagnostic candidates: raw, /256, /2048 position scale;
-                // alternate local camera forward between -Z and +Z.
+                // local -Z/+Z forward; direct and inverse quaternion rotation.
                 // CamTweaks coordinate conventions remain unverified.
-                val scale = when (diagnosticVariant / 2) {
+                val poseVariant = diagnosticVariant % 6
+                val inverseRotation = diagnosticVariant >= 6
+                val scale = when (poseVariant / 2) {
                     0 -> 1f
                     1 -> 1f / 256f
                     else -> 1f / 2048f
                 }
-                val forwardAxis = if (diagnosticVariant % 2 == 0) -1f else 1f
+                val forwardAxis = if (poseVariant % 2 == 0) -1f else 1f
+                val rotationX = if (inverseRotation) -qx else qx
+                val rotationY = if (inverseRotation) -qy else qy
+                val rotationZ = if (inverseRotation) -qz else qz
                 val forward = rotateByQuaternion(
-                    0f, 0f, forwardAxis, qx, qy, qz, qw
+                    0f, 0f, forwardAxis,
+                    rotationX, rotationY, rotationZ, qw
                 )
-                val eye = floatArrayOf(p[0], p[1], p[2])
+                // Apply the selected scale to the actual eye position. The
+                // previous diagnostic build computed this value but omitted
+                // it from the eye array, making the three scale tests identical.
+                val eye = floatArrayOf(p[0] * scale, p[1] * scale, p[2] * scale)
                 val forwardLength = kotlin.math.sqrt(
                     forward[0] * forward[0] +
                         forward[1] * forward[1] +
@@ -5050,15 +5059,16 @@ class MainActivity : Activity() {
                 val axisLabel = if (diagnosticVariant % 2 == 0) "-Z" else "+Z"
                 camTweaksTransformStatus.text = String.format(
                     Locale.US,
-                    "TEST %d · %s · forward %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
-                    diagnosticVariant + 1, scaleLabel, axisLabel,
+                    "TEST %d/12 · %s · %s quaternion · forward %s · eye (%.3f, %.3f, %.3f) · target (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
+                    diagnosticVariant + 1, scaleLabel,
+                    if (diagnosticVariant < 6) "direct" else "inverse", axisLabel,
                     eye[0], eye[1], eye[2], target[0], target[1], target[2],
                     q[0], q[1], q[2], q[3]
                 )
             }
-            diagnosticButton = compactOverlayButton("Test pose 1/6") {
-                diagnosticVariant = (diagnosticVariant + 1) % 6
-                diagnosticButton?.text = "Test pose " + (diagnosticVariant + 1) + "/6"
+            diagnosticButton = compactOverlayButton("Test pose 1/12") {
+                diagnosticVariant = (diagnosticVariant + 1) % 12
+                diagnosticButton?.text = "Test pose " + (diagnosticVariant + 1) + "/12"
                 selectedPreviewMode?.let { mode -> applyModePreview(mode, selectedTransform) }
             }
             panel.addView(diagnosticButton, matchWrap(top = 2, bottom = 2))
