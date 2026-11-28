@@ -4888,17 +4888,39 @@ class MainActivity : Activity() {
             var selectedTransform: CamTweaksV5.CarTransform? = null
             var selectMode: ((CamTweaksV5.ModeDefinition, CamTweaksV5.CarTransform?) -> Unit)? = null
 
-            fun updateModeStatus(mode: CamTweaksV5.ModeDefinition) {
-                val working = currentCamTweaksWorking ?: return
+            fun cameraModeName(id: Int): String = when (id) {
+                0 -> "CAM_VIEW_BEHIND"
+                1 -> "CAM_VIEW_IN_CAR"
+                2 -> "CAM_VIEW_DEPRECATED"
+                3 -> "CAM_VIEW_BONNET"
+                4 -> "CAM_VIEW_BUMPER"
+                5 -> "CAM_VIEW_BONNET_HIGH"
+                6 -> "CAM_VIEW_BUMPER_HIGH"
+                8 -> "CAM_VIEW_REAR"
+                14 -> "CAM_VIEW_CAR_SELECT"
+                else -> "CAM_VIEW_$id"
+            }
+
+            val modeParameterNames = listOf(
+                "START SPEED", "END SPEED", "ZOOM START",
+                "ZOOM END", "FOV-Y START", "FOV-Y END"
+            )
+
+            fun readModeParameters(mode: CamTweaksV5.ModeDefinition): FloatArray {
+                val working = currentCamTweaksWorking ?: return FloatArray(6)
                 val buffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                val values = FloatArray(6) { field ->
+                return FloatArray(6) { field ->
                     buffer.getFloat(mode.recordOffset + 4 + field * 4)
                 }
+            }
+
+            fun updateModeStatus(mode: CamTweaksV5.ModeDefinition) {
+                val values = readModeParameters(mode)
                 camTweaksStatus.text = String.format(
                     Locale.US,
-                    "Mode %d · camera values: %s",
-                    mode.cameraModeId,
-                    values.joinToString(", ") { "%.3f".format(Locale.US, it) }
+                    "%s · speed %.0f–%.0f · zoom %.3f–%.3f · FOV-Y %.1f°–%.1f°",
+                    cameraModeName(mode.cameraModeId),
+                    values[0], values[1], values[2], values[3], values[4], values[5]
                 )
             }
 
@@ -4923,139 +4945,108 @@ class MainActivity : Activity() {
                 mode: CamTweaksV5.ModeDefinition,
                 transform: CamTweaksV5.CarTransform?
             ) {
-                val working = currentCamTweaksWorking ?: return
-                val buffer = java.nio.ByteBuffer.wrap(working).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                val values = FloatArray(6) { field ->
-                    buffer.getFloat(mode.recordOffset + 4 + field * 4)
-                }
+                val values = readModeParameters(mode)
                 if (values.any { !it.isFinite() }) {
-                    camTweaksStatus.text = "This camera mode contains a non-finite value."
-                    return
-                }
-
-                // Mode records store the camera position first and the look-at
-                // target second. Larger values use the game's 1/10,000 scale.
-                val rawMagnitude = values.maxOf { kotlin.math.abs(it) }
-                val modeScale = if (rawMagnitude > 20f) 0.0001f else 1f
-                val localEye = floatArrayOf(
-                    values[0] * modeScale,
-                    values[1] * modeScale,
-                    values[2] * modeScale
-                )
-                val localTarget = floatArrayOf(
-                    values[3] * modeScale,
-                    values[4] * modeScale,
-                    values[5] * modeScale
-                )
-
-                fun buildPose(useTransform: Boolean): FloatArray? {
-                    var eye = localEye
-                    var target = localTarget
-
-                    if (useTransform && transform != null) {
-                        val q = transform.rotation
-                        val qLength = transform.quaternionLength.toFloat()
-                        if (!qLength.isFinite() || qLength < 0.00001f) return null
-
-                        val qx = q[0] / qLength
-                        val qy = q[1] / qLength
-                        val qz = q[2] / qLength
-                        val qw = q[3] / qLength
-
-                        // Rotate in the source RR3 coordinate frame first.
-                        // Only then convert lateral/forward/up to the viewer's
-                        // X-right/Y-up/Z-forward axes.
-                        eye = rotateByQuaternion(
-                            localEye[0], localEye[1], localEye[2], qx, qy, qz, qw
-                        )
-                        target = rotateByQuaternion(
-                            localTarget[0], localTarget[1], localTarget[2], qx, qy, qz, qw
-                        )
-
-                        // Transform translation uses the RR3 1/2,048 scale.
-                        val p = transform.position
-                        eye = toViewerAxes(
-                            p[0] / 2048f + eye[0],
-                            p[1] / 2048f + eye[1],
-                            p[2] / 2048f + eye[2]
-                        )
-                        target = toViewerAxes(
-                            p[0] / 2048f + target[0],
-                            p[1] / 2048f + target[1],
-                            p[2] / 2048f + target[2]
-                        )
-                    } else {
-                        eye = toViewerAxes(eye[0], eye[1], eye[2])
-                        target = toViewerAxes(target[0], target[1], target[2])
-                    }
-
-                    val dx = target[0] - eye[0]
-                    val dy = target[1] - eye[1]
-                    val dz = target[2] - eye[2]
-                    val spanSquared = dx * dx + dy * dy + dz * dz
-                    if (!spanSquared.isFinite() || spanSquared < 0.000001f ||
-                        spanSquared > 10000f
-                    ) return null
-
-                    return floatArrayOf(
-                        eye[0], eye[1], eye[2],
-                        target[0], target[1], target[2]
-                    )
-                }
-
-                val transformedPose = if (transform != null) buildPose(true) else null
-                val pose = transformedPose ?: buildPose(false)
-                if (pose == null) {
-                    camTweaksStatus.text = String.format(
-                        Locale.US,
-                        "Mode %d has an invalid camera span after RR3 axis/unit conversion.",
-                        mode.cameraModeId
-                    )
+                    camTweaksStatus.text = "This camera mode contains a non-finite setting."
                     return
                 }
 
                 val viewer = rr3ViewerSurface
                 if (viewer == null) {
-                    camTweaksStatus.text = "Camera pose decoded, but the 3D viewer is not active."
+                    camTweaksStatus.text = "Camera settings decoded, but the 3D viewer is not active."
                     return
                 }
 
-                viewer.setCameraPose(
-                    pose[0], pose[1], pose[2],
-                    pose[3], pose[4], pose[5]
+                // The six mode values are speed, zoom and FOV ranges — not
+                // position/target coordinates. The matching car transform
+                // supplies the camera's position and orientation.
+                val fovRadians = Math.toRadians(
+                    values[4].toDouble().coerceIn(25.0, 110.0)
+                ).toFloat()
+                viewer.setCameraTuning(0f, 0f, fovRadians)
+
+                if (transform == null) {
+                    viewer.resetCamera()
+                    viewer.setCameraTuning(0f, 0f, fovRadians)
+                    camTweaksTransformStatus.text =
+                        "No transform matches this camera mode for the active car or global defaults."
+                    camTweaksStatus.text =
+                        "${cameraModeName(mode.cameraModeId)} · settings shown; no camera pose is available to preview."
+                    return
+                }
+
+                val q = transform.rotation
+                val qLength = transform.quaternionLength.toFloat()
+                if (!qLength.isFinite() || qLength < 0.00001f) {
+                    viewer.resetCamera()
+                    camTweaksStatus.text =
+                        "${cameraModeName(mode.cameraModeId)} has a transform with an invalid quaternion."
+                    camTweaksTransformStatus.text =
+                        "Transform #${transform.recordIndex + 1} has a zero-length or invalid rotation."
+                    return
+                }
+
+                val qx = q[0] / qLength
+                val qy = q[1] / qLength
+                val qz = q[2] / qLength
+                val qw = q[3] / qLength
+                val p = transform.position
+
+                // RR3 camera-local forward is treated as -Y in the source
+                // axes; toViewerAxes maps that direction to +Z.
+                val forwardSource = rotateByQuaternion(
+                    0f, -1f, 0f, qx, qy, qz, qw
                 )
-                val transformLabel = when {
-                    transformedPose != null && transform != null && transform.carId == activeCarId && activeCarId != null ->
-                        "car $activeCarId transform #${transform.recordIndex + 1}"
-                    transformedPose != null && transform?.carId == -1 && activeCarId != null ->
-                        "global/default transform · no car-specific record for $activeCarId"
-                    transformedPose != null && transform != null ->
-                        "global/default transform #${transform.recordIndex + 1}"
-                    transform != null ->
-                        "mode-local fallback (invalid car transform)"
-                    else ->
-                        "mode-local coordinates"
+                val eye = toViewerAxes(
+                    p[0] / 2048f, p[1] / 2048f, p[2] / 2048f
+                )
+                val forward = toViewerAxes(
+                    forwardSource[0], forwardSource[1], forwardSource[2]
+                )
+                val forwardLength = kotlin.math.sqrt(
+                    forward[0] * forward[0] +
+                        forward[1] * forward[1] +
+                        forward[2] * forward[2]
+                )
+                if (!forwardLength.isFinite() || forwardLength < 0.00001f) {
+                    viewer.resetCamera()
+                    camTweaksStatus.text =
+                        "${cameraModeName(mode.cameraModeId)} has an invalid camera direction."
+                    return
+                }
+
+                val lookDistance = 5f
+                val target = floatArrayOf(
+                    eye[0] + forward[0] / forwardLength * lookDistance,
+                    eye[1] + forward[1] / forwardLength * lookDistance,
+                    eye[2] + forward[2] / forwardLength * lookDistance
+                )
+                viewer.setCameraPose(
+                    eye[0], eye[1], eye[2],
+                    target[0], target[1], target[2]
+                )
+                viewer.setCameraTuning(0f, 0f, fovRadians)
+
+                val owner = if (transform.carId == -1) {
+                    "global/default transform"
+                } else {
+                    "car ${transform.carId} transform"
                 }
                 camTweaksStatus.text = String.format(
                     Locale.US,
-                    "Preview applied · mode %d · %s · eye (%.4f, %.4f, %.4f) · target (%.4f, %.4f, %.4f)",
-                    mode.cameraModeId,
-                    transformLabel,
-                    pose[0], pose[1], pose[2],
-                    pose[3], pose[4], pose[5]
+                    "Preview applied · %s · %s #%d · FOV-Y %.1f°",
+                    cameraModeName(mode.cameraModeId),
+                    owner,
+                    transform.recordIndex + 1,
+                    values[4]
                 )
-                camTweaksTransformStatus.text = transform?.let {
-                    val q = it.rotation
-                    String.format(
-                        Locale.US,
-                        "Transform #%d · car %d · mode %d · P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f) · applied in RR3 axes",
-                        it.recordIndex + 1, it.carId, it.cameraModeId,
-                        it.position[0], it.position[1], it.position[2],
-                        q[0], q[1], q[2], q[3]
-                    )
-                } ?: "No matching car transform. Converted the mode-local camera points."
+                camTweaksTransformStatus.text = String.format(
+                    Locale.US,
+                    "Transform #%d · car %d · mode %d · P (%.3f, %.3f, %.3f) · Q (%.4f, %.4f, %.4f, %.4f)",
+                    transform.recordIndex + 1, transform.carId, transform.cameraModeId,
+                    p[0], p[1], p[2], q[0], q[1], q[2], q[3]
+                )
             }
-
             selectMode = { mode, transformOverride ->
                 selectedCamTweaksRecordOffset = mode.recordOffset
                 camTweaksInputs.clear()
@@ -5067,7 +5058,7 @@ class MainActivity : Activity() {
                 for (field in 0 until 6) {
                     val valueOffset = mode.recordOffset + 4 + field * 4
                     val input = editBox(
-                        "RAW ${field + 1}",
+                        modeParameterNames[field],
                         buffer.getFloat(valueOffset).toString(),
                         numeric = true
                     ).apply { textSize = 12f }
@@ -5144,7 +5135,7 @@ class MainActivity : Activity() {
             for (transform in visibleTransforms) {
                 val owner = if (transform.carId == -1) "DEFAULT" else "CAR ${transform.carId}"
                 val chip = text(
-                    "$owner · M${transform.cameraModeId} · #${transform.recordIndex + 1}",
+                    "$owner · ${cameraModeName(transform.cameraModeId.toInt())} · #${transform.recordIndex + 1}",
                     9, UiPalette.text, bold = true
                 ).apply {
                     tag = transform.recordOffset
@@ -5187,7 +5178,7 @@ class MainActivity : Activity() {
 
             for (mode in decoded.modes) {
                 val chip = text(
-                    "MODE ${mode.cameraModeId}",
+                    "${cameraModeName(mode.cameraModeId)} · ${mode.cameraModeId}",
                     10, UiPalette.text, bold = true
                 ).apply {
                     tag = mode.recordOffset
